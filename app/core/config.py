@@ -9,6 +9,14 @@ from typing import List, Optional, Union, Any
 from pydantic import validator
 from pydantic_settings import BaseSettings
 
+from dotenv import load_dotenv
+import sys
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))))
+sys.path.insert(0, project_root)
+
+load_dotenv()
 
 class Settings(BaseSettings):
     """应用配置类"""
