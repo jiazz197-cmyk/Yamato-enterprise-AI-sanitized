@@ -1,8 +1,16 @@
+"""
+OCR 图片转 URL 工具
+
+TODO: 待实现功能
+- 图片上传到 MinIO
+- 生成访问 URL
+- OCR 文字识别集成
+"""
 import os
 import io  # 关键：导入 io 模块，用于将 bytes 转为文件流
 from minio.error import S3Error
 from dotenv import load_dotenv
-from app.core.database import minio_client
+from app.core.storage import minio_client
 import sys
 
 # 加载环境变量（路径逻辑保持不变）

@@ -1,29 +1,50 @@
 """
-日志配置模块
+日志配置中心
 """
+import logging
 import logging.config
 import sys
+from pathlib import Path
+from typing import Any, Dict
 
-import logging
 from app.core.config import settings
 
-LOG_LEVEL = settings.LOG_LEVEL.upper() if hasattr(settings, 'LOG_LEVEL') else "INFO"
+
+LOG_LEVEL = settings.LOG_LEVEL.upper()
+BASE_DIR = Path(__file__).resolve().parents[2]
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def setup_logging():
-    logging_config = {
+def _file_handler(filename: str) -> Dict[str, Any]:
+    target = LOG_DIR / filename
+    return {
+        "formatter": "plain",
+        "class": "logging.FileHandler",
+        "filename": str(target),
+        "mode": "a",
+        "encoding": "utf-8",
+    }
+
+
+def _build_logging_config() -> Dict[str, Any]:
+    """构建 logging.dictConfig 所需的配置结构。"""
+    config = {
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
             "default": {
                 "()": "uvicorn.logging.DefaultFormatter",
-                "fmt": "%(levelprefix)s %(asctime)s - %(name)s - %(message)s",
+                "fmt": "%(levelprefix)s %(asctime)s | %(name)s | %(message)s",
                 "use_colors": True,
             },
             "access": {
                 "()": "uvicorn.logging.AccessFormatter",
                 "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
                 "use_colors": True,
+            },
+            "plain": {
+                "format": "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
             },
         },
         "handlers": {
@@ -37,44 +58,44 @@ def setup_logging():
                 "class": "logging.StreamHandler",
                 "stream": sys.stdout,
             },
+            "plain": {
+                "formatter": "plain",
+                "class": "logging.StreamHandler",
+                "stream": sys.stdout,
+            },
         },
         "loggers": {
             "app": {"handlers": ["default"], "level": LOG_LEVEL, "propagate": False},
+            "app.database": {"handlers": ["plain"], "level": LOG_LEVEL, "propagate": False},
+            "app.requests": {"handlers": ["plain"], "level": LOG_LEVEL, "propagate": False},
+            "app.security": {"handlers": ["plain"], "level": LOG_LEVEL, "propagate": False},
             "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
-            "uvicorn.error": {"level": "INFO", "handlers": ["default"], "propagate": False},
+            "uvicorn.error": {"handlers": ["default"], "level": "INFO", "propagate": False},
             "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
         },
     }
-    logging.config.dictConfig(logging_config)
+    config["handlers"]["app_file"] = _file_handler("app.log")
+    config["handlers"]["database_file"] = _file_handler("database.log")
+    config["handlers"]["requests_file"] = _file_handler("requests.log")
+    config["handlers"]["security_file"] = _file_handler("security.log")
+
+    config["loggers"]["app"]["handlers"].append("app_file")
+    config["loggers"]["app.database"]["handlers"].append("database_file")
+    config["loggers"]["app.requests"]["handlers"].append("requests_file")
+    config["loggers"]["app.security"]["handlers"].append("security_file")
+    return config
 
 
-# 全局 logger，所有模块都从这里导入。
-# uvicorn 将负责配置这个 logger 的输出。
-logger = logging.getLogger("app")
-
-
-class LoggerMixin:
-    """日志混入类，为其他类提供logger属性"""
-
-    @property
-    def logger(self) -> logging.Logger:
-        """获取当前类的logger"""
-        return logging.getLogger(f"app.{self.__class__.__module__}.{self.__class__.__name__}")
+def setup_logging():
+    """初始化全局日志配置。"""
+    logging.config.dictConfig(_build_logging_config())
 
 
 def get_logger(name: str) -> logging.Logger:
-    """获取指定名称的logger"""
+    """按照 app.xxx 规则获取命名 logger。"""
     return logging.getLogger(f"app.{name}")
 
 
-# 请求日志中间件使用的logger
 request_logger = logging.getLogger("app.requests")
 security_logger = logging.getLogger("app.security")
-
-# 配置全局日志格式和级别
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
 database_logger = logging.getLogger("app.database")

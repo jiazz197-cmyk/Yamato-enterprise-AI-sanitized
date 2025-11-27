@@ -1,5 +1,6 @@
-/.vscode/
-/.env
-/test.py
-/main.py
+.github/
+.idea/
+.env
+logs
+.vscode/
 __pycache__/

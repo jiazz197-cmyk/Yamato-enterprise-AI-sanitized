@@ -4,9 +4,9 @@
 import os
 import secrets
 from pathlib import Path
-from typing import List, Optional, Union, Any
+from typing import List, Optional, Union
 
-from pydantic import validator
+from pydantic import Field, validator
 from pydantic_settings import BaseSettings
 
 from dotenv import load_dotenv
@@ -18,157 +18,168 @@ sys.path.insert(0, project_root)
 
 load_dotenv()
 
+def _split_comma_separated(value: Union[str, List[str]]) -> List[str]:
+    """将逗号分隔配置转换成列表。"""
+    if isinstance(value, str):
+        if not value or value == "*":
+            return ["*"]
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return value
+
+
 class Settings(BaseSettings):
-    """应用配置类"""
+    """全局配置对象，统一读取 .env 与环境变量。"""
 
-    # 基础配置
-    PROJECT_NAME: str = os.getenv("PROJECT_NAME", "AI Data Tool")
-    VERSION: str = os.getenv("VERSION", "1.0.0")
-    DESCRIPTION: str = os.getenv("DESCRIPTION", "AI数据工具后端API服务")
-    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
-    DEBUG: bool = os.getenv("DEBUG", "True") == "True"
-    API_V1_STR: str = os.getenv("API_V1_STR", "/api/v1")
+    # 基础信息
+    PROJECT_NAME: str = Field("AI Data Tool", env="PROJECT_NAME")
+    VERSION: str = Field("1.0.0", env="VERSION")
+    DESCRIPTION: str = Field("AI数据工具后端API服务", env="DESCRIPTION")
+    ENVIRONMENT: str = Field("development", env="ENVIRONMENT")
+    DEBUG: bool = Field(True, env="DEBUG")
+    API_V1_STR: str = Field("/api/v1", env="API_V1_STR")
 
-    # 服务器配置
-    HOST: str = os.getenv("HOST", "0.0.0.0")
-    PORT: int = int(os.getenv("PORT", 8000))
-    ALLOWED_HOSTS: List[str] = os.getenv("ALLOWED_HOSTS", "*").split(",")
+    # 服务端网络
+    HOST: str = Field("0.0.0.0", env="HOST")
+    PORT: int = Field(8000, env="PORT")
+    ALLOWED_HOSTS: List[str] = Field(default_factory=lambda: ["*"], env="ALLOWED_HOSTS")
 
-    # CORS配置
-    # BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
-    BACKEND_CORS_ORIGINS: List[str] = ["*"]
+    # CORS
+    BACKEND_CORS_ORIGINS: List[str] = Field(default_factory=lambda: ["*"], env="BACKEND_CORS_ORIGINS")
 
     @validator("BACKEND_CORS_ORIGINS", pre=True)
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> Union[List[str], str]:
         if isinstance(v, str) and not v.startswith("["):
-            return [i.strip() for i in v.split(",")]
-        elif isinstance(v, (list, str)):
+            return _split_comma_separated(v)
+        if isinstance(v, (list, str)):
             return v
         raise ValueError(v)
 
-    # 数据库配置
-    POSTGRES_SERVER: str = os.getenv("POSTGRES_SERVER", "know_analy-pgvector")
-    POSTGRES_USER: str = os.getenv("POSTGRES_USER", "postgres")
-    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "change_me_pg_password")
-    POSTGRES_DB: str = os.getenv("POSTGRES_DB", "postgres")
-    POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", 5432))
-    SQLALCHEMY_DATABASE_URI: Optional[str] = os.getenv("SQLALCHEMY_DATABASE_URI")
+    @validator("ALLOWED_HOSTS", pre=True)
+    def split_allowed_hosts(cls, v: Union[str, List[str]]) -> List[str]:
+        return _split_comma_separated(v)
 
-    @validator("SQLALCHEMY_DATABASE_URI", pre=True)
-    def assemble_db_connection(cls, v: Optional[str], values: dict) -> Any:
-        if isinstance(v, str):
-            return v
-        return f"postgresql://{values.get('POSTGRES_USER')}:{values.get('POSTGRES_PASSWORD')}@{values.get('POSTGRES_SERVER')}:{values.get('POSTGRES_PORT')}/{values.get('POSTGRES_DB')}"
-
-    # Redis配置
-    REDIS_HOST: str = os.getenv("REDIS_HOST", "know_analy-redis")
-    REDIS_PORT: int = int(os.getenv("REDIS_PORT", 6379))
-    REDIS_DB: int = int(os.getenv("REDIS_DB", 0))
-    REDIS_PASSWORD: Optional[str] = os.getenv("REDIS_PASSWORD")
-    REDIS_URL: str = os.getenv("REDIS_URL", "redis://know_analy-redis:6379/0")
-
-    REDIS_MAX_CONNECTIONS: int = int(os.getenv("REDIS_MAX_CONNECTIONS", 10))
+    # 数据库
+    POSTGRES_SERVER: str = Field("know_analy-pgvector", env="POSTGRES_SERVER")
+    POSTGRES_USER: str = Field("postgres", env="POSTGRES_USER")
+    POSTGRES_PASSWORD: str = Field("change_me_pg_password", env="POSTGRES_PASSWORD")
+    POSTGRES_DB: str = Field("postgres", env="POSTGRES_DB")
+    POSTGRES_PORT: int = Field(5432, env="POSTGRES_PORT")
 
     @property
-    def REDIS_CONNECTION_URL(self) -> str:
-        if self.REDIS_URL:
-            return self.REDIS_URL
+    def SQLALCHEMY_DATABASE_URI(self) -> str:
+        """根据单项设置拼接数据库连接串。"""
+        return (
+            f"postgresql://{self.POSTGRES_USER}:"
+            f"{self.POSTGRES_PASSWORD}@"
+            f"{self.POSTGRES_SERVER}:"
+            f"{self.POSTGRES_PORT}/"
+            f"{self.POSTGRES_DB}"
+        )
+
+    # Redis
+    REDIS_HOST: str = Field("know_analy-redis", env="REDIS_HOST")
+    REDIS_PORT: int = Field(6379, env="REDIS_PORT")
+    REDIS_DB: int = Field(0, env="REDIS_DB")
+    REDIS_PASSWORD: Optional[str] = Field(default=None, env="REDIS_PASSWORD")
+    REDIS_MAX_CONNECTIONS: int = Field(10, env="REDIS_MAX_CONNECTIONS")
+
+    @property
+    def REDIS_URL(self) -> str:
         auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""
         return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
-    # MinIO配置
-    MINIO_ENDPOINT: str = os.getenv("MINIO_ENDPOINT", "know_analy-minio:9000")
-    MINIO_ACCESS_KEY: str = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-    MINIO_SECRET_KEY: str = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-    MINIO_SECURE: bool = os.getenv("MINIO_SECURE", "False") == "True"
-    MINIO_BUCKET_NAME: str = os.getenv("MINIO_BUCKET_NAME", "knowanaly")
+    # MinIO
+    MINIO_ENDPOINT: str = Field("know_analy-minio:9000", env="MINIO_ENDPOINT")
+    MINIO_ACCESS_KEY: str = Field("minioadmin", env="MINIO_ACCESS_KEY")
+    MINIO_SECRET_KEY: str = Field("minioadmin", env="MINIO_SECRET_KEY")
+    MINIO_SECURE: bool = Field(False, env="MINIO_SECURE")
+    MINIO_BUCKET_NAME: str = Field("knowanaly", env="MINIO_BUCKET_NAME")
 
+    # 安全
+    SECRET_KEY: str = Field(default_factory=lambda: secrets.token_urlsafe(32), env="SECRET_KEY")
+    ALGORITHM: str = Field("HS256", env="ALGORITHM")
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(60, env="ACCESS_TOKEN_EXPIRE_MINUTES")
+    REFRESH_TOKEN_EXPIRE_DAYS: int = Field(7, env="REFRESH_TOKEN_EXPIRE_DAYS")
+    INTERNAL_API_KEY: str = Field("your-internal-api-key-change-in-production", env="INTERNAL_API_KEY")
 
-    # 安全配置
-    SECRET_KEY: str = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
-    ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60))  # 分钟
-    REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
+    # 限流
+    RATE_LIMIT_REQUESTS_PER_MINUTE: int = Field(100, env="RATE_LIMIT_REQUESTS_PER_MINUTE")
+    RATE_LIMIT_REQUESTS_PER_HOUR: int = Field(1000, env="RATE_LIMIT_REQUESTS_PER_HOUR")
+    RATE_LIMIT_AUTH: int = Field(100, env="RATE_LIMIT_AUTH")
+    RATE_LIMIT_ANON: int = Field(20, env="RATE_LIMIT_ANON")
+    RATE_LIMIT_WINDOW: int = Field(60, env="RATE_LIMIT_WINDOW")
 
-    # API Key配置
-    INTERNAL_API_KEY: str = os.getenv("INTERNAL_API_KEY", "your-internal-api-key-change-in-production")
+    # 中间件开关
+    ENABLE_RATE_LIMIT: bool = Field(False, env="ENABLE_RATE_LIMIT")
+    ENABLE_REQUEST_SIZE_LIMIT: bool = Field(True, env="ENABLE_REQUEST_SIZE_LIMIT")
+    ENABLE_CACHE: bool = Field(False, env="ENABLE_CACHE")
 
-    # 限流配置
-    RATE_LIMIT_REQUESTS_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_REQUESTS_PER_MINUTE", 100))
-    RATE_LIMIT_REQUESTS_PER_HOUR: int = int(os.getenv("RATE_LIMIT_REQUESTS_PER_HOUR", 1000))
+    # 请求与缓存
+    MAX_JSON_SIZE: int = Field(5 * 1024 * 1024, env="MAX_JSON_SIZE")
+    MAX_FILE_SIZE: int = Field(50 * 1024 * 1024, env="MAX_FILE_SIZE")
+    CACHE_DEFAULT_TTL: int = Field(300, env="CACHE_DEFAULT_TTL")
+    CACHE_ENABLED_METHODS: List[str] = Field(default_factory=lambda: ["GET"], env="CACHE_ENABLED_METHODS")
+    CACHE_TTL: int = Field(3600, env="CACHE_TTL")
+    CACHE_API_RESPONSE_TTL: int = Field(300, env="CACHE_API_RESPONSE_TTL")
+    CACHE_JOB_STATUS_TTL: int = Field(86400, env="CACHE_JOB_STATUS_TTL")  # 24小时
 
-    # 中间件配置
-    ENABLE_RATE_LIMIT: bool = os.getenv("ENABLE_RATE_LIMIT", "False") == "True"  # 临时关闭限流
-    ENABLE_REQUEST_SIZE_LIMIT: bool = os.getenv("ENABLE_REQUEST_SIZE_LIMIT", "True") == "True"
-    ENABLE_CACHE: bool = os.getenv("ENABLE_CACHE", "False") == "True"  # 临时禁用缓存
+    @validator("CACHE_ENABLED_METHODS", pre=True)
+    def split_cache_methods(cls, v: Union[str, List[str]]) -> List[str]:
+        return _split_comma_separated(v)
 
-    # 限流配置
-    RATE_LIMIT_AUTH: int = int(os.getenv("RATE_LIMIT_AUTH", 100))
-    RATE_LIMIT_ANON: int = int(os.getenv("RATE_LIMIT_ANON", 20))
-    RATE_LIMIT_WINDOW: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
+    # 上传
+    MAX_FILE_SIZE_MB: int = Field(50, env="MAX_FILE_SIZE_MB")
+    ALLOWED_FILE_EXTENSIONS: List[str] = Field(
+        default_factory=lambda: [".pdf", ".doc", ".docx", ".txt", ".csv", ".xlsx", ".xls", ".json", ".xml"],
+        env="ALLOWED_FILE_EXTENSIONS",
+    )
 
-    # 请求大小限制
-    MAX_JSON_SIZE: int = int(os.getenv("MAX_JSON_SIZE", 5 * 1024 * 1024))
-    MAX_FILE_SIZE: int = int(os.getenv("MAX_FILE_SIZE", 50 * 1024 * 1024))
+    @validator("ALLOWED_FILE_EXTENSIONS", pre=True)
+    def split_allowed_extensions(cls, v: Union[str, List[str]]) -> List[str]:
+        return _split_comma_separated(v)
 
-    # 缓存配置
-    CACHE_DEFAULT_TTL: int = int(os.getenv("CACHE_DEFAULT_TTL", 300))
-    CACHE_ENABLED_METHODS: List[str] = os.getenv("CACHE_ENABLED_METHODS", "GET").split(",")
+    # ==================== 外部服务（暂未启用） ====================
+    # N8N 工作流引擎
+    N8N_BASE_URL: str = Field("http://localhost:5678", env="N8N_BASE_URL")
+    N8N_API_KEY: Optional[str] = Field(default=None, env="N8N_API_KEY")
+    
+    # Dify AI 平台
+    DIFY_BASE_URL: str = Field("http://localhost:3000", env="DIFY_BASE_URL")
+    DIFY_API_KEY: Optional[str] = Field(default=None, env="DIFY_API_KEY")
+    
+    # RAGFlow 知识库
+    RAGFLOW_BASE_URL: str = Field("http://localhost:9380", env="RAGFLOW_BASE_URL")
+    RAGFLOW_API_KEY: Optional[str] = Field(default=None, env="RAGFLOW_API_KEY")
+    RAGFLOW_DATASET_ID: Optional[str] = Field(default=None, env="RAGFLOW_DATASET_ID")
+    
+    # Superset 数据可视化
+    SUPERSET_BASE_URL: str = Field("http://localhost:8088", env="SUPERSET_BASE_URL")
+    SUPERSET_USERNAME: str = Field("admin", env="SUPERSET_USERNAME")
+    SUPERSET_PASSWORD: str = Field("admin", env="SUPERSET_PASSWORD")
+    SUPERSET_DATABASE_ID: int = Field(1, env="SUPERSET_DATABASE_ID")
+    SUPERSET_GUEST_TOKEN_SECRET: str = Field("your-superset-guest-token-secret", env="SUPERSET_GUEST_TOKEN_SECRET")
+    SUPERSET_CSRF_TOKEN_TIMEOUT: int = Field(3600, env="SUPERSET_CSRF_TOKEN_TIMEOUT")
+    SUPERSET_CACHE_DEFAULT_TIMEOUT: int = Field(300, env="SUPERSET_CACHE_DEFAULT_TIMEOUT")
+    
+    # DataHub 元数据管理
+    DATAHUB_GMS_URL: str = Field("http://localhost:8080", env="DATAHUB_GMS_URL")
+    DATAHUB_GMS_TOKEN: Optional[str] = Field(default=None, env="DATAHUB_GMS_TOKEN")
+    DATAHUB_KAFKA_BOOTSTRAP_SERVERS: str = Field("localhost:9092", env="DATAHUB_KAFKA_BOOTSTRAP_SERVERS")
+    DATAHUB_SCHEMA_REGISTRY_URL: str = Field("http://localhost:8081", env="DATAHUB_SCHEMA_REGISTRY_URL")
 
-    # 文件上传配置
-    MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", 50))
-    ALLOWED_FILE_EXTENSIONS: List[str] = os.getenv("ALLOWED_FILE_EXTENSIONS",
-                                                   ".pdf,.doc,.docx,.txt,.csv,.xlsx,.xls,.json,.xml").split(",")
+    # 日志 & 监控
+    LOG_LEVEL: str = Field("INFO", env="LOG_LEVEL")
+    LOG_FORMAT: str = Field("%(asctime)s - %(name)s - %(levelname)s - %(message)s", env="LOG_FORMAT")
+    LOG_FILE: Optional[str] = Field(default=None, env="LOG_FILE")
+    ENABLE_METRICS: bool = Field(True, env="ENABLE_METRICS")
+    METRICS_PORT: int = Field(9090, env="METRICS_PORT")
+    ENABLE_MONITORING: bool = Field(True, env="ENABLE_MONITORING")
+    MONITORING_INTERVAL: int = Field(60, env="MONITORING_INTERVAL")
+    ENABLE_PROMETHEUS: bool = Field(True, env="ENABLE_PROMETHEUS")
+    ENABLE_HEALTH_CHECK: bool = Field(True, env="ENABLE_HEALTH_CHECK")
 
-    # 外部服务配置
-    # n8n配置
-    N8N_BASE_URL: str = os.getenv("N8N_BASE_URL", "http://localhost:5678")
-    N8N_API_KEY: Optional[str] = os.getenv("N8N_API_KEY")
-
-    # Dify配置
-    DIFY_BASE_URL: str = os.getenv("DIFY_BASE_URL", "http://localhost:3000")
-    DIFY_API_KEY: Optional[str] = os.getenv("DIFY_API_KEY")
-
-    # RagFlow配置
-    RAGFLOW_BASE_URL: str = os.getenv("RAGFLOW_BASE_URL", "http://localhost:9380")
-    RAGFLOW_API_KEY: Optional[str] = os.getenv("RAGFLOW_API_KEY")
-    RAGFLOW_DATASET_ID: Optional[str] = os.getenv("RAGFLOW_DATASET_ID")
-
-    # Superset配置
-    SUPERSET_BASE_URL: str = os.getenv("SUPERSET_BASE_URL", "http://localhost:8088")
-    SUPERSET_USERNAME: str = os.getenv("SUPERSET_USERNAME", "admin")
-    SUPERSET_PASSWORD: str = os.getenv("SUPERSET_PASSWORD", "admin")
-    SUPERSET_DATABASE_ID: int = int(os.getenv("SUPERSET_DATABASE_ID", 1))
-    SUPERSET_GUEST_TOKEN_SECRET: str = os.getenv("SUPERSET_GUEST_TOKEN_SECRET", "your-superset-guest-token-secret")
-    SUPERSET_CSRF_TOKEN_TIMEOUT: int = int(os.getenv("SUPERSET_CSRF_TOKEN_TIMEOUT", 3600))
-    SUPERSET_CACHE_DEFAULT_TIMEOUT: int = int(os.getenv("SUPERSET_CACHE_DEFAULT_TIMEOUT", 300))
-
-    # DataHub配置
-    DATAHUB_GMS_URL: str = os.getenv("DATAHUB_GMS_URL", "http://localhost:8080")
-    DATAHUB_GMS_TOKEN: Optional[str] = os.getenv("DATAHUB_GMS_TOKEN")
-    DATAHUB_KAFKA_BOOTSTRAP_SERVERS: str = os.getenv("DATAHUB_KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-    DATAHUB_SCHEMA_REGISTRY_URL: str = os.getenv("DATAHUB_SCHEMA_REGISTRY_URL", "http://localhost:8081")
-
-    # 日志配置
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-    LOG_FORMAT: str = os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    LOG_FILE: Optional[str] = os.getenv("LOG_FILE")
-
-    # 监控配置
-    ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "True") == "True"
-    METRICS_PORT: int = int(os.getenv("METRICS_PORT", 9090))
-
-    # 开发配置
-    RELOAD: bool = os.getenv("RELOAD", "False") == "True"
-
-    # 监控设置
-    ENABLE_MONITORING: bool = os.getenv("ENABLE_MONITORING", "True") == "True"
-    MONITORING_INTERVAL: int = int(os.getenv("MONITORING_INTERVAL", 60))
-    ENABLE_PROMETHEUS: bool = os.getenv("ENABLE_PROMETHEUS", "True") == "True"
-    ENABLE_HEALTH_CHECK: bool = os.getenv("ENABLE_HEALTH_CHECK", "True") == "True"
-
-    # 缓存设置
-    CACHE_TTL: int = int(os.getenv("CACHE_TTL", 3600))
+    # 开发模式
+    RELOAD: bool = Field(False, env="RELOAD")
 
     @validator("RELOAD", pre=True)
     def set_reload_for_dev(cls, v, values):
@@ -179,11 +190,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = str(Path(__file__).resolve().parents[2] / ".env")
         case_sensitive = True
-        extra = "ignore"  # 忽略额外字段
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        extra = "ignore"
 
 
-# 创建全局配置实例
 settings = Settings()
