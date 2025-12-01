@@ -110,16 +110,12 @@ class TokenAwareTextSplitter:
 
     def _init_tokenizer(self, model_name: Optional[str]):
         try:
-            tokenizer_path = os.environ.get("AI_MODEL_PATH", "ai_models/bge-m3")
-            local_tokenizer_file = os.path.join(tokenizer_path, "tokenizer.json")
-
+            # 不再依赖本地 ai_models 目录，统一通过模型名加载 tokenizer
             if model_name is None:
-                model_name = tokenizer_path
+                # 可通过环境变量覆盖默认模型名
+                model_name = os.environ.get("BGE_M3_TOKENIZER_NAME", "BAAI/bge-m3")
 
-            if os.path.exists(local_tokenizer_file):
-                self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, local_files_only=True)
-            else:
-                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         except Exception as exc:
             raise TextSplitError(f"初始化 tokenizer 失败: {exc}") from exc
 

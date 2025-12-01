@@ -38,7 +38,8 @@ class DocumentProcessingPipeline:
         self.text_splitter = TokenAwareTextSplitter(chunk_size, chunk_overlap)
         self.tag_generator = TagGenerator(device=device)
         self.document_processor = DocumentProcessor()
-        self.embedding_model = BGEM3EmbeddingWrapper(device=device)
+        # 嵌入模型改为调用远程 Docker 服务，通过环境变量配置接口地址和模型名
+        self.embedding_model = BGEM3EmbeddingWrapper()
         self.vector_store_manager = VectorStoreManager(db_config, table_prefix=table_prefix)
 
     def _prepare_files(self, input_data: Union[FileInput, List[FileInput]]) -> List[FileInput]:
