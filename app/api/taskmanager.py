@@ -10,7 +10,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Dict, Any, Optional, Literal
 
-from app.core.logging import request_logger as logger
+from app.core.logging import logger
 
 
 @dataclass

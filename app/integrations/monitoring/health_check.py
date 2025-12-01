@@ -1,133 +1,106 @@
-"""
-系统健康检查服务
-提供 Redis、PostgreSQL 等基础服务的健康状态检测
-"""
-import asyncio
 import logging
 from datetime import datetime
 from typing import Dict, Any
 
+import httpx
 from sqlalchemy import text
 
 from app.core.cache import redis_manager
 from app.core.database import SessionLocal
-from app.core.logging import get_logger
 
-logger = get_logger("health_check")
-
+logger = logging.getLogger(__name__)
 
 class HealthCheckService:
-    """
-    系统健康检查服务
+    """系统健康检查服务"""
     
-    特性：
-    - 并行检查各服务，减少总耗时
-    - 每次检查使用独立的数据库会话
-    - 超时控制，避免单个服务阻塞整体响应
-    """
-    
-    def __init__(self, timeout: float = 2.0):
-        """
-        Args:
-            timeout: 单个服务检查的超时时间（秒）
-        """
-        self.check_timeout = timeout
+    def __init__(self):
+        self.check_timeout = 5.0
+        self.redis_client = redis_manager.redis_client
+        self.db = SessionLocal()
+        self.fastapi_client = httpx.AsyncClient()
     
     async def check_all_services(self) -> Dict[str, Dict[str, Any]]:
-        """
-        并行检查所有服务的健康状态
-        
-        Returns:
-            各服务的健康状态字典
-        """
-        # 并行执行所有检查
-        redis_task = asyncio.create_task(self._check_redis_async())
-        pg_task = asyncio.create_task(self._check_postgresql_async())
-        
+        """检查所有服务的健康状态"""
         results = {}
         
-        # 等待所有检查完成
-        redis_result, pg_result = await asyncio.gather(
-            redis_task, pg_task, return_exceptions=True
-        )
-        
-        # 处理 Redis 结果
-        if isinstance(redis_result, Exception):
-            results["redis"] = self._error_result(str(redis_result))
-        else:
-            results["redis"] = redis_result
-        
-        # 处理 PostgreSQL 结果
-        if isinstance(pg_result, Exception):
-            results["postgresql"] = self._error_result(str(pg_result))
-        else:
-            results["postgresql"] = pg_result
-        
+        # 检查Redis
+        try:
+            is_healthy = self._check_redis()
+            results["redis"] = {
+                "status": "healthy" if is_healthy else "unhealthy",
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            results["redis"] = {
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+        # 检查PostgreSQL
+        try:
+            is_healthy = self._check_postgresql()
+            results["postgresql"] = {
+                "status": "healthy" if is_healthy else "unhealthy",
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            results["postgresql"] = {
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+        # 检查FastAPI
+        try:
+            is_healthy = await self._check_fastapi()
+            results["fastapi"] = {
+                "status": "healthy" if is_healthy else "unhealthy",
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            results["fastapi"] = {
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
         return results
     
-    def _success_result(self, latency_ms: float = None) -> Dict[str, Any]:
-        """构造成功响应"""
-        result = {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat()
-        }
-        if latency_ms is not None:
-            result["latency_ms"] = round(latency_ms, 2)
-        return result
-    
-    def _error_result(self, error: str) -> Dict[str, Any]:
-        """构造错误响应"""
-        return {
-            "status": "unhealthy",
-            "error": error,
-            "timestamp": datetime.now().isoformat()
-        }
-    
-    async def _check_redis_async(self) -> Dict[str, Any]:
-        """异步检查 Redis 连接（带超时）"""
+    def _check_redis(self) -> bool:
+        """检查Redis连接"""
         try:
-            start = datetime.now()
-            # 使用 asyncio.wait_for 添加超时控制
-            await asyncio.wait_for(
-                redis_manager.redis_client.ping(),
-                timeout=self.check_timeout
-            )
-            latency = (datetime.now() - start).total_seconds() * 1000
-            return self._success_result(latency)
-        except asyncio.TimeoutError:
-            logger.warning(f"Redis 健康检查超时 (>{self.check_timeout}s)")
-            return self._error_result(f"timeout after {self.check_timeout}s")
+            return bool(self.redis_client.ping())
         except Exception as e:
-            logger.error(f"Redis 健康检查失败: {e}")
-            return self._error_result(str(e))
+            logger.error(f"Redis健康检查失败: {e}")
+            return False
     
-    async def _check_postgresql_async(self) -> Dict[str, Any]:
-        """异步检查 PostgreSQL 连接（带超时）"""
-        def _sync_check() -> float:
-            """同步数据库检查，返回延迟毫秒数"""
-            db = SessionLocal()
-            try:
-                start = datetime.now()
-                db.execute(text("SELECT 1"))
-                return (datetime.now() - start).total_seconds() * 1000
-            finally:
-                db.close()
-        
+    def _check_postgresql(self) -> bool:
+        """检查PostgreSQL连接"""
         try:
-            # 在线程池中执行同步数据库操作，添加超时
-            loop = asyncio.get_event_loop()
-            latency = await asyncio.wait_for(
-                loop.run_in_executor(None, _sync_check),
-                timeout=self.check_timeout
-            )
-            return self._success_result(latency)
-        except asyncio.TimeoutError:
-            logger.warning(f"PostgreSQL 健康检查超时 (>{self.check_timeout}s)")
-            return self._error_result(f"timeout after {self.check_timeout}s")
+            self.db.execute(text("SELECT 1"))
+            return True
         except Exception as e:
-            logger.error(f"PostgreSQL 健康检查失败: {e}")
-            return self._error_result(str(e))
+            logger.error(f"PostgreSQL健康检查失败: {e}")
+            return False
+        finally:
+            self.db.close()
+    
+    async def _check_fastapi(self) -> bool:
+        """检查FastAPI服务"""
+        try:
+            # 检查应用是否正在运行
+            return True
+        except Exception as e:
+            logger.error(f"FastAPI健康检查失败: {e}")
+            return False
+    
+    async def __aenter__(self):
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.fastapi_client.aclose()
+        self.db.close()
 
-
-# 全局健康检查实例（2秒超时）
-health_service = HealthCheckService(timeout=2.0) 
+# 全局健康检查实例
+health_service = HealthCheckService() 

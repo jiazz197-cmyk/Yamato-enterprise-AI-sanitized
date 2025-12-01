@@ -1,42 +1,52 @@
-"""
-监控中间件：记录请求耗时并上报 Prometheus
-"""
+import logging
 import time
-from typing import Callable
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.core.logging import get_logger
 from app.integrations.monitoring.prometheus import metrics
 
-logger = get_logger("monitoring")
+logger = logging.getLogger(__name__)
 
 
 class MonitoringMiddleware(BaseHTTPMiddleware):
-    """记录请求耗时、状态并写入 metrics。"""
+    """监控中间件"""
 
-    async def dispatch(self, request: Request, call_next: Callable):
-        start_time = time.perf_counter()
+    async def dispatch(self, request: Request, call_next):
+        # 记录请求开始时间
+        start_time = time.time()
+
         try:
+            # 处理请求
             response = await call_next(request)
-        except Exception:
-            duration = time.perf_counter() - start_time
-            logger.exception("Request failed: %s %s", request.method, request.url.path)
+
+            # 计算请求处理时间
+            process_time = time.time() - start_time
+
+            # 记录请求指标
+            metrics.record_request(
+                method=request.method,
+                endpoint=request.url.path,
+                status_code=response.status_code,
+                duration=process_time
+            )
+
+            # 添加处理时间到响应头
+            response.headers["X-Process-Time"] = str(process_time)
+
+            return response
+
+        except Exception as e:
+            # 记录异常
+            logger.error(f"Request failed: {str(e)}", exc_info=True)
+
+            # 记录失败的请求指标
             metrics.record_request(
                 method=request.method,
                 endpoint=request.url.path,
                 status_code=500,
-                duration=duration,
+                duration=time.time() - start_time
             )
-            raise
 
-        duration = time.perf_counter() - start_time
-        metrics.record_request(
-            method=request.method,
-            endpoint=request.url.path,
-            status_code=response.status_code,
-            duration=duration,
-        )
-        response.headers["X-Process-Time"] = f"{duration:.6f}"
-        return response
+            # 重新抛出异常
+            raise

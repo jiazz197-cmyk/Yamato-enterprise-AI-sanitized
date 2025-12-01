@@ -1,13 +1,5 @@
 """
-Redis 缓存管理器
-
-提供以下功能：
-- 通用缓存操作 (get/set/delete)
-- API 响应缓存
-- 限流计数
-- 异步任务状态
-- 文件上传进度
-- 数据源概览缓存
+Redis缓存管理模块
 """
 import hashlib
 import json
@@ -17,13 +9,14 @@ from typing import Any, Optional, Dict
 import redis.asyncio as redis
 
 from app.core.config import settings
-from app.core.logging import get_logger
+from app.core.logging import database_logger
 
-logger = get_logger("cache")
+logger = database_logger
 
 
 class AsyncRedisManager:
-    """异步 Redis 管理器，提供缓存、限流、任务状态等功能"""
+    """异步Redis缓存管理器"""
+
     def __init__(self):
         kwargs = {
             "max_connections": settings.REDIS_MAX_CONNECTIONS,
@@ -41,17 +34,6 @@ class AsyncRedisManager:
             logger.error(f"Failed to connect to Redis: {e}")
             raise
 
-    async def test_connection(self):
-        """测试 Redis 连接是否正常"""
-        return await self._test_connection()
-
-    async def close(self):
-        """关闭 Redis 连接"""
-        try:
-            await self.redis_client.aclose()
-        except Exception as e:
-            logger.error(f"Error closing Redis connection: {e}")
-
     # ==================== 通用缓存操作 ====================
     async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
         try:
@@ -59,7 +41,8 @@ class AsyncRedisManager:
                 value = json.dumps(value, ensure_ascii=False)
             if ttl:
                 return await self.redis_client.setex(key, ttl, value)
-            return await self.redis_client.set(key, value)
+            else:
+                return await self.redis_client.set(key, value)
         except Exception as e:
             logger.error(f"Error setting cache key {key}: {e}")
             return False
@@ -85,14 +68,14 @@ class AsyncRedisManager:
             return False
 
     async def delete_pattern(self, pattern: str) -> int:
-        deleted = 0
         try:
-            async for key in self.redis_client.scan_iter(match=pattern):
-                deleted += await self.redis_client.delete(key)
-            return deleted
+            keys = await self.redis_client.keys(pattern)
+            if keys:
+                return await self.redis_client.delete(*keys)
+            return 0
         except Exception as e:
             logger.error(f"Error deleting keys with pattern {pattern}: {e}")
-            return deleted
+            return 0
 
     async def exists(self, key: str) -> bool:
         try:
@@ -128,6 +111,62 @@ class AsyncRedisManager:
         params_hash = hashlib.md5(params_str.encode()).hexdigest()
         return f"api_cache:{endpoint}:{params_hash}"
 
+    # ==================== 用户会话管理 ====================
+    async def create_user_session(self, user_id: str, access_token_jti: str, refresh_token_jti: str, ip_address: str,
+                                  device_info: str = "") -> bool:
+        session_key = f"session:{user_id}"
+        session_data = {
+            "access_token_jti": access_token_jti,
+            "refresh_token_jti": refresh_token_jti,
+            "login_time": datetime.utcnow().isoformat(),
+            "last_activity": datetime.utcnow().isoformat(),
+            "ip_address": ip_address,
+            "device_info": device_info
+        }
+        return await self.set(session_key, session_data, settings.CACHE_USER_SESSION_TTL)
+
+    async def get_user_session(self, user_id: str) -> Optional[Dict[str, Any]]:
+        session_key = f"session:{user_id}"
+        return await self.get(session_key)
+
+    async def update_user_activity(self, user_id: str) -> bool:
+        session_key = f"session:{user_id}"
+        session_data = await self.get(session_key)
+        if session_data:
+            session_data["last_activity"] = datetime.utcnow().isoformat()
+            return await self.set(session_key, session_data, settings.CACHE_USER_SESSION_TTL)
+        return False
+
+    async def delete_user_session(self, user_id: str) -> bool:
+        session_key = f"session:{user_id}"
+        return await self.delete(session_key)
+
+    # ==================== Token管理 ====================
+    async def blacklist_token(self, jti: str, ttl: int) -> bool:
+        blacklist_key = f"blacklist_token:{jti}"
+        return await self.set(blacklist_key, "revoked", ttl)
+
+    async def is_token_blacklisted(self, jti: str) -> bool:
+        blacklist_key = f"blacklist_token:{jti}"
+        return await self.exists(blacklist_key)
+
+    async def store_refresh_token(self, jti: str, user_id: str, device_info: str = "", ttl: int = 2592000) -> bool:
+        refresh_key = f"refresh_token:{jti}"
+        refresh_data = {
+            "user_id": user_id,
+            "issued_at": datetime.utcnow().isoformat(),
+            "device_info": device_info
+        }
+        return await self.set(refresh_key, refresh_data, ttl)
+
+    async def get_refresh_token(self, jti: str) -> Optional[Dict[str, Any]]:
+        refresh_key = f"refresh_token:{jti}"
+        return await self.get(refresh_key)
+
+    async def delete_refresh_token(self, jti: str) -> bool:
+        refresh_key = f"refresh_token:{jti}"
+        return await self.delete(refresh_key)
+
     # ==================== API限流 ====================
     async def check_rate_limit(self, identifier: str, limit: int, window: int, prefix: str = "rate_limit") -> Dict[
         str, Any]:
@@ -146,7 +185,6 @@ class AsyncRedisManager:
             current = int(current)
             if current >= limit:
                 ttl = await self.redis_client.ttl(key)
-                ttl = ttl if ttl is not None and ttl > 0 else window
                 return {
                     "allowed": False,
                     "current": current,
@@ -155,14 +193,12 @@ class AsyncRedisManager:
                     "reset_time": datetime.utcnow() + timedelta(seconds=ttl)
                 }
             new_count = await self.redis_client.incr(key)
-            ttl = await self.redis_client.ttl(key)
-            ttl = ttl if ttl is not None and ttl > 0 else window
             return {
                 "allowed": True,
                 "current": new_count,
                 "limit": limit,
                 "remaining": limit - new_count,
-                "reset_time": datetime.utcnow() + timedelta(seconds=ttl)
+                "reset_time": datetime.utcnow() + timedelta(seconds=await self.redis_client.ttl(key))
             }
         except Exception as e:
             logger.error(f"Error checking rate limit for {identifier}: {e}")
@@ -233,19 +269,12 @@ class AsyncRedisManager:
     async def get_redis_stats(self) -> Dict[str, Any]:
         try:
             info = await self.redis_client.info()
-
-            async def _count_keys(match: str) -> int:
-                count = 0
-                async for _ in self.redis_client.scan_iter(match=match):
-                    count += 1
-                return count
-
             cache_stats = {
-                "api_cache_keys": await _count_keys("api_cache:*"),
-                "rate_limit_keys": await _count_keys("rate_limit:*"),
-                "job_status_keys": await _count_keys("job_status:*"),
-                "upload_progress_keys": await _count_keys("upload_progress:*"),
-                "data_source_keys": await _count_keys("ds_overview:*")
+                "api_cache_keys": len(await self.redis_client.keys("api_cache:*")),
+                "session_keys": len(await self.redis_client.keys("session:*")),
+                "rate_limit_keys": len(await self.redis_client.keys("rate_limit:*")),
+                "job_status_keys": len(await self.redis_client.keys("job_status:*")),
+                "upload_progress_keys": len(await self.redis_client.keys("upload_progress:*"))
             }
             return {
                 "redis_info": {
@@ -263,5 +292,5 @@ class AsyncRedisManager:
             return {}
 
 
-# 全局 Redis 管理器实例
+# 全局异步Redis管理器实例
 redis_manager = AsyncRedisManager()
