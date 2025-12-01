@@ -1,6 +1,9 @@
-.github/
-.idea/
-.env
-logs
-.vscode/
-__pycache__/
+/__pycache__
+/.idea
+/ai_models
+/.env
+/demo.py
+/main.py
+/.DS_Store
+/.gitignore
+
