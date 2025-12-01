@@ -10,7 +10,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Dict, Any, Optional, Literal
 
-from app.core.logging import logger
+from app.core.logging import request_logger as logger
 
 
 @dataclass
@@ -80,7 +80,19 @@ class MemoryTaskStorage:
 
 
 class TaskManager:
-    """异步任务管理器"""
+    """
+    异步任务管理器
+    
+    职责：
+    - 管理任务状态（pending/running/completed/failed）
+    - 存储任务元数据和结果
+    - 提供任务查询接口
+    
+    注意：
+    - 仅负责状态管理，不负责任务执行
+    - 不管理线程池或进程池
+    - 任务的实际执行由调用方负责
+    """
     
     def __init__(self):
         self.task_prefix = "task:"
@@ -284,21 +296,32 @@ class TaskManager:
             logger.error(f"保存任务状态失败 {task_status.task_id}: {e}")
             return False
     
-    async def list_tasks(self, task_type: Optional[str] = None, status: Optional[str] = None) -> Dict[str, TaskStatus]:
-        """列出任务（开发/调试用）"""
+    async def list_tasks(self, task_type: Optional[str] = None, limit: int = 10) -> list:
+        """
+        列出任务列表
+        
+        Args:
+            task_type: 可选，按任务类型筛选
+            limit: 返回数量限制
+        
+        Returns:
+            任务状态列表
+        """
         try:
             pattern = f"{self.task_prefix}*"
             
             if self.storage_type == "redis":
                 keys = []
                 async for key in self.storage.redis_client.scan_iter(match=pattern):
+                    if isinstance(key, bytes):
+                        key = key.decode('utf-8')
                     keys.append(key)
             else:
                 # 内存存储
                 keys = await self.storage.keys(pattern)
             
-            tasks = {}
-            for key in keys:
+            tasks = []
+            for key in keys[:limit]:
                 task_id = key.replace(self.task_prefix, "")
                 task_status = await self.get_task_status(task_id)
                 
@@ -307,16 +330,16 @@ class TaskManager:
                     if task_type and task_status.task_type != task_type:
                         continue
                     
-                    # 过滤状态
-                    if status and task_status.status != status:
-                        continue
-                    
-                    tasks[task_id] = task_status
+                    tasks.append(task_status)
             
-            return tasks
+            # 按创建时间倒序排序
+            tasks.sort(key=lambda x: x.created_at, reverse=True)
+            return tasks[:limit]
+            
         except Exception as e:
             logger.error(f"列出任务失败: {e}")
-            return {}
+            return []
+    
 
 
 # 全局任务管理器实例
