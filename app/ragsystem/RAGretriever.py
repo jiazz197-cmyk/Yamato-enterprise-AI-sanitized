@@ -41,7 +41,7 @@ from llama_index.vector_stores.postgres import PGVectorStore
 from llama_index.core import VectorStoreIndex, StorageContext, load_index_from_storage
 from llama_index.core.embeddings import BaseEmbedding
 from llama_index.core.query_engine import RetrieverQueryEngine
-from llama_index.core.postprocessor import BaseNodePostprocessor
+from llama_index.core.postprocessor.types import BaseNodePostprocessor
 from llama_index.core.schema import NodeWithScore, QueryBundle
 from llama_index.core import Settings
 
