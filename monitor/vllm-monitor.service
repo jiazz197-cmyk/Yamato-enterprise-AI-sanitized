@@ -1,0 +1,31 @@
+[Unit]
+Description=vLLM Monitor Service
+After=network.target docker.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vllm-monitor
+
+# Use conda run to execute in the conda environment
+# Adjust the conda path according to your installation
+ExecStart=/root/miniconda3/bin/conda run -n vllm-monitor --no-capture-output python /opt/vllm-monitor/monitor.py
+
+Restart=always
+RestartSec=10
+
+# Environment variables
+Environment="PYTHONUNBUFFERED=1"
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vllm-monitor
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+
