@@ -124,6 +124,10 @@ class BGEM3EmbeddingWrapper(BaseEmbedding):
 class HTTPReranker(BaseNodePostprocessor):
     """基于 HTTP API 的重排序器"""
     
+    api_url: str = Field(description="重排序模型 API 地址")
+    top_n: int = Field(default=5, description="返回的最相关结果数量")
+    timeout: int = Field(default=30, description="请求超时时间（秒）")
+    
     def __init__(self, api_url: str = None, top_n: int = 5, timeout: int = 30):
         """
         初始化重排序器
@@ -133,13 +137,10 @@ class HTTPReranker(BaseNodePostprocessor):
             top_n: 返回的最相关结果数量
             timeout: 请求超时时间
         """
-        super().__init__()
         if api_url is None:
             api_url = os.environ.get("RERANKER_API_URL", "http://localhost:8001/v1/rerank")
         
-        self.api_url = api_url
-        self.top_n = top_n
-        self.timeout = timeout
+        super().__init__(api_url=api_url, top_n=top_n, timeout=timeout)
         logger.info(f"重排序模型 API: {api_url}")
     
     def _postprocess_nodes(
@@ -380,6 +381,7 @@ class RAGRetrieverSystem:
 
         # 初始化核心组件
         self.embedding_model = self._init_embedding_model()
+        self.reranker = self._init_reranker()
         self._init_database()
         self.vector_store_manager = VectorStoreManager(self.db_config, table_prefix, engine=self.engine)
 
@@ -392,6 +394,21 @@ class RAGRetrieverSystem:
             return embedding_model
         except Exception as e:
             logger.error(f"嵌入模型 API 初始化失败: {e}")
+            raise
+
+    def _init_reranker(self) -> HTTPReranker:
+        """初始化重排序器 - 使用 HTTP API"""
+        logger.info("正在初始化重排序器 API 连接...")
+        try:
+            reranker = HTTPReranker(
+                api_url=self.reranker_api_url,
+                top_n=self.default_top_n,
+                timeout=30
+            )
+            logger.info(f"重排序器 API 连接初始化完成: {self.reranker_api_url}")
+            return reranker
+        except Exception as e:
+            logger.error(f"重排序器 API 初始化失败: {e}")
             raise
 
     def _init_database(self):
@@ -538,11 +555,16 @@ class RAGRetrieverSystem:
 
             retriever = self.get_retriever_for_collection(collection_name, embedding_model=embedding_model, top_k=top_k)
 
-            if use_reranker:
-                reranker = HTTPReranker(
-                    api_url=self.reranker_api_url,
-                    top_n=min(reranker_top_n, top_k)
-                )
+            if use_reranker and self.reranker:
+                # 如果需要使用不同的 top_n，创建新的 reranker 实例
+                if reranker_top_n != self.default_top_n:
+                    reranker = HTTPReranker(
+                        api_url=self.reranker_api_url,
+                        top_n=min(reranker_top_n, top_k)
+                    )
+                else:
+                    # 使用预初始化的 reranker
+                    reranker = self.reranker
                 return RetrieverQueryEngine.from_args(
                     retriever=retriever,
                     node_postprocessors=[reranker]

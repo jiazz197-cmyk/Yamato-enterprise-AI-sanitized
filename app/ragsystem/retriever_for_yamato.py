@@ -6,7 +6,7 @@ from typing import Optional, Dict, List
 
 from llama_index.core.query_engine import RetrieverQueryEngine
 
-from app.core.storage import download_from_minio
+from app.core.storage import save_file_from_minio
 from app.ragsystem.data_analyze import excel_to_json
 from app.ragsystem.RAGretriever import create_rag_retriever_system, HTTPReranker
 
@@ -253,7 +253,7 @@ class OptimizedRetriever:
             if not filename or filename == ["error"]:
                 return {"error": "未找到相关文件"}
             
-            file_path = download_from_minio(filename[0] if isinstance(filename, list) else filename)
+            file_path = save_file_from_minio(filename[0] if isinstance(filename, list) else filename)
             data_source = excel_to_json(file_path)
             return data_source
         except Exception as e:

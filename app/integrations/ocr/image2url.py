@@ -1,22 +1,22 @@
-import os
+"""
+OCR 图片转 URL 工具
+
+TODO: 待实现功能
+- 图片上传到 MinIO
+- 生成访问 URL
+- OCR 文字识别集成
+"""
 import io  # 关键：导入 io 模块，用于将 bytes 转为文件流
 from minio.error import S3Error
-from dotenv import load_dotenv
-from app.core.database import minio_client
-import sys
+from app.core.storage import get_minio_client
+from app.core.config import settings
 
-# 加载环境变量（路径逻辑保持不变）
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))))
-sys.path.insert(0, project_root)
-load_dotenv()
-
-# MinIO 连接设置（保持不变）
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
-MINIO_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME")
-MINIO_SECURE = os.getenv("MINIO_SECURE", "False").lower() == "true"
+# MinIO 连接设置（从 settings 读取）
+MINIO_ENDPOINT = settings.MINIO_ENDPOINT
+MINIO_ACCESS_KEY = settings.MINIO_ACCESS_KEY
+MINIO_SECRET_KEY = settings.MINIO_SECRET_KEY
+MINIO_BUCKET_NAME = settings.MINIO_BUCKET_NAME
+MINIO_SECURE = settings.MINIO_SECURE
 
 def upload_file_to_minio(file_data, file_name):
     """
@@ -25,7 +25,7 @@ def upload_file_to_minio(file_data, file_name):
     :param file_name: 文件名
     :return: 公开访问 URL
     """
-    client = minio_client
+    client = get_minio_client()
     
     # 确保存储桶存在（保持不变）
     if not client.bucket_exists(MINIO_BUCKET_NAME):
@@ -44,7 +44,7 @@ def upload_file_to_minio(file_data, file_name):
         else:
             # 如果传入的是文件流（如 UploadFile.file），直接使用并获取大小
             file_stream = file_data
-            file_stream.seek(0, os.SEEK_END)  # 移动到流末尾
+            file_stream.seek(0, 2)  # 移动到流末尾 (SEEK_END = 2)
             file_size = file_stream.tell()     # 获取流大小
             file_stream.seek(0)                # 移回流开头（必须，否则上传为空）
         

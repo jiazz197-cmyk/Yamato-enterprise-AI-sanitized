@@ -41,7 +41,11 @@ class ProjectSpace(Base):
     # 关系
     members = relationship("ProjectMember", back_populates="project")
     tasks = relationship("ProjectTask", back_populates="project")
-    data_shares = relationship("DataShare", back_populates="project")
+    data_shares = relationship(
+        "DataShare", 
+        back_populates="project",
+        foreign_keys=lambda: [DataShare.project_id]
+    )
 
 
 class ProjectMember(Base):
