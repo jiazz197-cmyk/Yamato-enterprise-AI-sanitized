@@ -93,6 +93,61 @@ def process_documents_background(
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
+    # ✅ 创建线程专用的 TaskManager（避免共享主循环的 Redis 连接）
+    from app.api.taskmanager import TaskManager
+    import redis.asyncio as redis
+    from app.core.config import settings
+    
+    thread_task_manager = TaskManager()
+    # 为线程创建独立的 Redis 连接（避免事件循环冲突）
+    try:
+        redis_kwargs = {
+            "max_connections": settings.REDIS_MAX_CONNECTIONS,
+            "decode_responses": True,
+        }
+        if settings.REDIS_PASSWORD:
+            redis_kwargs["password"] = settings.REDIS_PASSWORD
+        
+        thread_redis_client = redis.from_url(settings.REDIS_URL, **redis_kwargs)
+        # 测试连接
+        loop.run_until_complete(thread_redis_client.ping())
+        
+        # 创建临时 Redis 管理器对象用于任务管理
+        class ThreadRedisStorage:
+            def __init__(self, client):
+                self.redis_client = client
+            
+            async def set(self, key, value, ttl=None):
+                import json
+                if isinstance(value, (dict, list)):
+                    value = json.dumps(value, ensure_ascii=False)
+                if ttl:
+                    return await self.redis_client.setex(key, ttl, value)
+                return await self.redis_client.set(key, value)
+            
+            async def get(self, key):
+                import json
+                value = await self.redis_client.get(key)
+                if value is None:
+                    return None
+                try:
+                    return json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    return value
+            
+            async def delete(self, key):
+                return bool(await self.redis_client.delete(key))
+        
+        thread_task_manager.storage = ThreadRedisStorage(thread_redis_client)
+        thread_task_manager.storage_type = "redis"
+        logger.info(f"[{task_id}] 后台线程使用独立的 Redis 连接")
+    except Exception as e:
+        logger.warning(f"[{task_id}] 无法为后台线程创建 Redis 连接，使用内存存储: {e}")
+        # 使用内存存储作为降级方案
+        from app.api.taskmanager import MemoryTaskStorage
+        thread_task_manager.storage = MemoryTaskStorage()
+        thread_task_manager.storage_type = "memory"
+    
     try:
         # ✅ 检查点1：启动前检查
         if token.is_cancelled():
@@ -103,8 +158,8 @@ def process_documents_background(
         task_exists = False
         for attempt in range(5):
             try:
-                # 使用新的事件循环查询任务状态
-                task_status = loop.run_until_complete(task_manager.get_task_status(task_id))
+                # 使用线程专用的 TaskManager 查询任务状态
+                task_status = loop.run_until_complete(thread_task_manager.get_task_status(task_id))
                 if task_status:
                     task_exists = True
                     logger.info(f"[{task_id}] 任务已找到，开始处理")
@@ -119,7 +174,7 @@ def process_documents_background(
             return
         
         # 启动任务
-        loop.run_until_complete(task_manager.start_task(task_id))
+        loop.run_until_complete(thread_task_manager.start_task(task_id))
         
         # 构建数据库配置
         db_config = {
@@ -151,7 +206,7 @@ def process_documents_background(
                 if token.is_cancelled():
                     logger.info(f"[{task_id}] 任务被取消，停止下载")
                     loop.run_until_complete(
-                        task_manager.fail_task(task_id, "用户取消任务", "任务已取消")
+                        thread_task_manager.fail_task(task_id, "用户取消任务", "任务已取消")
                     )
                     return
                 
@@ -163,7 +218,7 @@ def process_documents_background(
                 # 更新进度：下载阶段
                 progress = int((i / len(file_ids)) * 30)  # 下载占30%进度
                 loop.run_until_complete(
-                    task_manager.update_task_progress(
+                    thread_task_manager.update_task_progress(
                         task_id, progress, f"正在下载第 {i+1}/{len(file_ids)} 个文件: {file_record.file_name}"
                     )
                 )
@@ -185,7 +240,7 @@ def process_documents_background(
             if token.is_cancelled():
                 logger.info(f"[{task_id}] 任务被取消，停止处理")
                 loop.run_until_complete(
-                    task_manager.fail_task(task_id, "用户取消任务", "任务已取消")
+                    thread_task_manager.fail_task(task_id, "用户取消任务", "任务已取消")
                 )
                 return
             
@@ -193,7 +248,7 @@ def process_documents_background(
             
             # 更新进度：处理阶段
             loop.run_until_complete(
-                task_manager.update_task_progress(task_id, 30, f"开始处理 {len(streams)} 个文件...")
+                thread_task_manager.update_task_progress(task_id, 30, f"开始处理 {len(streams)} 个文件...")
             )
             
             # 处理文档（这里可以添加进度回调）
@@ -204,7 +259,7 @@ def process_documents_background(
             
             # 更新进度：完成
             loop.run_until_complete(
-                task_manager.update_task_progress(task_id, 90, "正在保存结果...")
+                thread_task_manager.update_task_progress(task_id, 90, "正在保存结果...")
             )
             
             # 标记任务完成
@@ -216,7 +271,7 @@ def process_documents_background(
             }
             
             loop.run_until_complete(
-                task_manager.complete_task(task_id, final_result, "文档处理完成")
+                thread_task_manager.complete_task(task_id, final_result, "文档处理完成")
             )
             
             logger.info(f"[{task_id}] 处理完成: {final_result}")
@@ -229,15 +284,18 @@ def process_documents_background(
         try:
             loop = asyncio.get_event_loop()
             loop.run_until_complete(
-                task_manager.fail_task(task_id, str(e), "文档处理失败")
+                thread_task_manager.fail_task(task_id, str(e), "文档处理失败")
             )
         except Exception as e2:
             logger.error(f"[{task_id}] 标记失败状态时出错: {e2}")
     finally:
         try:
+            # 关闭 Redis 连接
+            if hasattr(thread_task_manager.storage, 'redis_client'):
+                loop.run_until_complete(thread_task_manager.storage.redis_client.aclose())
             loop.close()
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"[{task_id}] 清理资源时出错: {e}")
 
 
 # ==================== 路由定义 ====================
