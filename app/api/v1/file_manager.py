@@ -20,6 +20,7 @@ from app.core.storage import (
     download_object_stream,
     upload_stream_to_minio,
     delete_from_minio,
+    get_minio_client,
     MINIO_BUCKET_NAME,
     STREAM_CHUNK_SIZE,
 )
@@ -132,6 +133,7 @@ async def upload_file(
         # 如果文件大小未知，需要获取实际大小
         if file_size == -1:
             try:
+                minio_client = get_minio_client()
                 stat = minio_client.stat_object(MINIO_BUCKET_NAME, minio_path)
                 file_size = stat.size
             except Exception as e:

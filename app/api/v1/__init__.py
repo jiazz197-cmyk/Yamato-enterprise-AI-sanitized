@@ -1,13 +1,16 @@
 """
-API v1 路由模块
+API v1 Router Module
+Aggregates all v1 API endpoints
 """
 from fastapi import APIRouter
 
 from app.api.v1 import example, file_manager, document_processing
+from app.api.v1.endpoints import image2url
 
 api_router = APIRouter()
 
-# 注册子路由
-api_router.include_router(example.router, prefix="/example", tags=["示例"])
-api_router.include_router(file_manager.router, prefix="/files", tags=["文件管理"])
-api_router.include_router(document_processing.router, prefix="/docs", tags=["文档处理"])
+# Register sub-routers
+api_router.include_router(example.router, prefix="/example", tags=["Example"])
+api_router.include_router(file_manager.router, prefix="/files", tags=["File Management"])
+api_router.include_router(document_processing.router, prefix="/docs", tags=["Document Processing"])
+api_router.include_router(image2url.router, prefix="/image2url", tags=["Image Processing"])

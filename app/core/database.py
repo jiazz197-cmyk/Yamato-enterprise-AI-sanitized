@@ -162,6 +162,30 @@ def get_db_context() -> Generator[Session, None, None]:
         db.close()
 
 
+def init_db_tables():
+    """
+    初始化数据库表（不存在则创建）
+    
+    ✅ 自动导入所有 ORM 模型并创建表
+    应在应用启动时调用
+    """
+    try:
+        # 导入所有 ORM 模型（确保注册到 Base.metadata）
+        from app.models.orm.file_resource import FileResource
+        from app.models.orm.knowledge import KnowledgeInstance
+        
+        # 创建所有表（已存在的表会被跳过）
+        Base.metadata.create_all(bind=engine)
+        
+        # 获取已创建的表列表
+        table_names = [table.name for table in Base.metadata.sorted_tables]
+        logger.info(f"✅ 数据库表初始化完成，共 {len(table_names)} 个表: {', '.join(table_names)}")
+        
+    except Exception as e:
+        logger.error(f"❌ 数据库表初始化失败: {e}", exc_info=True)
+        # 不抛出异常，允许应用继续启动
+
+
 def dispose_engine():
     """
     释放所有连接池资源(用于应用关闭时清理)

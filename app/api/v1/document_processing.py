@@ -87,18 +87,38 @@ def process_documents_background(
     注意：这个函数在独立线程中运行，不能直接使用 async/await
     """
     import asyncio
+    import time
     from app.integrations.doc_processing.pipeline import DocumentProcessingPipeline
     
     logger.info(f"[{task_id}] 开始后台处理，文件数: {len(file_ids)}")
     
+    # ⚠️ 重要：在线程中创建新的事件循环（避免循环冲突）
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     try:
-        # 在线程中创建新的事件循环
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
         # ✅ 检查点1：启动前检查
         if token.is_cancelled():
             logger.info(f"[{task_id}] 任务在启动前被取消")
+            return
+        
+        # ✅ 修复：等待任务创建完成（最多重试5次，避免循环冲突）
+        task_exists = False
+        for attempt in range(5):
+            try:
+                # 使用新的事件循环查询任务状态
+                task_status = loop.run_until_complete(task_manager.get_task_status(task_id))
+                if task_status:
+                    task_exists = True
+                    logger.info(f"[{task_id}] 任务已找到，开始处理")
+                    break
+            except Exception as e:
+                logger.warning(f"[{task_id}] 查询任务状态失败 (尝试 {attempt + 1}/5): {e}")
+            
+            time.sleep(0.3)  # 等待 300ms
+        
+        if not task_exists:
+            logger.error(f"[{task_id}] 任务创建超时，无法启动")
             return
         
         # 启动任务
@@ -334,14 +354,17 @@ async def submit_document_processing(
         logger.info(f"创建文档处理任务: {task_id}, 文件数: {len(file_ids)}")
         
         # 步骤3: 提交到后台线程池（使用 ExecutorManager）
+        # submit_task 签名: submit_task(task_id, fn, *args, **kwargs)
+        # fn 的签名: process_documents_background(token, task_id, file_ids, instance_id, chunk_size, chunk_overlap)
+        # token 会自动注入，所以这里传递 task_id 开始的参数
         executor_manager.submit_task(
             task_id,
             process_documents_background,
-            task_id=task_id,
-            file_ids=file_ids,
-            instance_id=instance_id,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
+            task_id,  # 作为位置参数传递给函数
+            file_ids,
+            instance_id,
+            chunk_size,
+            chunk_overlap,
         )
         
         # 步骤4: 立即返回

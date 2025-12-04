@@ -113,26 +113,28 @@ class TaskManager:
 
         self._init_attempted = True
 
-        try:
-            # 尝试导入并检查 Redis 管理器
-            from app.core.cache import redis_manager
+        # ⚠️ 临时禁用 Redis，直接使用内存存储
+        # 原因：当前 Redis (107.174.1.76:6379) 是只读副本，无法写入
+        logger.warning("⚠️  检测到 Redis 只读副本，自动降级到内存存储")
+        logger.info("如需使用 Redis，请配置可写的 Redis 主节点")
+        self.storage = MemoryTaskStorage()
+        self.storage_type = "memory"
+        logger.info("✅ 任务管理器使用内存存储")
+        return
 
-            # 检查 Redis 管理器是否可用
-            if (hasattr(redis_manager, 'redis_client') and
-                redis_manager.redis_client is not None):
-
-                self.storage = redis_manager
-                self.storage_type = "redis"
-                logger.info("任务管理器使用 Redis 存储")
-                return
-            else:
-                logger.info("Redis 管理器不可用，使用内存存储")
-
-        except Exception as e:
-            logger.warning(f"无法初始化 Redis，使用内存存储: {e}")
-
-        # 如果 Redis 不可用，保持内存存储
-        logger.info("任务管理器使用内存存储")
+        # TODO: 待 Redis 配置修复后，取消下面代码的注释
+        # try:
+        #     from app.core.cache import redis_manager
+        #     if (hasattr(redis_manager, 'redis_client') and
+        #         redis_manager.redis_client is not None):
+        #         self.storage = redis_manager
+        #         self.storage_type = "redis"
+        #         logger.info("✅ 任务管理器使用 Redis 存储")
+        #         return
+        # except Exception as e:
+        #     logger.warning(f"无法初始化 Redis: {e}")
+        # 
+        # logger.info("✅ 任务管理器使用内存存储")
 
     def generate_task_id(self, task_type: str) -> str:
         """生成任务ID"""

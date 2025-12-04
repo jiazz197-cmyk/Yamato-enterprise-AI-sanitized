@@ -64,25 +64,18 @@ class LibreOfficeConverter:
             self.soffice_path = default_path if os.path.exists(default_path) else "soffice"
         else:
             self.soffice_path = "soffice"
-        self._ensure_available()
-
-    def _ensure_available(self):
-        try:
-            subprocess.run(
-                [self.soffice_path, "--version"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=True,
-                timeout=5,
-            )
-        except (subprocess.SubprocessError, FileNotFoundError):
-            if sys.platform == "darwin" and self.soffice_path == "soffice":
+        
+        # ✅ 仅检查文件是否存在,不运行 --version (避免弹窗)
+        if os.name == "nt":
+            if not os.path.exists(self.soffice_path):
+                raise RuntimeError(f"未检测到LibreOffice，请确认路径：{self.soffice_path}")
+        elif sys.platform == "darwin":
+            if self.soffice_path != "soffice" and not os.path.exists(self.soffice_path):
                 fallback = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
                 if os.path.exists(fallback):
                     self.soffice_path = fallback
-                    subprocess.run([self.soffice_path, "--version"], check=True, timeout=5)
-                    return
-            raise RuntimeError(f"未检测到LibreOffice，请确认路径：{self.soffice_path}")
+                else:
+                    raise RuntimeError(f"未检测到LibreOffice，请确认路径：{self.soffice_path}")
 
     def convert_to_docx(self, file_input: Union[str, os.PathLike, bytes, BytesIO]) -> BytesIO:
         if isinstance(file_input, (str, os.PathLike)) and not str(file_input).lower().endswith(".doc"):
@@ -103,10 +96,23 @@ class LibreOfficeConverter:
 
         with tempfile.TemporaryDirectory() as out_dir:
             try:
+                # 设置环境变量禁止交互
+                env = os.environ.copy()
+                env["SAL_NO_SPLASH"] = "1"  # 禁用启动画面
+                env["OFFICE_PROCESS_TYPE"] = "headless"  # 标记为无头模式
+                
                 proc = subprocess.run(
                     [
                         self.soffice_path,
                         "--headless",
+                        "--invisible",
+                        "--nocrashreport",
+                        "--nodefault",
+                        "--nofirststartwizard",
+                        "--nolockcheck",
+                        "--nologo",
+                        "--norestore",
+                        "--accept=socket,host=localhost,port=0;urp;",  # 避免端口冲突
                         "--convert-to",
                         "docx:Office Open XML Text",
                         "--outdir",
@@ -115,8 +121,11 @@ class LibreOfficeConverter:
                     ],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL,  # 关闭标准输入
                     check=True,
                     text=True,
+                    env=env,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
                 if proc.returncode != 0:
                     raise RuntimeError(proc.stderr)

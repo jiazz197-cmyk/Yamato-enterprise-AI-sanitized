@@ -25,11 +25,30 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理：启动时初始化资源，关闭时清理资源"""
     # === Startup ===
     app.state.metrics = prometheus_metrics
+    
+    # 1. 初始化数据库表
+    try:
+        from app.core.database import init_db_tables
+        init_db_tables()
+    except Exception as e:
+        print(f"⚠️  数据库表初始化失败: {e}")
+    
+    # 2. 测试 Redis 连接
     try:
         await redis_manager.test_connection()
     except Exception:
         # 不阻塞启动，中间件会处理 Redis 不可用的情况
         pass
+    
+    # 3. 测试 MinIO 连接
+    try:
+        from app.core.storage import get_minio_client, MINIO_BUCKET_NAME
+        client = get_minio_client()
+        # 尝试检查 bucket 是否存在（不阻塞启动）
+        client.bucket_exists(MINIO_BUCKET_NAME)
+        print(f"✅ MinIO 连接成功，bucket: {MINIO_BUCKET_NAME}")
+    except Exception as e:
+        print(f"⚠️  MinIO 连接失败: {e}，服务将降级运行")
     
     yield  # 应用运行中
     
