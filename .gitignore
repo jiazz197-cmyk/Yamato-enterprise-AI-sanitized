@@ -1,8 +1,4 @@
 /.vscode/
-/.env
-/test.py
-/main.py
 __pycache__/
-/app/ragsystem/env_config_example.txt
-/app/ragsystem/README_RETRIEVER.md
-.gitignore
+
+
