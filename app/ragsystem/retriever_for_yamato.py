@@ -5,6 +5,7 @@ import threading
 from typing import Optional, Dict, List
 
 from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.core import Settings
 
 from app.core.storage import save_file_from_minio
 from app.ragsystem.data_analyze import excel_to_json
@@ -93,6 +94,9 @@ class ModelManager:
             reranker = self.get_reranker()
             
             try:
+                # 禁用LLM，仅做检索
+                Settings.llm = None
+                
                 query_engine = RetrieverQueryEngine.from_args(
                     retriever=retriever,
                     node_postprocessors=[reranker] if reranker else [],
@@ -305,6 +309,9 @@ def cleanup_all_resources():
 
 if __name__ == '__main__':
     try:
+        # 禁用LLM，仅做检索
+        Settings.llm = None
+        
         rag_system = create_rag_retriever_system(
             host="localhost",
             user="postgres",

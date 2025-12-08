@@ -79,7 +79,7 @@ class BGEM3EmbeddingWrapper(BaseEmbedding):
                 self.api_url,
                 json={
                     "input": text,
-                    "model": "bge-m3"
+                    "model": "BAAI/bge-m3"
                 },
                 timeout=self.timeout
             )
@@ -163,7 +163,7 @@ class HTTPReranker(BaseNodePostprocessor):
                     "query": query_str,
                     "documents": documents,
                     "top_n": self.top_n,
-                    "model": "bge-reranker-v2-m3"
+                    "model": "BAAI/bge-reranker-v2-m3"
                 },
                 timeout=self.timeout
             )
@@ -461,47 +461,15 @@ class RAGRetrieverSystem:
                 embed_dim=1024,
             )
 
-            # 如果有实例ID，尝试从持久化存储加载
-            if instance_id is not None:
-                persist_dir = self.vector_store_manager.get_persist_dir(instance_id)
-
-                if self.vector_store_manager.check_persist_exists(persist_dir):
-                    logger.info(f"从持久化存储加载索引: {collection_name} -> {persist_dir}")
-                    try:
-                        storage_context = StorageContext.from_defaults(
-                            vector_store=vector_store,
-                            persist_dir=persist_dir
-                        )
-                        Settings.embed_model = embedding_model
-                        index = load_index_from_storage(storage_context, embed_model=embedding_model)
-                        logger.info(f"成功从持久化存储加载索引: {collection_name}")
-                    except Exception as e:
-                        logger.warning(f"从持久化存储加载失败，创建新索引: {e}")
-                        storage_context = StorageContext.from_defaults(vector_store=vector_store)
-                        index = VectorStoreIndex.from_vector_store(
-                            vector_store,
-                            storage_context=storage_context,
-                            embed_model=embedding_model,
-                            show_progress=False
-                        )
-                else:
-                    logger.info(f"未找到持久化索引，创建新索引: {collection_name}")
-                    storage_context = StorageContext.from_defaults(vector_store=vector_store)
-                    index = VectorStoreIndex.from_vector_store(
-                        vector_store,
-                        storage_context=storage_context,
-                        embed_model=embedding_model,
-                        show_progress=False
-                    )
-            else:
-                logger.info(f"无法确定实例ID，直接创建索引: {collection_name}")
-                storage_context = StorageContext.from_defaults(vector_store=vector_store)
-                index = VectorStoreIndex.from_vector_store(
-                    vector_store,
-                    storage_context=storage_context,
-                    embed_model=embedding_model,
-                    show_progress=False
-                )
+            # 直接从 PGVector 创建索引（向量已存储在数据库中，无需本地持久化）
+            logger.info(f"从 PGVector 创建索引: {collection_name}")
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+            index = VectorStoreIndex.from_vector_store(
+                vector_store,
+                storage_context=storage_context,
+                embed_model=embedding_model,
+                show_progress=False
+            )
 
             # 返回检索器
             retriever = index.as_retriever(similarity_top_k=top_k)

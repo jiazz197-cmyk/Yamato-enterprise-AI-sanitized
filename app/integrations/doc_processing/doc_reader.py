@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
 import html_text
 import pandas as pd
@@ -152,8 +152,26 @@ class PdfParser:
     def __init__(self, save_dir: str = "paddle_ocr_images", enable_ocr: bool = True):
         self.save_dir = save_dir
         os.makedirs(save_dir, exist_ok=True)
-        self.enable_ocr = enable_ocr and PaddleOCR is not None
-        self.ocr = PaddleOCR(use_angle_cls=True, lang="ch") if self.enable_ocr else None
+        self.enable_ocr = False
+        self.ocr = None
+        
+        # 尝试初始化 OCR（如果启用且可用）
+        if enable_ocr and PaddleOCR is not None:
+            try:
+                logger.info("正在初始化 PaddleOCR（用于扫描版 PDF）...")
+                self.ocr = PaddleOCR(use_angle_cls=True, lang="ch")
+                self.enable_ocr = True
+                logger.info("✅ PaddleOCR 初始化成功")
+            except Exception as e:
+                logger.warning(f"⚠️  PaddleOCR 初始化失败，OCR 功能已禁用: {e}")
+                logger.info("提示：这不会影响普通 PDF 文本提取，只是无法处理扫描版 PDF")
+                self.ocr = None
+                self.enable_ocr = False
+        else:
+            if not enable_ocr:
+                logger.info("PDF OCR 已手动禁用")
+            elif PaddleOCR is None:
+                logger.info("PaddleOCR 不可用，OCR 功能已禁用")
 
     def __call__(self, file_input: Union[str, bytes, os.PathLike, BytesIO]) -> Tuple[str, List[Dict]]:
         temp_path = None
@@ -322,14 +340,66 @@ class JsonParser:
 class TxtParser:
     def __call__(self, file_input: Union[str, bytes, os.PathLike, BytesIO]) -> Tuple[str, List[Dict]]:
         if isinstance(file_input, (str, os.PathLike)):
-            with open(file_input, "r", encoding="utf-8", errors="ignore") as f:
+            # 自动检测文件编码
+            encoding = self._detect_encoding(file_input)
+            with open(file_input, "r", encoding=encoding, errors="replace") as f:
                 return f.read(), []
         if isinstance(file_input, bytes):
-            return file_input.decode("utf-8", errors="ignore"), []
+            # 自动检测字节流编码
+            encoding = self._detect_encoding_from_bytes(file_input)
+            return file_input.decode(encoding, errors="replace"), []
         if isinstance(file_input, BytesIO):
             file_input.seek(0)
-            return file_input.read().decode("utf-8", errors="ignore"), []
+            content = file_input.read()
+            encoding = self._detect_encoding_from_bytes(content)
+            return content.decode(encoding, errors="replace"), []
         raise ValueError("不支持的输入类型")
+    
+    def _detect_encoding(self, file_path: Union[str, os.PathLike]) -> str:
+        """检测文件编码"""
+        try:
+            # 读取文件的前几KB来检测编码
+            with open(file_path, "rb") as f:
+                raw_data = f.read(min(32768, os.path.getsize(file_path)))  # 读取最多32KB
+            return self._detect_encoding_from_bytes(raw_data)
+        except Exception as e:
+            logger.warning(f"编码检测失败，使用 UTF-8: {e}")
+            return "utf-8"
+    
+    def _detect_encoding_from_bytes(self, data: bytes) -> str:
+        """从字节流检测编码"""
+        try:
+            import chardet
+            result = chardet.detect(data)
+            detected_encoding = result.get("encoding", "utf-8")
+            confidence = result.get("confidence", 0)
+            
+            # 如果置信度太低，尝试常见的中文编码
+            if confidence < 0.7:
+                for encoding in ["utf-8", "gbk", "gb2312", "gb18030"]:
+                    try:
+                        data.decode(encoding)
+                        logger.info(f"使用编码: {encoding} (chardet 置信度较低: {confidence})")
+                        return encoding
+                    except (UnicodeDecodeError, LookupError):
+                        continue
+            
+            logger.info(f"检测到文件编码: {detected_encoding} (置信度: {confidence})")
+            return detected_encoding or "utf-8"
+        except ImportError:
+            # 如果没有 chardet，尝试常见编码
+            logger.warning("未安装 chardet 库，尝试常见编码")
+            for encoding in ["utf-8", "gbk", "gb2312", "latin-1"]:
+                try:
+                    data.decode(encoding)
+                    logger.info(f"使用编码: {encoding}")
+                    return encoding
+                except (UnicodeDecodeError, LookupError):
+                    continue
+            return "utf-8"  # 最后回退到 UTF-8
+        except Exception as e:
+            logger.warning(f"编码检测异常，使用 UTF-8: {e}")
+            return "utf-8"
 
 
 class HtmlParser:
@@ -359,22 +429,40 @@ class DocumentProcessor:
     """统一文档解析器"""
 
     def __init__(self):
-        self.parsers = {
-            "pdf": PdfParser(),
-            "docx": DocxParser(),
-            "doc": DocParser(),
-            "xlsx": ExcelParser(),
-            "xls": ExcelParser(),
-            "pptx": PptParser(),
-            "ppt": PptParser(),
-            "html": HtmlParser(),
-            "htm": HtmlParser(),
-            "json": JsonParser(),
-            "txt": TxtParser(),
-            "md": TxtParser(),
+        # ✅ 使用延迟加载：存储 parser 类而不是实例
+        self._parser_classes = {
+            "pdf": PdfParser,
+            "docx": DocxParser,
+            "doc": DocParser,
+            "xlsx": ExcelParser,
+            "xls": ExcelParser,
+            "pptx": PptParser,
+            "ppt": PptParser,
+            "html": HtmlParser,
+            "htm": HtmlParser,
+            "json": JsonParser,
+            "txt": TxtParser,
+            "md": TxtParser,
         }
+        # 缓存已创建的 parser 实例
+        self._parser_instances: Dict[str, Any] = {}
         self.processed_files = set()
         self.failed_files: Dict[str, str] = {}
+    
+    def _get_parser(self, file_ext: str):
+        """延迟获取 parser 实例，只在需要时才创建"""
+        if file_ext not in self._parser_instances:
+            parser_class = self._parser_classes.get(file_ext)
+            if parser_class is None:
+                return None
+            try:
+                logger.info(f"正在初始化 {file_ext} 格式的解析器...")
+                self._parser_instances[file_ext] = parser_class()
+                logger.info(f"✅ {file_ext} 解析器初始化成功")
+            except Exception as e:
+                logger.error(f"❌ {file_ext} 解析器初始化失败: {e}")
+                return None
+        return self._parser_instances.get(file_ext)
 
     def get_file_extension(self, file_input) -> str:
         if isinstance(file_input, BytesIO) and hasattr(file_input, "name"):
@@ -479,13 +567,17 @@ class DocumentProcessor:
             else:
                 file_name = str(file_input)
             
-            if file_ext not in self.parsers:
-                supported = ", ".join(sorted(self.parsers.keys()))
+            if file_ext not in self._parser_classes:
+                supported = ", ".join(sorted(self._parser_classes.keys()))
                 raise DocumentParseError(
                     f"不支持的文件类型: '{file_ext}' (文件: {file_name}, 支持的格式: {supported})"
                 )
 
-            parser = self.parsers[file_ext]
+            # ✅ 延迟加载：只在需要时才创建 parser 实例
+            parser = self._get_parser(file_ext)
+            if parser is None:
+                raise DocumentParseError(f"无法初始化 {file_ext} 格式的解析器")
+            
             text, tables = parser(file_input)
 
             if tables:

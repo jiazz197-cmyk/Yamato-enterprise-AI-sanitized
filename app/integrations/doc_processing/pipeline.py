@@ -47,7 +47,7 @@ class DocumentProcessingPipeline:
             if os.path.isfile(input_data):
                 return [str(input_data)]
             if os.path.isdir(input_data):
-                allowed_ext = set(self.document_processor.parsers.keys())
+                allowed_ext = set(self.document_processor._parser_classes.keys())
                 collected = []
                 for root, _, files in os.walk(input_data):
                     for filename in files:
