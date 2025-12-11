@@ -713,7 +713,7 @@ open htmlcov/index.html
 
 ## 📝 更新日志
 
-### v1.0.0 (2024-12-11)
+### v0.0.1 (2025-12-11)
 
 **新增功能**
 - ✨ 完整的 RAG 检索系统
@@ -806,7 +806,7 @@ in the Software without restriction...
 
 **如果这个项目对你有帮助，请给个 ⭐️ Star 吧！**
 
-Made with ❤️ by AI Data Tool Team
+Made with ❤️ by Shmtu 331
 
 </div>
 
