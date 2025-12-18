@@ -149,6 +149,10 @@ class Settings(BaseSettings):
     
     # DOTS OCR 服务
     DOTS_OCR_ENDPOINT: str = Field("http://localhost:8001/v1/chat/completions", env="DOTS_OCR_ENDPOINT")
+    
+    # 本地模型 GPU 配置（不影响上述 Docker 部署的服务）
+    # 用于 Tokenizer、PaddleOCR、TagGenerator 等本地运行的模型
+    LOCAL_MODEL_GPU_DEVICE: int = Field(3, env="LOCAL_MODEL_GPU_DEVICE")
 
     # ==================== 外部服务（暂未启用） ====================
     # N8N 工作流引擎

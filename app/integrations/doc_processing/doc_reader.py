@@ -158,10 +158,17 @@ class PdfParser:
         # 尝试初始化 OCR（如果启用且可用）
         if enable_ocr and PaddleOCR is not None:
             try:
-                logger.info("正在初始化 PaddleOCR（用于扫描版 PDF）...")
-                self.ocr = PaddleOCR(use_angle_cls=True, lang="ch")
+                # 从环境变量读取 GPU 设备配置
+                gpu_device = int(os.environ.get("LOCAL_MODEL_GPU_DEVICE", "0"))
+                logger.info(f"正在初始化 PaddleOCR（用于扫描版 PDF），使用 GPU:{gpu_device}...")
+                self.ocr = PaddleOCR(
+                    use_angle_cls=True, 
+                    lang="ch",
+                    use_gpu=True,
+                    gpu_id=gpu_device
+                )
                 self.enable_ocr = True
-                logger.info("✅ PaddleOCR 初始化成功")
+                logger.info(f"✅ PaddleOCR 初始化成功，运行在 GPU:{gpu_device}")
             except Exception as e:
                 logger.warning(f"⚠️  PaddleOCR 初始化失败，OCR 功能已禁用: {e}")
                 logger.info("提示：这不会影响普通 PDF 文本提取，只是无法处理扫描版 PDF")
