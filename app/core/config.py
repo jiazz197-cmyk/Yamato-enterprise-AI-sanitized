@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     REDIS_HOST: str = Field("localhost", env="REDIS_HOST")
     REDIS_PORT: int = Field(6379, env="REDIS_PORT")
     REDIS_DB: int = Field(0, env="REDIS_DB")
-    REDIS_PASSWORD: Optional[str] = Field(default="change_me_redis_password", env="REDIS_PASSWORD")
+    REDIS_PASSWORD: Optional[str] = Field(default=None, env="REDIS_PASSWORD")
     REDIS_MAX_CONNECTIONS: int = Field(10, env="REDIS_MAX_CONNECTIONS")
 
     @property
