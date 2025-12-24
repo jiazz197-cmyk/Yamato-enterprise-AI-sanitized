@@ -379,6 +379,12 @@ class RAGRetrieverSystem:
         self.default_top_n = default_top_n
         logger.info(f"检索参数配置 - top_k: {default_top_k}, top_n: {default_top_n}")
 
+        # 🔧 配置全局参数（仅做检索，不使用 LLM）
+        Settings.llm = None  # 禁用 LLM
+        Settings.context_window = 8192  # 设置上下文窗口大小
+        Settings.num_output = 512  # 设置输出 token 数量
+        logger.info("已配置检索模式（禁用 LLM，仅做向量检索）")
+
         # 初始化核心组件
         self.embedding_model = self._init_embedding_model()
         self.reranker = self._init_reranker()
@@ -523,6 +529,7 @@ class RAGRetrieverSystem:
 
             retriever = self.get_retriever_for_collection(collection_name, embedding_model=embedding_model, top_k=top_k)
 
+            # 创建 QueryEngine（不使用 LLM 生成，只返回检索结果）
             if use_reranker and self.reranker:
                 # 如果需要使用不同的 top_n，创建新的 reranker 实例
                 if reranker_top_n != self.default_top_n:
@@ -535,10 +542,14 @@ class RAGRetrieverSystem:
                     reranker = self.reranker
                 return RetrieverQueryEngine.from_args(
                     retriever=retriever,
-                    node_postprocessors=[reranker]
+                    node_postprocessors=[reranker],
+                    streaming=False,  # 禁用流式输出
                 )
             else:
-                return RetrieverQueryEngine.from_args(retriever=retriever)
+                return RetrieverQueryEngine.from_args(
+                    retriever=retriever,
+                    streaming=False,  # 禁用流式输出
+                )
 
         except Exception as e:
             logger.error(f"创建Query Engine失败: {e}")

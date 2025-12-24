@@ -145,8 +145,8 @@ async def upload_image(
         # 读取文件数据（小文件可直接读取）
         file_data = await file.read()
         
-        # 生成唯一任务ID
-        task_id = f"image_upload_{uuid.uuid4().hex}"
+        # 🆕 使用 ExecutorManager 的统一任务ID生成方法
+        task_id = executor_manager.generate_task_id("image_upload")
         
         # 提交到线程池执行
         # submit_task 会自动注入 token，然后传递其他参数

@@ -171,11 +171,11 @@ class PdfParser:
                     paddle.set_device(f'gpu:{gpu_device}')
                     logger.info(f"Paddle 设备已设置为 GPU:{gpu_device}")
                 
-                # 初始化 PaddleOCR（use_gpu=True，设备已通过 paddle.set_device 设置）
+                # 初始化 PaddleOCR（设备已通过 paddle.set_device 设置，无需 use_gpu 参数）
+                # 注意：PaddleOCR 2.6+ 不再支持 use_gpu 参数，改用 paddle.set_device()
                 self.ocr = PaddleOCR(
                     use_angle_cls=True, 
                     lang="ch",
-                    use_gpu=True,
                     show_log=False  # 减少日志输出
                 )
                 self.enable_ocr = True

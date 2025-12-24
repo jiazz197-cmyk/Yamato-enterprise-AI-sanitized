@@ -70,14 +70,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️  数据库表初始化失败: {e}")
     
-    # 2. 测试 Redis 连接
+    # 2. 集成 TaskManager 和 ExecutorManager
+    try:
+        from app.core.executor import executor_manager
+        from app.api.taskmanager import task_manager
+        executor_manager.set_task_manager(task_manager, auto_sync=False)  # 默认不自动同步，按需开启
+        print("✅ ExecutorManager 已集成 TaskManager")
+    except Exception as e:
+        print(f"⚠️  ExecutorManager 集成 TaskManager 失败: {e}")
+    
+    # 3. 测试 Redis 连接
     try:
         await redis_manager.test_connection()
     except Exception:
         # 不阻塞启动，中间件会处理 Redis 不可用的情况
         pass
     
-    # 3. 测试 MinIO 连接
+    # 4. 测试 MinIO 连接
     try:
         from app.core.storage import get_minio_client, MINIO_BUCKET_NAME
         client = get_minio_client()
@@ -87,7 +96,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️  MinIO 连接失败: {e}，服务将降级运行")
     
-    # 4. 初始化 RAG 系统（包含 BGE-M3 嵌入模型和 Reranker 重排序器）
+    # 5. 初始化 RAG 系统（包含 BGE-M3 嵌入模型和 Reranker 重排序器）
     try:
         rag_system = create_rag_retriever_system(
             host=settings.POSTGRES_SERVER,
@@ -116,9 +125,10 @@ async def lifespan(app: FastAPI):
     # 1. 关闭文档处理线程池
     try:
         from app.core.executor import executor_manager
-        executor_manager.shutdown_executor()
+        executor_manager.shutdown(wait=True, cancel_futures=True, timeout=30.0)
+        print("✅ 线程池已关闭")
     except Exception as e:
-        print(f"关闭文档处理线程池时出错: {e}")
+        print(f"⚠️  关闭文档处理线程池时出错: {e}")
     
     # 2. 关闭 Redis 连接
     try:

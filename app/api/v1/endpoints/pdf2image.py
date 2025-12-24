@@ -220,8 +220,8 @@ async def convert_pdf_to_images(
         
         logger.info(f"PDF 文件大小: {file_size_mb:.2f} MB")
         
-        # 生成唯一任务ID
-        task_id = f"pdf_convert_{uuid.uuid4().hex}"
+        # 🆕 使用 ExecutorManager 的统一任务ID生成方法
+        task_id = executor_manager.generate_task_id("pdf_convert")
         
         # 提交到线程池执行
         # submit_task 会自动注入 token，然后传递其他参数

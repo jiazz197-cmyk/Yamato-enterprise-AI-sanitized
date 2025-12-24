@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.taskmanager import task_manager
+from app.api.taskmanager import task_manager, TaskManager
 from app.core.config import settings
 from app.core.dependencies import get_db
 from app.core.exceptions import NotFoundError, ValidationError
@@ -76,10 +76,11 @@ def process_documents_background(
     """
     后台文档处理函数（在线程池中执行）
     
-    ✅ 关键改进：
+    🆕 使用改进的协作模式：
     1. 第一个参数是 CancellationToken，由 ExecutorManager 自动注入
     2. 在多个检查点使用 token.is_cancelled() 检查取消状态
     3. 协作式取消 - 任务主动退出
+    4. 🆕 使用独立的 TaskManager 实例避免事件循环冲突
     
     注意：这个函数在独立线程中运行，不能直接使用 async/await
     """
@@ -89,76 +90,23 @@ def process_documents_background(
     
     logger.info(f"[{task_id}] 开始后台处理，文件数: {len(file_ids)}")
     
-    # ⚠️ 重要：在线程中创建新的事件循环（避免循环冲突）
+    # 🆕 创建线程专用的 TaskManager 实例（避免事件循环冲突）
+    thread_task_manager = TaskManager.create_thread_safe_instance()
+    
+    # 创建线程专用的事件循环
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
-    # ✅ 创建线程专用的 TaskManager（避免共享主循环的 Redis 连接）
-    from app.api.taskmanager import TaskManager
-    import redis.asyncio as redis
-    from app.core.config import settings
-    
-    thread_task_manager = TaskManager()
-    # 为线程创建独立的 Redis 连接（避免事件循环冲突）
-    try:
-        redis_kwargs = {
-            "max_connections": settings.REDIS_MAX_CONNECTIONS,
-            "decode_responses": True,
-        }
-        if settings.REDIS_PASSWORD:
-            redis_kwargs["password"] = settings.REDIS_PASSWORD
-        
-        thread_redis_client = redis.from_url(settings.REDIS_URL, **redis_kwargs)
-        # 测试连接
-        loop.run_until_complete(thread_redis_client.ping())
-        
-        # 创建临时 Redis 管理器对象用于任务管理
-        class ThreadRedisStorage:
-            def __init__(self, client):
-                self.redis_client = client
-            
-            async def set(self, key, value, ttl=None):
-                import json
-                if isinstance(value, (dict, list)):
-                    value = json.dumps(value, ensure_ascii=False)
-                if ttl:
-                    return await self.redis_client.setex(key, ttl, value)
-                return await self.redis_client.set(key, value)
-            
-            async def get(self, key):
-                import json
-                value = await self.redis_client.get(key)
-                if value is None:
-                    return None
-                try:
-                    return json.loads(value)
-                except (json.JSONDecodeError, TypeError):
-                    return value
-            
-            async def delete(self, key):
-                return bool(await self.redis_client.delete(key))
-        
-        thread_task_manager.storage = ThreadRedisStorage(thread_redis_client)
-        thread_task_manager.storage_type = "redis"
-        logger.info(f"[{task_id}] 后台线程使用独立的 Redis 连接")
-    except Exception as e:
-        logger.warning(f"[{task_id}] 无法为后台线程创建 Redis 连接，使用内存存储: {e}")
-        # 使用内存存储作为降级方案
-        from app.api.taskmanager import MemoryTaskStorage
-        thread_task_manager.storage = MemoryTaskStorage()
-        thread_task_manager.storage_type = "memory"
     
     try:
         # ✅ 检查点1：启动前检查
         if token.is_cancelled():
             logger.info(f"[{task_id}] 任务在启动前被取消")
-            return
+            return {"status": "cancelled", "message": "任务在启动前被取消"}
         
-        # ✅ 修复：等待任务创建完成（最多重试5次，避免循环冲突）
+        # 🆕 等待任务创建完成（最多重试5次）
         task_exists = False
         for attempt in range(5):
             try:
-                # 使用线程专用的 TaskManager 查询任务状态
                 task_status = loop.run_until_complete(thread_task_manager.get_task_status(task_id))
                 if task_status:
                     task_exists = True
@@ -171,7 +119,7 @@ def process_documents_background(
         
         if not task_exists:
             logger.error(f"[{task_id}] 任务创建超时，无法启动")
-            return
+            return {"status": "error", "message": "任务创建超时"}
         
         # 启动任务
         loop.run_until_complete(thread_task_manager.start_task(task_id))
@@ -208,7 +156,7 @@ def process_documents_background(
                     loop.run_until_complete(
                         thread_task_manager.fail_task(task_id, "用户取消任务", "任务已取消")
                     )
-                    return
+                    return {"status": "cancelled", "message": "任务被取消"}
                 
                 file_record = db.query(FileResource).filter(FileResource.id == file_id).first()
                 if not file_record:
@@ -242,7 +190,7 @@ def process_documents_background(
                 loop.run_until_complete(
                     thread_task_manager.fail_task(task_id, "用户取消任务", "任务已取消")
                 )
-                return
+                return {"status": "cancelled", "message": "任务被取消"}
             
             logger.info(f"[{task_id}] 成功下载 {len(streams)} 个文件，开始处理...")
             
@@ -275,6 +223,7 @@ def process_documents_background(
             )
             
             logger.info(f"[{task_id}] 处理完成: {final_result}")
+            return final_result
             
         finally:
             db.close()
@@ -282,15 +231,15 @@ def process_documents_background(
     except Exception as e:
         logger.error(f"[{task_id}] 处理失败: {e}", exc_info=True)
         try:
-            loop = asyncio.get_event_loop()
             loop.run_until_complete(
                 thread_task_manager.fail_task(task_id, str(e), "文档处理失败")
             )
         except Exception as e2:
             logger.error(f"[{task_id}] 标记失败状态时出错: {e2}")
+        return {"status": "error", "message": str(e)}
     finally:
+        # 清理资源
         try:
-            # 关闭 Redis 连接
             if hasattr(thread_task_manager.storage, 'redis_client'):
                 loop.run_until_complete(thread_task_manager.storage.redis_client.aclose())
             loop.close()

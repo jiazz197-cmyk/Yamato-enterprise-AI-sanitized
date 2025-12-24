@@ -2,9 +2,15 @@
 异步任务管理器
 用于管理长时间运行的后台任务的状态和结果
 支持 Redis 存储和内存存储两种模式
+
+🆕 新特性：
+- 线程安全的异步操作辅助方法
+- 与 ExecutorManager 协作支持
 """
 
+import asyncio
 import json
+import threading
 import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -87,11 +93,13 @@ class TaskManager:
     - 管理任务状态（pending/running/completed/failed）
     - 存储任务元数据和结果
     - 提供任务查询接口
+    - 🆕 提供线程安全的异步操作辅助方法
     
     注意：
     - 仅负责状态管理，不负责任务执行
     - 不管理线程池或进程池
-    - 任务的实际执行由调用方负责
+    - 任务的实际执行由调用方负责（通常是 ExecutorManager）
+    - 🆕 支持在后台线程中调用异步方法
     """
     
     def __init__(self):
@@ -102,6 +110,9 @@ class TaskManager:
         self.storage = MemoryTaskStorage()
         self.storage_type = "memory"
         self._init_attempted = False
+        
+        # 🆕 线程本地存储（用于在后台线程中创建独立的事件循环）
+        self._thread_local = threading.local()
 
         # 尝试初始化存储
         self._try_init_storage()
@@ -342,6 +353,101 @@ class TaskManager:
             logger.error(f"列出任务失败: {e}")
             return []
     
+    # 🆕 线程安全的辅助方法
+    
+    @staticmethod
+    def create_thread_safe_instance():
+        """
+        为后台线程创建独立的 TaskManager 实例
+        
+        ⚠️ 重要：由于 Redis 连接绑定到事件循环，在后台线程中必须创建独立实例
+        
+        Returns:
+            新的 TaskManager 实例（带有独立的事件循环和存储）
+        
+        Example:
+            ```python
+            def background_task(token, task_id):
+                # 在后台线程中创建独立的 TaskManager
+                thread_tm = TaskManager.create_thread_safe_instance()
+                
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                try:
+                    loop.run_until_complete(thread_tm.start_task(task_id))
+                    # ... 执行任务 ...
+                    loop.run_until_complete(thread_tm.complete_task(task_id, result))
+                finally:
+                    loop.close()
+            ```
+        """
+        import redis.asyncio as redis
+        from app.core.config import settings
+        
+        # 创建新实例（不使用单例）
+        instance = object.__new__(TaskManager)
+        instance.task_prefix = "task:"
+        instance.default_ttl = 3600 * 24
+        instance._init_attempted = True  # 跳过全局初始化
+        
+        # 尝试创建 Redis 存储
+        try:
+            redis_kwargs = {
+                "max_connections": settings.REDIS_MAX_CONNECTIONS,
+                "decode_responses": True,
+            }
+            if settings.REDIS_PASSWORD:
+                redis_kwargs["password"] = settings.REDIS_PASSWORD
+            
+            # 创建线程专用的 Redis 客户端
+            redis_client = redis.from_url(settings.REDIS_URL, **redis_kwargs)
+            
+            # 创建简单的 Redis 存储包装器
+            class ThreadRedisStorage:
+                def __init__(self, client):
+                    self.redis_client = client
+                
+                async def set(self, key, value, ttl=None):
+                    import json
+                    if isinstance(value, (dict, list)):
+                        value = json.dumps(value, ensure_ascii=False)
+                    if ttl:
+                        return await self.redis_client.setex(key, ttl, value)
+                    return await self.redis_client.set(key, value)
+                
+                async def get(self, key):
+                    import json
+                    value = await self.redis_client.get(key)
+                    if value is None:
+                        return None
+                    try:
+                        return json.loads(value)
+                    except (json.JSONDecodeError, TypeError):
+                        return value
+                
+                async def delete(self, key):
+                    return bool(await self.redis_client.delete(key))
+                
+                async def keys(self, pattern):
+                    result = []
+                    async for key in self.redis_client.scan_iter(match=pattern):
+                        if isinstance(key, bytes):
+                            key = key.decode('utf-8')
+                        result.append(key)
+                    return result
+            
+            instance.storage = ThreadRedisStorage(redis_client)
+            instance.storage_type = "redis"
+            logger.debug("为后台线程创建了独立的 Redis 存储")
+            
+        except Exception as e:
+            # 降级到内存存储
+            logger.warning(f"无法为后台线程创建 Redis 存储，使用内存存储: {e}")
+            instance.storage = MemoryTaskStorage()
+            instance.storage_type = "memory"
+        
+        return instance
 
 
 # 全局任务管理器实例

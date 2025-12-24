@@ -94,12 +94,11 @@ class ModelManager:
             reranker = self.get_reranker()
             
             try:
-                # 禁用LLM，仅做检索
-                Settings.llm = None
-                
+                # 创建查询引擎（仅做检索，不使用 LLM）
                 query_engine = RetrieverQueryEngine.from_args(
                     retriever=retriever,
                     node_postprocessors=[reranker] if reranker else [],
+                    streaming=False,  # 禁用流式输出
                 )
                 self._query_engines_cache[cache_key] = query_engine
                 print(f"查询引擎缓存: {collection_name}")

@@ -7,16 +7,24 @@
 2. 后台任务必须主动检查 is_task_cancelled() 并退出
 3. future.cancel() 只能取消未开始的任务
 4. task_id 必须全局唯一（建议使用 UUID）
+
+🆕 新特性：
+- 支持可选的 TaskManager 集成，自动同步任务状态
+- 提供统一的任务ID生成机制
 """
+import asyncio
 import inspect
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, Future
-from typing import Dict, Optional, Callable, Any
+from typing import Dict, Optional, Callable, Any, TYPE_CHECKING
 from functools import wraps
 
 from app.core.config import settings
 from app.core.logging import get_logger
+
+if TYPE_CHECKING:
+    from app.api.taskmanager import TaskManager
 
 logger = get_logger("executor")
 
@@ -88,11 +96,13 @@ class ExecutorManager:
     - 为每个任务创建 CancellationToken
     - 跟踪 Future 对象
     - 提供协作式取消机制
+    - 🆕 可选集成 TaskManager，自动同步任务状态
     
     ⚠️ 关键设计：
     1. 单例只初始化一次（在 __new__ 中完成）
     2. 任务函数必须接受 CancellationToken 参数
     3. 任务内部需主动检查 token.is_cancelled()
+    4. 🆕 支持可选的 TaskManager 集成（向后兼容）
     """
     _instance = None
     _initialized = False
@@ -121,8 +131,60 @@ class ExecutorManager:
         self._lock = threading.Lock()
         self._shutdown = False
         
+        # 🆕 可选的 TaskManager 集成（延迟初始化）
+        self._task_manager: Optional['TaskManager'] = None
+        self._auto_sync_status = False
+        
         self._initialized = True
         logger.info(f"初始化全局线程池: {self._max_workers} workers")
+    
+    def set_task_manager(self, task_manager: Optional['TaskManager'], auto_sync: bool = True):
+        """
+        设置 TaskManager 集成（可选）
+        
+        Args:
+            task_manager: TaskManager 实例，None 表示禁用集成
+            auto_sync: 是否自动同步任务状态到 TaskManager
+        
+        Example:
+            ```python
+            from app.api.taskmanager import task_manager
+            executor_manager.set_task_manager(task_manager, auto_sync=True)
+            ```
+        """
+        with self._lock:
+            self._task_manager = task_manager
+            self._auto_sync_status = auto_sync
+            if task_manager:
+                logger.info(f"✅ ExecutorManager 已集成 TaskManager (auto_sync={auto_sync})")
+            else:
+                logger.info("❌ ExecutorManager 已禁用 TaskManager 集成")
+    
+    def generate_task_id(self, task_type: str) -> str:
+        """
+        生成统一的任务ID（与 TaskManager 兼容）
+        
+        Args:
+            task_type: 任务类型（如 "pdf2image", "doc_process"）
+        
+        Returns:
+            任务ID字符串
+        
+        Example:
+            ```python
+            task_id = executor_manager.generate_task_id("pdf2image")
+            # 如果集成了 TaskManager，会委托给它生成
+            # 否则使用本地生成逻辑
+            ```
+        """
+        if self._task_manager:
+            return self._task_manager.generate_task_id(task_type)
+        else:
+            # 本地生成逻辑（与 TaskManager 保持一致）
+            import uuid
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            return f"{task_type}_{timestamp}_{uuid.uuid4().hex[:8]}"
     
     @property
     def executor(self) -> ThreadPoolExecutor:
@@ -135,7 +197,8 @@ class ExecutorManager:
         self, 
         task_id: str, 
         fn: Callable[[CancellationToken, Any], Any],
-        *args, 
+        *args,
+        sync_to_task_manager: Optional[bool] = None,
         **kwargs
     ) -> Future:
         """
@@ -144,7 +207,9 @@ class ExecutorManager:
         Args:
             task_id: 任务唯一标识（必须全局唯一，建议用 UUID）
             fn: 要执行的函数（第一个参数必须是 CancellationToken）
-            *args, **kwargs: 函数的其他参数
+            *args: 函数的其他位置参数
+            sync_to_task_manager: 是否同步状态到 TaskManager（None=使用全局配置）
+            **kwargs: 函数的其他关键字参数
         
         Returns:
             Future 对象
@@ -160,10 +225,17 @@ class ExecutorManager:
                 for i in range(100):
                     if token.is_cancelled():
                         logger.info("任务被取消")
-                        return
+                        return {"status": "cancelled"}
                     # 处理文件...
+                return {"status": "success", "result": "..."}
             
+            # 方式1：不使用 TaskManager（简单任务）
             executor_manager.submit_task("task_1", my_task, file_path="/path/to/file")
+            
+            # 方式2：自动同步到 TaskManager（复杂任务）
+            executor_manager.submit_task("task_1", my_task, 
+                                        file_path="/path/to/file",
+                                        sync_to_task_manager=True)
             ```
         """
         with self._lock:
@@ -201,14 +273,60 @@ class ExecutorManager:
             token = CancellationToken()
             self._cancellation_tokens[task_id] = token
             
+            # 🆕 确定是否需要同步到 TaskManager
+            should_sync = sync_to_task_manager if sync_to_task_manager is not None else self._auto_sync_status
+            needs_task_manager = should_sync and self._task_manager is not None
+            
+            # 🆕 如果需要同步，先标记任务为 running
+            if needs_task_manager:
+                try:
+                    # 在后台线程中运行异步操作
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self._task_manager.start_task(task_id))
+                    loop.close()
+                    logger.debug(f"[{task_id}] 已同步状态到 TaskManager: running")
+                except Exception as e:
+                    logger.warning(f"[{task_id}] 同步启动状态到 TaskManager 失败: {e}")
+            
             # ✅ 包装函数，自动注入 token 作为第一个参数
             def wrapped_fn():
                 try:
-                    return fn(token, *args, **kwargs)
+                    result = fn(token, *args, **kwargs)
+                    
+                    # 🆕 任务成功完成，同步到 TaskManager
+                    if needs_task_manager:
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            task_result = result if isinstance(result, dict) else {"result": result}
+                            loop.run_until_complete(
+                                self._task_manager.complete_task(task_id, task_result, "任务完成")
+                            )
+                            loop.close()
+                            logger.debug(f"[{task_id}] 已同步完成状态到 TaskManager")
+                        except Exception as e:
+                            logger.warning(f"[{task_id}] 同步完成状态到 TaskManager 失败: {e}")
+                    
+                    return result
+                    
                 except KeyboardInterrupt:
                     # 🐛 修复1：正确处理 KeyboardInterrupt（优雅退出）
                     logger.warning(f"任务 {task_id} 收到 KeyboardInterrupt，正在退出")
                     token.cancel()  # 设置取消标志
+                    
+                    # 🆕 同步取消状态到 TaskManager
+                    if needs_task_manager:
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(
+                                self._task_manager.fail_task(task_id, "KeyboardInterrupt", "任务被中断")
+                            )
+                            loop.close()
+                        except:
+                            pass
+                    
                     raise  # 重新抛出，让线程池知道
                 except SystemExit:
                     # 处理 SystemExit（程序退出）
@@ -216,6 +334,20 @@ class ExecutorManager:
                     raise
                 except Exception as e:
                     logger.error(f"任务 {task_id} 执行失败: {e}", exc_info=True)
+                    
+                    # 🆕 同步失败状态到 TaskManager
+                    if needs_task_manager:
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(
+                                self._task_manager.fail_task(task_id, str(e), "任务执行失败")
+                            )
+                            loop.close()
+                            logger.debug(f"[{task_id}] 已同步失败状态到 TaskManager")
+                        except Exception as e2:
+                            logger.warning(f"[{task_id}] 同步失败状态到 TaskManager 失败: {e2}")
+                    
                     raise
             
             # 提交到线程池
