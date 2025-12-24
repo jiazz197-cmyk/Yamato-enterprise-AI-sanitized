@@ -149,13 +149,15 @@ async def upload_image(
         task_id = f"image_upload_{uuid.uuid4().hex}"
         
         # 提交到线程池执行
+        # submit_task 会自动注入 token，然后传递其他参数
         executor_manager.submit_task(
-            task_id=task_id,
-            fn=background_image_upload_task,
-            file_data=file_data,
-            original_filename=file.filename,
-            content_type=file.content_type,
-            file_name_prefix=request.file_name_prefix
+            task_id,  # 任务ID（传给 submit_task 方法）
+            background_image_upload_task,  # 执行函数
+            task_id,  # 作为位置参数传递给函数（token 之后）
+            file_data,
+            file.filename,
+            file.content_type,
+            request.file_name_prefix
         )
         
         logger.info(f"启动图片上传任务: {task_id}")
