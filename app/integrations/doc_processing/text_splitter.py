@@ -25,8 +25,16 @@ class TagGenerator:
 
     def __init__(self, model_name: str = "paraphrase-multilingual-MiniLM-L12-v2", device: str = "auto"):
         try:
+            # 从环境变量读取 GPU 设备配置
+            gpu_device_id = int(os.environ.get("LOCAL_MODEL_GPU_DEVICE", "0"))
+            
             if device == "auto":
-                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+                if torch.cuda.is_available():
+                    self.device = f"cuda:{gpu_device_id}"
+                    logger.info(f"TagGenerator 将使用 GPU:{gpu_device_id}")
+                else:
+                    self.device = "cpu"
+                    logger.info("TagGenerator 将使用 CPU（CUDA 不可用）")
             else:
                 self.device = device
 
@@ -40,11 +48,15 @@ class TagGenerator:
                 self.keyword_model = None
 
             try:
+                # pipeline 使用指定的 GPU 设备
+                pipeline_device = gpu_device_id if self.device.startswith("cuda") else -1
                 self.keyphrase_model = pipeline(
                     "token-classification",
                     model="ml6team/keyphrase-extraction-kbir-inspec",
-                    device=0 if self.device == "cuda" else -1,
+                    device=pipeline_device,
                 )
+                if pipeline_device >= 0:
+                    logger.info(f"Keyphrase pipeline 使用 GPU:{pipeline_device}")
             except Exception:
                 logger.warning("Keyphrase pipeline 加载失败，将跳过备用模型", exc_info=True)
                 self.keyphrase_model = None

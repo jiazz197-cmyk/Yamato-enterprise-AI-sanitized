@@ -28,8 +28,12 @@ logger = logging.getLogger(__name__)
 
 try:
     from paddleocr import PaddleOCR
+    import paddle
+    PADDLE_AVAILABLE = True
 except ImportError:  # pragma: no cover
     PaddleOCR = None  # type: ignore
+    paddle = None
+    PADDLE_AVAILABLE = False
 
 
 def file_to_stream(file_path: Union[str, os.PathLike], keep_filename: bool = True) -> BytesIO:
@@ -156,12 +160,26 @@ class PdfParser:
         self.ocr = None
         
         # 尝试初始化 OCR（如果启用且可用）
-        if enable_ocr and PaddleOCR is not None:
+        if enable_ocr and PADDLE_AVAILABLE:
             try:
-                logger.info("正在初始化 PaddleOCR（用于扫描版 PDF）...")
-                self.ocr = PaddleOCR(use_angle_cls=True, lang="ch")
+                # 从环境变量读取 GPU 设备配置
+                gpu_device = int(os.environ.get("LOCAL_MODEL_GPU_DEVICE", "0"))
+                logger.info(f"正在初始化 PaddleOCR（用于扫描版 PDF），使用 GPU:{gpu_device}...")
+                
+                # 设置 Paddle 使用指定的 GPU 设备
+                if paddle is not None:
+                    paddle.set_device(f'gpu:{gpu_device}')
+                    logger.info(f"Paddle 设备已设置为 GPU:{gpu_device}")
+                
+                # 初始化 PaddleOCR（use_gpu=True，设备已通过 paddle.set_device 设置）
+                self.ocr = PaddleOCR(
+                    use_angle_cls=True, 
+                    lang="ch",
+                    use_gpu=True,
+                    show_log=False  # 减少日志输出
+                )
                 self.enable_ocr = True
-                logger.info("✅ PaddleOCR 初始化成功")
+                logger.info(f"✅ PaddleOCR 初始化成功，运行在 GPU:{gpu_device}")
             except Exception as e:
                 logger.warning(f"⚠️  PaddleOCR 初始化失败，OCR 功能已禁用: {e}")
                 logger.info("提示：这不会影响普通 PDF 文本提取，只是无法处理扫描版 PDF")

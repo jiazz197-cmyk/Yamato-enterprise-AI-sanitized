@@ -17,6 +17,22 @@ logger = logging.getLogger(__name__)
 FileInput = Union[str, os.PathLike, BytesIO]
 
 
+def clean_text_for_postgres(text: str) -> str:
+    """
+    清理文本中的 NUL (0x00) 字符，PostgreSQL 不支持在文本字段中存储这些字符
+    
+    Args:
+        text: 原始文本
+        
+    Returns:
+        清理后的文本
+    """
+    if not text:
+        return text
+    # 移除 NUL 字符 (0x00)
+    return text.replace('\x00', '')
+
+
 class DocumentProcessingPipeline:
     """从文档到 PGVector 的最小可复用处理管线"""
 
@@ -65,11 +81,22 @@ class DocumentProcessingPipeline:
     def _documents_to_nodes(self, documents: List, instance_id: int) -> List[TextNode]:
         nodes = []
         for chunk in documents:
-            metadata = dict(chunk.metadata)
+            # 清理文本中的 NUL 字符（PostgreSQL 不支持）
+            cleaned_text = clean_text_for_postgres(chunk.page_content)
+            
+            # 清理 metadata 中的字符串值
+            metadata = {}
+            for key, value in chunk.metadata.items():
+                if isinstance(value, str):
+                    metadata[key] = clean_text_for_postgres(value)
+                else:
+                    metadata[key] = value
+            
             metadata.setdefault("chunk_id", str(uuid.uuid4()))
             metadata["instance_id"] = instance_id
+            
             node = TextNode(
-                text=chunk.page_content,
+                text=cleaned_text,
                 metadata=metadata,
             )
             nodes.append(node)

@@ -1,6 +1,41 @@
 """
 FastAPI application entrypoint.
 """
+import os
+
+# ===== 在导入其他模块之前设置 GPU 环境 =====
+# 从 .env 文件读取配置（如果存在）
+from dotenv import load_dotenv
+load_dotenv()
+
+# 设置本地模型使用的 GPU 设备
+LOCAL_GPU_DEVICE = os.environ.get("LOCAL_MODEL_GPU_DEVICE", "3")
+# 注意：不设置 CUDA_VISIBLE_DEVICES，因为 Docker 服务需要访问其他 GPU
+# 我们通过各个库的 API 来指定 GPU（如 paddle.set_device, torch device 等）
+os.environ.setdefault("LOCAL_MODEL_GPU_DEVICE", LOCAL_GPU_DEVICE)
+
+# 设置 Paddle 设备（如果 paddle 可用）
+try:
+    import paddle
+    paddle.set_device(f'gpu:{LOCAL_GPU_DEVICE}')
+    print(f"✅ Paddle 设备已设置为 GPU:{LOCAL_GPU_DEVICE}")
+except ImportError:
+    print("ℹ️  Paddle 不可用，跳过 GPU 设置")
+except Exception as e:
+    print(f"⚠️  设置 Paddle GPU 失败: {e}")
+
+# 设置 PyTorch 默认设备（如果需要）
+try:
+    import torch
+    if torch.cuda.is_available():
+        # 不设置默认设备，让各个模型自己指定
+        print(f"✅ PyTorch CUDA 可用，本地模型将使用 GPU:{LOCAL_GPU_DEVICE}")
+    else:
+        print("ℹ️  PyTorch CUDA 不可用")
+except ImportError:
+    pass
+# ===== GPU 环境设置完成 =====
+
 from app.ragsystem.RAGretriever import create_rag_retriever_system
 
 from contextlib import asynccontextmanager
