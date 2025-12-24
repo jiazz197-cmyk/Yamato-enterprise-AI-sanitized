@@ -14,6 +14,10 @@ LOCAL_GPU_DEVICE = os.environ.get("LOCAL_MODEL_GPU_DEVICE", "3")
 # 我们通过各个库的 API 来指定 GPU（如 paddle.set_device, torch device 等）
 os.environ.setdefault("LOCAL_MODEL_GPU_DEVICE", LOCAL_GPU_DEVICE)
 
+# 设置 PaddlePaddle 环境变量以避免版本兼容性问题
+os.environ.setdefault("FLAGS_use_mkldnn", "0")  # 禁用 MKL-DNN 优化
+os.environ.setdefault("FLAGS_use_cudnn", "1")   # 使用 cuDNN（GPU 环境）
+
 # 设置 Paddle 设备（如果 paddle 可用）
 try:
     import paddle

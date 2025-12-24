@@ -171,17 +171,33 @@ class PdfParser:
                     paddle.set_device(f'gpu:{gpu_device}')
                     logger.info(f"Paddle 设备已设置为 GPU:{gpu_device}")
                 
-                # 初始化 PaddleOCR（设备已通过 paddle.set_device 设置，无需 use_gpu 参数）
-                # 注意：PaddleOCR 2.6+ 不再支持 use_gpu 参数，改用 paddle.set_device()
+                # 🔧 设置环境变量以禁用可能导致兼容性问题的优化
+                # 这些设置可以绕过某些 PaddlePaddle 版本兼容性问题
+                os.environ['FLAGS_use_mkldnn'] = '0'  # 禁用 MKL-DNN 优化
+                os.environ['FLAGS_use_cudnn'] = '1'   # 使用 cuDNN（GPU 环境）
+                
+                # 初始化 PaddleOCR
+                # PaddleOCR 3.x 版本说明：
+                # - use_gpu 参数已被移除，PaddleOCR 会自动检测并使用 GPU
+                # - 通过 paddle.set_device() 已经设置了 GPU 设备
+                # - 只需要传递最基本的参数即可
                 self.ocr = PaddleOCR(
-                    use_angle_cls=True, 
-                    lang="ch",
-                    show_log=False  # 减少日志输出
+                    use_angle_cls=True,  # 启用文字方向分类
+                    lang="ch"            # 中文识别
                 )
+                
                 self.enable_ocr = True
                 logger.info(f"✅ PaddleOCR 初始化成功，运行在 GPU:{gpu_device}")
+            except AttributeError as ae:
+                # 处理 PaddlePaddle 版本兼容性问题
+                logger.warning(f"⚠️  PaddleOCR 初始化失败（版本兼容性问题）: {ae}")
+                logger.info("提示：这可能是 PaddlePaddle 和 PaddleOCR 版本不匹配导致的")
+                logger.info("建议：paddlepaddle-gpu==2.6.0 + paddleocr==2.7.0 或更新组合")
+                logger.info("当前配置不影响普通 PDF 文本提取，只是无法处理扫描版 PDF")
+                self.ocr = None
+                self.enable_ocr = False
             except Exception as e:
-                logger.warning(f"⚠️  PaddleOCR 初始化失败，OCR 功能已禁用: {e}")
+                logger.warning(f"⚠️  PaddleOCR 初始化失败: {e}")
                 logger.info("提示：这不会影响普通 PDF 文本提取，只是无法处理扫描版 PDF")
                 self.ocr = None
                 self.enable_ocr = False

@@ -30,6 +30,7 @@ logger = get_logger("executor")
 
 # Python 版本检查（shutdown timeout 需要 3.9+）
 PYTHON_39_PLUS = sys.version_info >= (3, 9)
+logger.info(f"🐍 Python 版本: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}, 支持高级 shutdown: {PYTHON_39_PLUS}")
 
 
 class CancellationToken:
@@ -549,8 +550,8 @@ class ExecutorManager:
         
         Args:
             wait: 是否等待正在运行的任务完成
-            cancel_futures: 是否取消等待中的任务
-            timeout: 等待超时时间（秒）⚠️ 需要 Python 3.9+
+            cancel_futures: 是否取消等待中的任务（需要 Python 3.9+）
+            timeout: 等待超时时间（秒）⚠️ 仅用于日志记录，ThreadPoolExecutor.shutdown() 不支持此参数
         
         Behavior:
             - wait=True, cancel_futures=False: 等待所有任务完成（推荐）
@@ -560,6 +561,7 @@ class ExecutorManager:
         Note:
             ⚠️ shutdown 后，executor_manager 不可再用
             调用 submit_task() 会抛出 RuntimeError
+            ⚠️ timeout 参数虽然在某些文档中提及，但实际 ThreadPoolExecutor.shutdown() 并不支持
         """
         with self._lock:
             if self._shutdown:
@@ -576,20 +578,23 @@ class ExecutorManager:
                 logger.info(f"已设置 {len(self._cancellation_tokens)} 个任务的取消标志")
         
         # ✅ 在锁外执行 shutdown（避免死锁）
-        logger.info(f"关闭线程池: wait={wait}, cancel_futures={cancel_futures}, timeout={timeout}s, 活跃任务={active_count}")
+        logger.info(f"关闭线程池: wait={wait}, cancel_futures={cancel_futures}, 期望超时={timeout}s, 活跃任务={active_count}")
         
         try:
-            # 🐛 修复3：正确传递 timeout 参数
+            # 🐛 修复：ThreadPoolExecutor.shutdown() 实际上不支持 timeout 参数
+            # 只有 wait 和 cancel_futures（Python 3.9+）两个参数
             if PYTHON_39_PLUS:
+                # Python 3.9+ 支持 cancel_futures
                 self._executor.shutdown(
                     wait=wait, 
-                    cancel_futures=cancel_futures,
-                    timeout=timeout  # ✅ Python 3.9+ 支持
+                    cancel_futures=cancel_futures
                 )
             else:
-                # Python 3.8 及以下不支持 timeout 参数
-                logger.warning(f"Python {sys.version_info.major}.{sys.version_info.minor} 不支持 shutdown timeout，忽略 timeout 参数")
-                self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+                # Python 3.8 及以下不支持 cancel_futures 参数
+                logger.warning(f"Python {sys.version_info.major}.{sys.version_info.minor} 不支持 shutdown cancel_futures 参数")
+                if cancel_futures:
+                    logger.warning("cancel_futures=True 在 Python < 3.9 中不可用，等待中的任务会继续执行")
+                self._executor.shutdown(wait=wait)
             
             logger.info("线程池已关闭")
         except Exception as e:

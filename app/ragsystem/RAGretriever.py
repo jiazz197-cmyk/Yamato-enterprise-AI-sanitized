@@ -152,6 +152,9 @@ class HTTPReranker(BaseNodePostprocessor):
         
         query_str = query_bundle.query_str
         
+        # 🔍 添加调试信息
+        logger.info(f"🔍 Reranker 输入: {len(nodes)} 个节点, top_n={self.top_n}")
+        
         try:
             # 准备文档列表
             documents = [node.node.get_content() for node in nodes]
@@ -170,6 +173,12 @@ class HTTPReranker(BaseNodePostprocessor):
             response.raise_for_status()
             result = response.json()
             
+            # 🔍 记录 API 返回的结果数量
+            if "results" in result:
+                logger.info(f"🔍 Reranker API 返回了 {len(result['results'])} 个结果")
+            elif "rankings" in result:
+                logger.info(f"🔍 Reranker API 返回了 {len(result['rankings'])} 个结果")
+            
             # 解析响应并重新排序节点
             # 兼容多种响应格式
             if "results" in result:
@@ -182,6 +191,7 @@ class HTTPReranker(BaseNodePostprocessor):
                     node = nodes[idx]
                     node.score = score
                     reranked_nodes.append(node)
+                logger.info(f"🔍 Reranker 输出: {len(reranked_nodes)} 个节点")
                 return reranked_nodes
             elif "rankings" in result:
                 # 格式2: {"rankings": [{"doc_index": 0, "score": 0.9}, ...]}
@@ -193,6 +203,7 @@ class HTTPReranker(BaseNodePostprocessor):
                     node = nodes[idx]
                     node.score = score
                     reranked_nodes.append(node)
+                logger.info(f"🔍 Reranker 输出: {len(reranked_nodes)} 个节点")
                 return reranked_nodes
             else:
                 logger.warning(f"未知的重排序响应格式: {result}，返回原始节点")
