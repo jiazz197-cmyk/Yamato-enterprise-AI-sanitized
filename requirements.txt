@@ -1,508 +1,378 @@
 # ============================================================
-# Python 环境配置文件
-# 创建环境: conda create --name <env> --file <this file>
-# Platform: linux-64
-# Created-by: conda 25.9.1
-# ============================================================
-
-# ============================================================
-# 核心 Python 环境
-# ============================================================
-python=3.12.12=hd17a9e1_1
-pip=25.2=pyhc872135_1
-setuptools=80.9.0=py312h06a4308_0
-wheel=0.45.1=py312h06a4308_0
-
-# ============================================================
 # Web 框架和 API 服务
 # ============================================================
-fastapi=0.116.1=py312h06a4308_0
-starlette=0.47.3=py312h06a4308_0
-uvicorn=0.35.0=py312h06a4308_0
-uvloop=0.22.1=py312h939ff40_1
-h11=0.16.0=py312h06a4308_1
-httpcore=1.0.9=py312h06a4308_0
-httpx=0.28.1=py312h06a4308_1
-python-multipart=0.0.20=py312h06a4308_0
+fastapi==0.116.1
+starlette==0.47.3
+uvicorn==0.35.0
+uvloop==0.22.1
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+python-multipart==0.0.20
 
 # ============================================================
 # 异步 HTTP 客户端
 # ============================================================
-aiohttp=3.13.2=py312hee96239_0
-aiosignal=1.4.0=py312h06a4308_0
-aiohappyeyeballs=2.6.1=py312h06a4308_0
-aiodns=3.5.0=py312h06a4308_1
-async-timeout=5.0.1=py312h06a4308_0
-frozenlist=1.8.0=py312hbdd6827_0
-multidict=6.7.0=py312hee96239_0
-yarl=1.22.0=py312hee96239_0
-propcache=0.4.1=pypi_0
+aiohttp==3.13.2
+aiosignal==1.4.0
+aiohappyeyeballs==2.6.1
+aiodns==3.5.0
+async-timeout==5.0.1
+frozenlist==1.8.0
+multidict==6.7.0
+yarl==1.22.0
+propcache==0.4.1
 
 # ============================================================
-# 数据库相关 (PostgreSQL + SQLAlchemy)
+# 数据库相关
 # ============================================================
-sqlalchemy=2.0.43=py312h7e39e78_0
-psycopg2=2.9.10=py312h5eee18b_0
-psycopg2-binary=2.9.11=pypi_0
-asyncpg=0.31.0=pypi_0
-aiosqlite=0.21.0=pypi_0
-pgvector=0.4.1=py312h06a4308_0
-libpq=17.6=ha51bf15_0
-greenlet=3.2.4=py312hbdd6827_0
+SQLAlchemy==2.0.43
+psycopg2-binary==2.9.11
+asyncpg==0.31.0
+aiosqlite==0.21.0
+pgvector==0.4.1
+greenlet==3.2.4
+redis==7.0.1
+banks==2.2.0
 
 # ============================================================
-# Redis 缓存
+# MinIO 和云存储
 # ============================================================
-redis=5.0.3=h7b6447c_0
-redis-py=7.0.1=py312h06a4308_0
+minio==7.2.16
+boto3==1.40.54
+botocore==1.40.54
+s3transfer==0.14.0
 
 # ============================================================
-# MinIO 对象存储
+# AI/ML 框架 - LlamaIndex
 # ============================================================
-minio=7.2.16=py312h06a4308_0
-boto3=1.40.54=py312h06a4308_0
-botocore=1.40.54=py312h06a4308_1
-s3transfer=0.14.0=py312h06a4308_0
-
-# AWS SDK 依赖
-aws-c-auth=0.9.0=hb25bd0a_2
-aws-c-cal=0.9.2=h3ff94e8_1
-aws-c-common=0.12.4=hb25bd0a_0
-aws-c-compression=0.3.1=hb25bd0a_2
-aws-c-event-stream=0.5.6=hb25bd0a_0
-aws-c-http=0.10.4=hb25bd0a_0
-aws-c-io=0.21.4=h3eb0749_0
-aws-c-mqtt=0.13.3=hb25bd0a_0
-aws-c-s3=0.8.7=h3ff94e8_0
-aws-c-sdkutils=0.2.4=hb25bd0a_1
-aws-checksums=0.2.7=hb25bd0a_1
-aws-crt-cpp=0.34.0=h7934f7d_0
-aws-sdk-cpp=1.11.638=hac3f51a_0
-
-# ============================================================
-# AI/ML 框架 - LlamaIndex RAG 系统
-# ============================================================
-llama-index=0.14.8=pypi_0
-llama-index-core=0.14.8=pypi_0
-llama-index-cli=0.5.3=pypi_0
-llama-index-embeddings-openai=0.5.1=pypi_0
-llama-index-llms-openai=0.6.9=pypi_0
-llama-index-indices-managed-llama-cloud=0.9.4=pypi_0
-llama-index-instrumentation=0.4.2=pypi_0
-llama-index-readers-file=0.5.5=pypi_0
-llama-index-readers-llama-parse=0.5.1=pypi_0
-llama-index-vector-stores-postgres=0.7.1=pypi_0
-llama-index-workflows=2.11.5=pypi_0
-llama-cloud=0.1.35=pypi_0
-llama-cloud-services=0.6.54=pypi_0
-llama-parse=0.6.54=pypi_0
+llama-index==0.14.8
+llama-index-core==0.14.8
+llama-index-cli==0.5.3
+llama-index-embeddings-openai==0.5.1
+llama-index-llms-openai==0.6.9
+llama-index-indices-managed-llama-cloud==0.9.4
+llama-index-instrumentation==0.4.2
+llama-index-readers-file==0.5.5
+llama-index-readers-llama-parse==0.5.1
+llama-index-vector-stores-postgres==0.7.1
+llama-index-workflows==2.11.5
+llama-cloud==0.1.35
+llama-cloud-services==0.6.54
+llama-parse==0.6.54
 
 # ============================================================
 # AI/ML 框架 - LangChain
 # ============================================================
-langchain=0.3.27=py312h06a4308_0
-langchain-core=0.3.77=py312h06a4308_0
-langchain-text-splitters=0.3.11=py312h06a4308_0
-langsmith=0.4.32=py312h06a4308_0
+langchain==0.3.27
+langchain-core==0.3.77
+langchain-text-splitters==0.3.11
+langsmith==0.4.32
 
 # ============================================================
 # AI/ML 框架 - Transformers 和 Hugging Face
 # ============================================================
-transformers=4.57.3=pyhd8ed1ab_0
-huggingface_hub=0.34.4=py312h06a4308_0
-huggingface-hub=0.36.0=pypi_0
-tokenizers=0.22.1=py312h4b931ed_0
-safetensors=0.6.2=py312h498d7c9_0
-sentence-transformers=5.1.2=pypi_0
+transformers==4.57.3
+huggingface-hub==0.36.0
+tokenizers==0.22.1
+safetensors==0.6.2
+sentence-transformers==5.1.2
+datasets==3.3.2
+dill==0.3.8
+multiprocess==0.70.15
+hf-xet==1.2.0
 
 # ============================================================
-# AI/ML 框架 - PyTorch (GPU 版本)
+# AI/ML 框架 - PyTorch
 # ============================================================
-torch=2.9.1+cu130=pypi_0
-torchvision=0.24.1+cu130=pypi_0
-triton=3.5.1=pypi_0
+torch==2.9.1+cu130
+torchvision==0.24.1+cu130
+triton==3.5.1
 
+# ============================================================
 # NVIDIA CUDA 依赖
-nvidia-cublas=13.0.0.19=pypi_0
-nvidia-cuda-cupti=13.0.48=pypi_0
-nvidia-cuda-nvrtc=13.0.48=pypi_0
-nvidia-cuda-runtime=13.0.48=pypi_0
-nvidia-cudnn-cu13=9.13.0.50=pypi_0
-nvidia-cufft=12.0.0.15=pypi_0
-nvidia-cufile=1.15.0.42=pypi_0
-nvidia-curand=10.4.0.35=pypi_0
-nvidia-cusolver=12.0.3.29=pypi_0
-nvidia-cusparse=12.6.2.49=pypi_0
-nvidia-cusparselt-cu13=0.8.0=pypi_0
-nvidia-nccl-cu13=2.27.7=pypi_0
-nvidia-nvjitlink=13.0.39=pypi_0
-nvidia-nvshmem-cu13=3.3.24=pypi_0
-nvidia-nvtx=13.0.39=pypi_0
+# ============================================================
+nvidia-cublas==13.0.0.19
+nvidia-cublas-cu12==12.6.4.1
+nvidia-cuda-cccl-cu12==12.6.77
+nvidia-cuda-cupti==13.0.48
+nvidia-cuda-cupti-cu12==12.6.80
+nvidia-cuda-nvrtc==13.0.48
+nvidia-cuda-nvrtc-cu12==12.6.77
+nvidia-cuda-runtime==13.0.48
+nvidia-cuda-runtime-cu12==12.6.77
+nvidia-cudnn-cu12==9.5.1.17
+nvidia-cudnn-cu13==9.13.0.50
+nvidia-cufft==12.0.0.15
+nvidia-cufft-cu12==11.3.0.4
+nvidia-cufile==1.15.0.42
+nvidia-cufile-cu12==1.11.1.6
+nvidia-curand==10.4.0.35
+nvidia-curand-cu12==10.3.7.77
+nvidia-cusolver==12.0.3.29
+nvidia-cusolver-cu12==11.7.1.2
+nvidia-cusparse==12.6.2.49
+nvidia-cusparse-cu12==12.5.4.2
+nvidia-cusparselt-cu12==0.6.3
+nvidia-cusparselt-cu13==0.8.0
+nvidia-nccl-cu13==2.27.7
+nvidia-nvjitlink==13.0.39
+nvidia-nvjitlink-cu12==12.6.85
+nvidia-nvshmem-cu13==3.3.24
+nvidia-nvtx==13.0.39
+nvidia-nvtx-cu12==12.6.77
 
 # ============================================================
 # AI/ML 框架 - PaddlePaddle (OCR)
 # ============================================================
-paddlepaddle-gpu=2.6.0=pypi_0
-paddleocr=3.3.2=pypi_0
-paddlex=3.3.10=pypi_0
+paddlepaddle-gpu==3.2.0
+paddleocr==3.3.2
+paddlex==3.3.10
 
 # ============================================================
 # AI/ML 框架 - OpenAI 客户端
 # ============================================================
-openai=2.8.1=pypi_0
-tiktoken=0.12.0=pypi_0
+openai==2.8.1
+tiktoken==0.12.0
 
 # ============================================================
 # AI/ML 工具 - 关键词提取和文本处理
 # ============================================================
-keybert=0.9.0=pypi_0
-nltk=3.9.2=pypi_0
-sacremoses=0.1.1=py312h06a4308_0
+keybert==0.9.0
+nltk==3.9.2
+sacremoses==0.1.1
 
 # ============================================================
 # 文档处理 - PDF
 # ============================================================
-pdfplumber=0.11.8=pypi_0
-pdfminer-six=20251107=pypi_0
-pypdf=6.4.0=pypi_0
-pypdfium2=5.1.0=pypi_0
+pdf2image==1.17.0
+pdfminer.six==20251107
+pdfplumber==0.11.8
+pypdf==6.4.0
+pypdfium2==5.1.0
 
 # ============================================================
 # 文档处理 - Office 文档
 # ============================================================
-python-docx=1.2.0=pypi_0
-python-pptx=1.0.2=pypi_0
-openpyxl (通过 pandas 间接依赖)
+python-docx==1.2.0
+python-pptx==1.0.2
+openpyxl==3.1.5
+et_xmlfile==2.0.0
+xlsxwriter==3.2.9
 
 # ============================================================
 # 文档处理 - HTML 和 Web 内容
 # ============================================================
-beautifulsoup4=4.14.2=pypi_0
-html-text=0.7.1=pypi_0
-readability=0.3.2=pypi_0
-lxml=6.0.2=pypi_0
-lxml-html-clean=0.4.3=pypi_0
-soupsieve=2.8=pypi_0
+beautifulsoup4==4.14.2
+html-text==0.7.1
+readability==0.3.2
+lxml==6.0.2
+lxml_html_clean==0.4.3
+soupsieve==2.8
 
 # ============================================================
-# 文档处理 - 图像处理
+# 文档处理 - 图像处理和 OCR
 # ============================================================
-opencv-contrib-python=4.10.0.84=pypi_0
-pillow=12.0.0=pypi_0
-shapely=2.1.2=pypi_0
-pyclipper=1.4.0=pypi_0
+opencv-contrib-python==4.10.0.84
+pillow==12.0.0
+shapely==2.1.2
+pyclipper==1.4.0
 
 # ============================================================
 # 数据处理和分析
 # ============================================================
-pandas=2.2.3=pypi_0
-polars=1.34.0=py312hf6aaf73_1
-polars-runtime-32=1.34.0=py312hbdd6827_1
-numpy=2.3.4=py312h720eef7_1
-numpy-base=2.3.4=py312h95072fd_1
-scipy=1.16.3=py312h33bc11c_0
-scikit-learn=1.7.2=py312h86c3e14_1
-narwhals=2.7.0=py312h06a4308_0
+pandas==2.2.3
+polars==1.34.0
+polars-runtime-32==1.34.0
+numpy==2.3.4
+scipy==1.16.3
+scikit-learn==1.7.2
+narwhals==2.7.0
+pyarrow==21.0.0
+Bottleneck==1.4.2
+numexpr==2.14.1
 
 # ============================================================
-# 数据处理 - Arrow 和 Parquet
+# 数学和科学计算
 # ============================================================
-arrow-cpp=21.0.0=hac1acdb_1
-pyarrow=21.0.0=py312h505adc9_0
-orc=2.2.0=h372e9aa_0
-thrift 相关
-libthrift=0.22.0=hd8eb582_0
-
-# ============================================================
-# 数据处理 - HuggingFace Datasets
-# ============================================================
-datasets=3.3.2=py312h06a4308_0
-dill=0.3.8=py312h06a4308_0
-multiprocess=0.70.15=py312h06a4308_0
-xxhash=0.8.0=h7f8727e_3
-python-xxhash=3.5.0=py312h5eee18b_0
-
-# ============================================================
-# 数学和科学计算库
-# ============================================================
-# Intel MKL (数学核心库)
-blas=1.0=mkl
-mkl=2025.0.0=hacee8c2_941
-mkl-service=2.5.2=py312hacdc0fc_0
-mkl_fft=2.1.1=py312h8fe796d_0
-mkl_random=1.3.0=py312h505adc9_0
-intel-openmp=2025.0.0=h06a4308_1171
-
-# TBB (线程构建块)
-tbb=2022.0.0=hdb19cb5_0
-tbb-devel=2022.0.0=hdb19cb5_0
-
-# 其他科学计算
-sympy=1.14.0=pypi_0
-mpmath=1.3.0=pypi_0
-numexpr=2.14.1=py312h41d4191_0
-bottleneck=1.4.2=py312haa0f9ac_1
-opt-einsum=3.3.0=pypi_0
+sympy==1.14.0
+mpmath==1.3.0
+opt-einsum==3.3.0
+networkx==3.6
 
 # ============================================================
 # 配置和验证
 # ============================================================
-pydantic=2.12.3=py312h06a4308_1
-pydantic-core=2.41.4=py312h498d7c9_0
-pydantic-settings=2.10.1=py312h06a4308_0
-python-dotenv=1.1.0=py312h06a4308_0
+pydantic==2.12.3
+pydantic-core==2.41.4
+pydantic-settings==2.10.1
+python-dotenv==1.1.0
 
 # ============================================================
 # 安全和认证
 # ============================================================
-cryptography=46.0.3=py312h0a354b3_0
-bcrypt=5.0.0=py312h498d7c9_0
-passlib=1.7.4=pyhd3eb1b0_0
-pyjwt=2.10.1=py312h06a4308_0
-pycryptodome=3.21.0=py312h601e201_0
+cryptography==46.0.3
+bcrypt==5.0.0
+passlib==1.7.4
+PyJWT==2.10.1
+pycryptodome==3.21.0
 
 # ============================================================
 # 序列化和数据格式
 # ============================================================
-orjson=3.11.4=py312h498d7c9_0
-ujson=5.11.0=pypi_0
-jiter=0.12.0=pypi_0
-pyyaml=6.0.2=pypi_0
-ruamel-yaml=0.18.16=pypi_0
-ruamel-yaml-clib=0.2.15=pypi_0
-jsonpatch=1.33=py312h06a4308_1
-jsonpointer=3.0.0=py312h06a4308_0
-dataclasses-json=0.6.7=pypi_0
-marshmallow=3.26.1=pypi_0
+orjson==3.11.4
+ujson==5.11.0
+jiter==0.12.0
+PyYAML==6.0.2
+ruamel.yaml==0.18.16
+ruamel.yaml.clib==0.2.15
+jsonpatch==1.33
+jsonpointer==3.0.0
+dataclasses-json==0.6.7
+marshmallow==3.26.1
+protobuf==6.33.2
 
 # ============================================================
 # 监控和日志
 # ============================================================
-prometheus_client=0.21.1=py312h06a4308_0
-colorlog=6.10.1=pypi_0
-rich=14.2.0=pypi_0
-pygments=2.19.2=pypi_0
-markdown-it-py=4.0.0=pypi_0
-mdurl=0.1.2=pypi_0
+prometheus_client==0.21.1
+colorlog==6.10.1
+rich==14.2.0
+Pygments==2.19.2
+markdown-it-py==4.0.0
+mdurl==0.1.2
 
 # ============================================================
 # 任务调度和并发
 # ============================================================
-joblib=1.5.2=py312h06a4308_0
-threadpoolctl=3.5.0=py312h7040dfc_1
-nest-asyncio=1.6.0=pypi_0
+joblib==1.5.2
+threadpoolctl==3.5.0
+nest-asyncio==1.6.0
 
 # ============================================================
 # 百度 AI 平台 SDK
 # ============================================================
-aistudio-sdk=0.3.8=pypi_0
-bce-python-sdk=0.9.55=pypi_0
-modelscope=1.32.0=pypi_0
+aistudio-sdk==0.3.8
+bce-python-sdk==0.9.55
+modelscope==1.32.0
 
 # ============================================================
 # CLI 工具
 # ============================================================
-click=8.2.1=py312h06a4308_0
-typer-slim=0.20.0=pypi_0
-shellingham=1.5.4=pypi_0
+click==8.2.1
+typer-slim==0.20.0
+shellingham==1.5.4
+
+# ============================================================
+# HTTP 客户端和网络请求
+# ============================================================
+requests==2.32.5
+requests-toolbelt==1.0.0
+urllib3==2.5.0
+certifi==2025.11.12
+charset-normalizer==3.4.4
+idna==3.11
+PySocks==1.7.1
+
+# ============================================================
+# 文件和路径处理
+# ============================================================
+platformdirs==4.5.0
+filelock==3.20.0
+fsspec==2024.12.0
+filetype==1.2.0
+
+# ============================================================
+# 进度条和显示
+# ============================================================
+tqdm==4.67.1
+prettytable==3.17.0
+
+# ============================================================
+# 时间处理
+# ============================================================
+python-dateutil==2.9.0
+pytz==2025.2
+tzdata==2025.3
 
 # ============================================================
 # 通用工具库
 # ============================================================
-requests=2.32.5=py312h06a4308_1
-requests-toolbelt=1.0.0=py312h06a4308_0
-urllib3=2.5.0=py312h06a4308_0
-certifi=2025.11.12=py312h06a4308_0
-charset-normalizer=3.4.4=py312h06a4308_0
-idna=3.11=py312h06a4308_0
-pysocks=1.7.1=py312h06a4308_1
+tenacity==9.1.2
+packaging==25.0
+jmespath==1.0.1
+six==1.17.0
+attrs==25.4.0
+decorator==5.2.1
+Deprecated==1.2.18
+wrapt==1.17.3
 
-# 文件和路径
-platformdirs=4.5.0=pypi_0
-filelock=3.20.0=py312h06a4308_0
-fsspec=2025.10.0=pypi_0
-filetype=1.2.0=pypi_0
+# ============================================================
+# 类型检查和注解
+# ============================================================
+typing-extensions==4.15.0
+typing-inspect==0.9.0
+typing-inspection==0.4.2
+annotated-types==0.6.0
+mypy_extensions==1.1.0
 
-# 进度条和显示
-tqdm=4.67.1=py312h7040dfc_1
-prettytable=3.17.0=pypi_0
+# ============================================================
+# 系统和资源监控
+# ============================================================
+psutil==7.0.0
+GPUtil==1.4.0
+py-cpuinfo==9.0.0
 
-# 时间处理
-python-dateutil=2.9.0post0=py312h06a4308_2
-pytz=2025.2=py312h06a4308_0
-python-tzdata=2025.2=pyhd3eb1b0_0
-tzdata=2025b=h04d1e81_0
+# ============================================================
+# 异步和并发工具
+# ============================================================
+sniffio==1.3.0
+anyio==4.10.0
 
-# 其他工具
-tenacity=9.1.2=py312h06a4308_0
-packaging=25.0=py312h06a4308_1
-jmespath=1.0.1=py312h06a4308_0
-six=1.17.0=py312h06a4308_0
-attrs=25.4.0=py312h06a4308_2
-decorator=5.2.1=pypi_0
-deprecated=1.2.18=pypi_0
-wrapt=1.17.3=pypi_0
+# ============================================================
+# 文本和终端处理
+# ============================================================
+python-bidi==0.6.7
+regex==2025.11.3
+wcwidth==0.2.14
+colorama==0.4.6
 
-# 类型检查
-typing-extensions=4.15.0=py312h06a4308_0
-typing_extensions=4.15.0=py312h06a4308_0
-typing-inspect=0.9.0=pypi_0
-typing-inspection=0.4.2=py312h06a4308_0
-annotated-types=0.6.0=py312h06a4308_1
-mypy-extensions=1.1.0=pypi_0
+# ============================================================
+# 压缩和哈希
+# ============================================================
+zstandard==0.24.0
+xxhash @ file:///croot/python-xxhash_1737039434400/work
 
-# 其他
-psutil=7.0.0=py312hee96239_1
-gputil=1.4.0=pypi_0
-py-cpuinfo=9.0.0=pypi_0
-networkx=3.6=pypi_0
-future=1.0.0=pypi_0
-sniffio=1.3.0=py312h06a4308_0
-anyio=4.10.0=py312h06a4308_0
-
-# Excel 处理
-xlsxwriter=3.2.9=pypi_0
-
-# 可视化
-plotly=6.5.0=py312h7040dfc_0
-
-# 文本处理
-python-bidi=0.6.7=pypi_0
-regex=2025.11.3=pypi_0
-wcwidth=0.2.14=pypi_0
-colorama=0.4.6=pypi_0
-
-# 数据库工具
-banks=2.2.0=pypi_0
-
-# 文档处理辅助
-striprtf=0.0.26=pypi_0
-defusedxml=0.7.1=pypi_0
-dirtyjson=1.0.8=pypi_0
-distro=1.9.0=pypi_0
-
+# ============================================================
 # 模板引擎
-jinja2=3.1.6=pypi_0
-markupsafe=3.0.3=pypi_0
-
-# 杂项
-astor=0.8.1=pypi_0
-chardet=5.2.0=pypi_0
-hf-xet=1.2.0=pypi_0
-imagesize=1.4.1=pypi_0
-griffe=1.15.0=pypi_0
+# ============================================================
+Jinja2==3.1.6
+MarkupSafe==3.0.3
 
 # ============================================================
-# 系统底层库 - 压缩
+# 其他工具
 # ============================================================
-zlib=1.3.1=hb25bd0a_0
-libzlib=1.3.1=hb25bd0a_0
-zstd=1.5.7=h11fc155_0
-zstandard=0.24.0=py312h3d778a8_0
-bzip2=1.0.8=h5eee18b_6
-lz4-c=1.9.4=h6a678d5_1
-snappy=1.2.1=h6a678d5_0
-brotlicffi=1.1.0.0=py312hbdd6827_0
-libbrotlicommon=1.0.9=h5eee18b_9
-libbrotlidec=1.0.9=h5eee18b_9
-libbrotlienc=1.0.9=h5eee18b_9
-xz=5.6.4=h5eee18b_1
-
-# ============================================================
-# 系统底层库 - 编译器和链接器
-# ============================================================
-_libgcc_mutex=0.1=main
-_openmp_mutex=5.1=1_gnu
-libgcc=15.2.0=h69a1729_7
-libgcc-ng=15.2.0=h166f726_7
-libgomp=15.2.0=h4751f2c_7
-libstdcxx=15.2.0=h39759b7_7
-libstdcxx-ng=15.2.0=hc03a8fd_7
-ld_impl_linux-64=2.44=h153f514_2
-libgfortran=15.2.0=h166f726_7
-libgfortran-ng=15.2.0=h166f726_7
-libgfortran5=15.2.0=hc633d37_7
-
-# ============================================================
-# 系统底层库 - SSL 和加密
-# ============================================================
-openssl=3.0.18=hd6dcaed_0
-ca-certificates=2025.12.2=h06a4308_0
-libsodium=1.0.20=heac8642_0
-
-# ============================================================
-# 系统底层库 - 网络
-# ============================================================
-c-ares=1.34.5=hef5626c_0
-libcurl=8.16.0=heebcbe5_0
-libnghttp2=1.67.1=h697f920_0
-libssh2=1.11.1=h251f7ec_0
-libidn2=2.3.8=hf80d704_0
-libunistring=1.3=hb25bd0a_0
-libev=4.33=h7f8727e_1
-libevent=2.1.12=hdbd6064_1
-libuv=1.48.0=h5eee18b_0
-s2n=1.5.14=hdbd6064_0
-
-# ============================================================
-# 系统底层库 - 安全认证
-# ============================================================
-libkrb5=1.21.3=h520c7b4_4
-cyrus-sasl=2.1.28=h1110e0f_3
-openldap=2.6.10=he9288cc_1
-
-# ============================================================
-# 系统底层库 - gRPC 和 Protobuf
-# ============================================================
-libgrpc=1.71.0=h2d74bed_0
-libprotobuf=5.29.3=h3cdef7c_1
-protobuf=6.33.2=pypi_0
-libabseil=20250127.0=cxx17_h6a678d5_0
-libre2-11=2024.07.02=h6a678d5_0
-re2=2024.07.02=hdb19cb5_0
-gflags=2.2.2=h6a678d5_1
-glog=0.5.0=h6a678d5_1
-
-# ============================================================
-# 系统底层库 - 基础库
-# ============================================================
-libffi=3.4.4=h6a678d5_1
-ncurses=6.5=h7934f7d_0
-readline=8.3=hc2a1206_0
-tk=8.6.15=h54e0aa7_0
-sqlite=3.51.0=h2a70700_0
-gmp=6.3.0=h6a678d5_0
-libuuid=1.41.5=h5eee18b_0
-libnsl=2.0.0=h5eee18b_0
-lmdb=0.9.31=hb25bd0a_0
-
-# ============================================================
-# 系统底层库 - XML 和文本处理
-# ============================================================
-libxml2=2.13.9=h2c43086_0
-expat=2.7.3=h3385a95_0
-icu=73.1=h6a678d5_0
-libiconv=1.16=h5eee18b_3
-gettext=0.21.0=hedfda30_2
-utf8proc=2.6.1=h5eee18b_1
-jansson=2.14=h5eee18b_1
-yaml=0.2.5=h7b6447c_0
-
-# ============================================================
-# 系统底层库 - X11
-# ============================================================
-pthread-stubs=0.3=h0ce48e5_1
-libxcb=1.17.0=h9b100fa_0
-xorg-libx11=1.8.12=h9b100fa_1
-xorg-libxau=1.0.12=h9b100fa_0
-xorg-libxdmcp=1.1.5=h9b100fa_0
-xorg-xorgproto=2024.1=h5eee18b_1
+argon2-cffi==21.3.0
+argon2-cffi-bindings==25.1.0
+astor==0.8.1
+chardet==5.2.0
+defusedxml==0.7.1
+dirtyjson==1.0.8
+distro==1.9.0
+future==1.0.0
+griffe==1.15.0
+imagesize==1.4.1
+striprtf==0.0.26
 
 # ============================================================
 # Python C 扩展依赖
 # ============================================================
-cffi=2.0.0=py312h4eded50_1
-pycparser=2.23=py312h06a4308_0
-pycares=4.10.0=py312ha137689_0
-argon2-cffi=21.3.0=pyhd3eb1b0_0
-argon2-cffi-bindings=25.1.0=py312hee96239_0
+cffi==2.0.0
+pycparser==2.23
+pycares==4.10.0
+
+# ============================================================
+# 构建工具
+# ============================================================
+setuptools==80.9.0
+wheel==0.45.1
