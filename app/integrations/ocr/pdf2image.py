@@ -2,7 +2,7 @@
 PDF to Image Converter
 
 Convert uploaded PDF files to JPG images.
-Each page of the PDF will be converted to a separate JPG image.
+Each page of the PDF will be converted to a separate JPG image and output a share url.
 """
 import io
 import tempfile
