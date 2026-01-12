@@ -67,6 +67,7 @@ llama-parse==0.6.54
 langchain==0.3.27
 langchain-core==0.3.77
 langchain-text-splitters==0.3.11
+langchain-openai==0.3.12
 langsmith==0.4.32
 
 # ============================================================
