@@ -511,98 +511,98 @@ def update_user_profile_with_new_queries(
     return result
 
 
-if __name__ == "__main__":
-    # Example usage
-    print(f"Project root added to path: {sys.path[0]}\n")
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+# if __name__ == "__main__":
+#     # Example usage
+#     print(f"Project root added to path: {sys.path[0]}\n")
+#     logging.basicConfig(
+#         level=logging.INFO,
+#         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+#     )
     
-    # Replace with actual values
-    API_KEY = "app-bBMVW3TWyJ94CobDSDuQpzTQ"
-    USER_ID = "abc-123"
-    CONVERSATION_ID = "17911dbd-0c7c-4b5d-b22c-9695c6c9ea1c"
+#     # Replace with actual values
+#     API_KEY = "app-bBMVW3TWyJ94CobDSDuQpzTQ"
+#     USER_ID = "abc-123"
+#     CONVERSATION_ID = "17911dbd-0c7c-4b5d-b22c-9695c6c9ea1c"
     
-    print("\n" + "=" * 60)
-    print("Chat Message Archive - User Profile Update Demo")
-    print("=" * 60)
+#     print("\n" + "=" * 60)
+#     print("Chat Message Archive - User Profile Update Demo")
+#     print("=" * 60)
     
-    # Method 1: Simple query extraction and summary (no database)
-    # result = summarize_user_queries(
-    #     api_key=API_KEY,
-    #     user_id=USER_ID,
-    #     conversation_id=CONVERSATION_ID
-    # )
+#     # Method 1: Simple query extraction and summary (no database)
+#     # result = summarize_user_queries(
+#     #     api_key=API_KEY,
+#     #     user_id=USER_ID,
+#     #     conversation_id=CONVERSATION_ID
+#     # )
     
-    # Method 2: Complete workflow with database integration (using default settings)
-    result = update_user_profile_with_new_queries(
-        api_key=API_KEY,
-        user_id=USER_ID,
-        conversation_id=CONVERSATION_ID
-        # db_config is optional, defaults to settings from app.core.config
-    )
+#     # Method 2: Complete workflow with database integration (using default settings)
+#     result = update_user_profile_with_new_queries(
+#         api_key=API_KEY,
+#         user_id=USER_ID,
+#         conversation_id=CONVERSATION_ID
+#         # db_config is optional, defaults to settings from app.core.config
+#     )
     
-    # Method 2b: With custom db_config (if you need to override defaults)
-    # result = update_user_profile_with_new_queries(
-    #     api_key=API_KEY,
-    #     user_id=USER_ID,
-    #     conversation_id=CONVERSATION_ID,
-    #     db_config={
-    #         'host': 'localhost',
-    #         'port': 5432,
-    #         'database': 'postgres',
-    #         'user': 'postgres',
-    #         'password': 'your_password'
-    #     }
-    # )
+#     # Method 2b: With custom db_config (if you need to override defaults)
+#     # result = update_user_profile_with_new_queries(
+#     #     api_key=API_KEY,
+#     #     user_id=USER_ID,
+#     #     conversation_id=CONVERSATION_ID,
+#     #     db_config={
+#     #         'host': 'localhost',
+#     #         'port': 5432,
+#     #         'database': 'postgres',
+#     #         'user': 'postgres',
+#     #         'password': 'your_password'
+#     #     }
+#     # )
     
-    print(f"\n✓ 用户ID: {result['user_id']}")
-    print(f"✓ 成功提取 {result['query_count']} 条提问")
-    print(f"✓ 首次用户: {'是' if result['is_first_time'] else '否'}")
-    print(f"✓ 数据库更新: {'成功' if result['db_updated'] else '失败'}\n")
+#     print(f"\n✓ 用户ID: {result['user_id']}")
+#     print(f"✓ 成功提取 {result['query_count']} 条提问")
+#     print(f"✓ 首次用户: {'是' if result['is_first_time'] else '否'}")
+#     print(f"✓ 数据库更新: {'成功' if result['db_updated'] else '失败'}\n")
     
-    if result['previous_summary']:
-        print("=" * 60)
-        print("用户之前的聊天习惯总结：")
-        print("=" * 60)
-        print(result['previous_summary'])
+#     if result['previous_summary']:
+#         print("=" * 60)
+#         print("用户之前的聊天习惯总结：")
+#         print("=" * 60)
+#         print(result['previous_summary'])
     
-    print("\n提问列表：")
-    print("-" * 60)
-    for i, query in enumerate(result['queries'], 1):
-        print(f"{i}. {query}")
+#     print("\n提问列表：")
+#     print("-" * 60)
+#     for i, query in enumerate(result['queries'], 1):
+#         print(f"{i}. {query}")
     
-    print("\n" + "=" * 60)
-    print("最新的用户聊天习惯总结（LLM生成）：")
-    print("=" * 60)
-    print(result['new_summary'])
-    print("=" * 60 + "\n")
+#     print("\n" + "=" * 60)
+#     print("最新的用户聊天习惯总结（LLM生成）：")
+#     print("=" * 60)
+#     print(result['new_summary'])
+#     print("=" * 60 + "\n")
     
-    # Method 3: Step-by-step atomic operations (for more control)
-    # Step 1: Initialize components
-    # db = UserProfileDB()  # Uses settings from app.core.config
-    # # Or with custom config:
-    # # db = UserProfileDB(host='localhost', port=5432, database='postgres', 
-    # #                    user='postgres', password='your_password')
-    # extractor = MessageExtractor(api_key=API_KEY)
+#     # Method 3: Step-by-step atomic operations (for more control)
+#     # Step 1: Initialize components
+#     # db = UserProfileDB()  # Uses settings from app.core.config
+#     # # Or with custom config:
+#     # # db = UserProfileDB(host='localhost', port=5432, database='postgres', 
+#     # #                    user='postgres', password='your_password')
+#     # extractor = MessageExtractor(api_key=API_KEY)
     
-    # Step 2: Get previous summary
-    # previous_summary = db.get_latest_summary(USER_ID)
-    # print(f"Previous summary: {previous_summary}")
+#     # Step 2: Get previous summary
+#     # previous_summary = db.get_latest_summary(USER_ID)
+#     # print(f"Previous summary: {previous_summary}")
     
-    # Step 3: Extract queries
-    # queries = extractor.extract_queries(USER_ID, CONVERSATION_ID)
-    # print(f"Extracted {len(queries)} queries")
+#     # Step 3: Extract queries
+#     # queries = extractor.extract_queries(USER_ID, CONVERSATION_ID)
+#     # print(f"Extracted {len(queries)} queries")
     
-    # Step 4: Generate new summary
-    # new_summary = extractor.summarize_queries_with_llm(
-    #     queries=queries,
-    #     previous_summary=previous_summary
-    # )
-    # print(f"New summary: {new_summary}")
+#     # Step 4: Generate new summary
+#     # new_summary = extractor.summarize_queries_with_llm(
+#     #     queries=queries,
+#     #     previous_summary=previous_summary
+#     # )
+#     # print(f"New summary: {new_summary}")
     
-    # Step 5: Update database
-    # db.upsert_latest_summary(USER_ID, new_summary)
-    # print("Database updated")
+#     # Step 5: Update database
+#     # db.upsert_latest_summary(USER_ID, new_summary)
+#     # print("Database updated")
 
