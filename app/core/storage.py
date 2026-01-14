@@ -37,17 +37,33 @@ STREAM_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB
 
 class MinioClientPool:
     """
-    MinIO 客户端连接池（线程安全）
+    MinIO 客户端连接池（线程安全 + 单例模式）
     
     ✅ 解决问题：
     1. MinIO client 不是线程安全的，需要每个线程独立实例
     2. 延迟初始化，不在模块加载时连接
     3. 自动管理 Bucket 创建
+    4. ✅ 单例模式确保全局唯一连接池
     """
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls):
+        """确保只创建一个 MinioClientPool 实例"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self):
+        """初始化（只执行一次）"""
+        if self._initialized:
+            return
+        
         self._local = threading.local()
         self._bucket_checked: Dict[str, bool] = {}  # ✅ 按 bucket 名称记录检查状态
         self._bucket_lock = threading.Lock()
+        
+        self.__class__._initialized = True
     
     def get_client(self) -> Minio:
         """

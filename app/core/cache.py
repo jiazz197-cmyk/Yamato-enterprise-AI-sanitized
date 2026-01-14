@@ -23,8 +23,26 @@ logger = get_logger("cache")
 
 
 class AsyncRedisManager:
-    """异步 Redis 管理器，提供缓存、限流、任务状态等功能"""
+    """
+    异步 Redis 管理器（单例模式）
+    
+    提供缓存、限流、任务状态等功能
+    ✅ 单例模式确保全局唯一连接池
+    """
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls):
+        """确保只创建一个 AsyncRedisManager 实例"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self):
+        """初始化（只执行一次）"""
+        if self._initialized:
+            return
+        
         kwargs = {
             "max_connections": settings.REDIS_MAX_CONNECTIONS,
             "decode_responses": True,
@@ -32,6 +50,8 @@ class AsyncRedisManager:
         if settings.REDIS_PASSWORD:
             kwargs["password"] = settings.REDIS_PASSWORD
         self.redis_client = redis.from_url(settings.REDIS_URL, **kwargs)
+        
+        self.__class__._initialized = True
 
     async def _test_connection(self):
         try:

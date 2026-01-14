@@ -8,36 +8,43 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-# 设置本地模型使用的 GPU 设备
-LOCAL_GPU_DEVICE = os.environ.get("LOCAL_MODEL_GPU_DEVICE", "3")
-# 注意：不设置 CUDA_VISIBLE_DEVICES，因为 Docker 服务需要访问其他 GPU
-# 我们通过各个库的 API 来指定 GPU（如 paddle.set_device, torch device 等）
-os.environ.setdefault("LOCAL_MODEL_GPU_DEVICE", LOCAL_GPU_DEVICE)
-
-# 设置 PaddlePaddle 环境变量以避免版本兼容性问题
-os.environ.setdefault("FLAGS_use_mkldnn", "0")  # 禁用 MKL-DNN 优化
-os.environ.setdefault("FLAGS_use_cudnn", "1")   # 使用 cuDNN（GPU 环境）
-
-# 设置 Paddle 设备（如果 paddle 可用）
-try:
-    import paddle
-    paddle.set_device(f'gpu:{LOCAL_GPU_DEVICE}')
-    print(f"✅ Paddle 设备已设置为 GPU:{LOCAL_GPU_DEVICE}")
-except ImportError:
-    print("ℹ️  Paddle 不可用，跳过 GPU 设置")
-except Exception as e:
-    print(f"⚠️  设置 Paddle GPU 失败: {e}")
-
-# 设置 PyTorch 默认设备（如果需要）
-try:
-    import torch
-    if torch.cuda.is_available():
-        # 不设置默认设备，让各个模型自己指定
-        print(f"✅ PyTorch CUDA 可用，本地模型将使用 GPU:{LOCAL_GPU_DEVICE}")
-    else:
-        print("ℹ️  PyTorch CUDA 不可用")
-except ImportError:
-    pass
+# 使用环境变量标志避免重复初始化（热重载时模块会被多次导入）
+if not os.environ.get("_GPU_INITIALIZED"):
+    os.environ["_GPU_INITIALIZED"] = "1"
+    
+    # 设置本地模型使用的 GPU 设备
+    LOCAL_GPU_DEVICE = os.environ.get("LOCAL_MODEL_GPU_DEVICE", "3")
+    # 注意：不设置 CUDA_VISIBLE_DEVICES，因为 Docker 服务需要访问其他 GPU
+    # 我们通过各个库的 API 来指定 GPU（如 paddle.set_device, torch device 等）
+    os.environ.setdefault("LOCAL_MODEL_GPU_DEVICE", LOCAL_GPU_DEVICE)
+    
+    # 设置 PaddlePaddle 环境变量以避免版本兼容性问题
+    os.environ.setdefault("FLAGS_use_mkldnn", "0")  # 禁用 MKL-DNN 优化
+    os.environ.setdefault("FLAGS_use_cudnn", "1")   # 使用 cuDNN（GPU 环境）
+    
+    # 设置 Paddle 设备（如果 paddle 可用）
+    try:
+        import paddle
+        paddle.set_device(f'gpu:{LOCAL_GPU_DEVICE}')
+        print(f"✅ Paddle 设备已设置为 GPU:{LOCAL_GPU_DEVICE}")
+    except ImportError:
+        print("ℹ️  Paddle 不可用，跳过 GPU 设置")
+    except Exception as e:
+        print(f"⚠️  设置 Paddle GPU 失败: {e}")
+    
+    # 设置 PyTorch 默认设备（如果需要）
+    try:
+        import torch
+        if torch.cuda.is_available():
+            # 不设置默认设备，让各个模型自己指定
+            print(f"✅ PyTorch CUDA 可用，本地模型将使用 GPU:{LOCAL_GPU_DEVICE}")
+        else:
+            print("ℹ️  PyTorch CUDA 不可用")
+    except ImportError:
+        pass
+else:
+    # 已经初始化过，直接读取配置
+    LOCAL_GPU_DEVICE = os.environ.get("LOCAL_MODEL_GPU_DEVICE", "3")
 # ===== GPU 环境设置完成 =====
 
 from app.ragsystem.RAGretriever import create_rag_retriever_system
@@ -82,6 +89,39 @@ async def lifespan(app: FastAPI):
         print("✅ ExecutorManager 已集成 TaskManager")
     except Exception as e:
         print(f"⚠️  ExecutorManager 集成 TaskManager 失败: {e}")
+    
+    # 2.5 注册任务观察者（支持实时推送）
+    try:
+        from app.api.taskmanager import task_manager
+        from app.integrations.observers import (
+            LoggingObserver, 
+            MetricsCollector,
+        )
+        from app.api.v1.websocket_notifier import (
+            WebSocketTaskObserver,
+            ws_manager
+        )
+        
+        # 注册日志观察者（记录所有事件）
+        logging_observer = LoggingObserver()
+        await task_manager.register_observer(logging_observer)
+        
+        # 注册指标收集器（用于 Prometheus 监控）
+        metrics_observer = MetricsCollector()
+        await task_manager.register_observer(metrics_observer)
+        app.state.metrics_observer = metrics_observer  # 保存到 app.state
+        
+        # 注册 WebSocket 推送观察者（实时推送给客户端）
+        ws_observer = WebSocketTaskObserver(ws_manager)
+        await task_manager.register_observer(ws_observer)
+        
+        print("✅ 任务观察者注册完成")
+        observer_stats = task_manager.get_observer_stats()
+        print(f"  - 已注册观察者数: {observer_stats['observer_count']}")
+        print(f"  - 观察者状态: {'启用' if observer_stats['observer_enabled'] else '禁用'}")
+        
+    except Exception as e:
+        print(f"⚠️  注册任务观察者失败: {e}")
     
     # 3. 测试 Redis 连接
     try:
@@ -209,7 +249,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "main:app",
+        "main:app",  # 使用字符串以支持热重载
         host=settings.HOST,
         port=settings.PORT,
         reload=settings.RELOAD,

@@ -5,9 +5,11 @@ import os
 import secrets
 from pathlib import Path
 from typing import List, Optional, Union
+import threading
 
 from pydantic import Field, validator
 from pydantic_settings import BaseSettings
+from pydantic._internal._model_construction import ModelMetaclass
 
 from dotenv import load_dotenv
 import sys
@@ -27,8 +29,30 @@ def _split_comma_separated(value: Union[str, List[str]]) -> List[str]:
     return value
 
 
-class Settings(BaseSettings):
-    """全局配置对象，统一读取 .env 与环境变量。"""
+class SingletonModelMeta(ModelMetaclass):
+    """
+    线程安全的单例元类，继承自 pydantic 的 ModelMetaclass
+    确保与 pydantic BaseSettings 兼容
+    """
+    _instances = {}
+    _lock = threading.Lock()
+
+    def __call__(cls, *args, **kwargs):
+        # 双重检查锁定模式
+        if cls not in cls._instances:
+            with cls._lock:
+                if cls not in cls._instances:
+                    instance = super().__call__(*args, **kwargs)
+                    cls._instances[cls] = instance
+        return cls._instances[cls]
+
+
+class Settings(BaseSettings, metaclass=SingletonModelMeta):
+    """
+    全局配置对象，统一读取 .env 与环境变量（单例模式）
+    
+    使用元类确保全局唯一实例，兼容 pydantic BaseSettings
+    """
 
     # 基础信息
     PROJECT_NAME: str = Field("AI Data Tool", env="PROJECT_NAME")
