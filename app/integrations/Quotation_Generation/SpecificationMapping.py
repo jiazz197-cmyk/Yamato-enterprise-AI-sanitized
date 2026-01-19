@@ -3,7 +3,7 @@
 将提取的 JSON 格式规格数据转换为标准化的字典格式
 基于配置驱动的映射系统，根据KV动态生成输出
 """
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List, Callable, Tuple
 import json
 import re
 
@@ -148,7 +148,7 @@ OUTPUT_RULES = [
         "template": "振动盘（{model}{pan_type}）",
         "parts": [
             {"source": "meta.model", "key": "model", "transform": ["normalize_full_model"]},
-            {"source": "spec.7_linear_feeder_pan.value", "key": "pan_type", "transform": ["map_value"], "mapping": {"SN": " SN"}}
+            {"source": "spec.7_linear_feeder_pan.value", "key": "pan_type", "transform": ["map_value"], "mapping": {"SN": "SN"}}
         ]
     },
     {
@@ -488,6 +488,37 @@ class SpecificationMapping:
         # 返回所有组件的输出字符串列表，按顺序排列
         return [output for output in outputs.values()]
     
+    def generate_output_tuple(self) -> Tuple[List[Any], ...]:
+        """
+        生成元组格式输出，每个元素是列表：[名称, 关键词1, 关键词2, 关键词3]
+        
+        Returns:
+            元组，包含所有组件的列表，每个列表格式为 [名称, 关键词1, 关键词2, 关键词3]
+            如果某个关键词没有值，则填 None
+        """
+        result = []
+        
+        for rule in self.output_rules:
+            name = rule.get("name")
+            parts_config = rule.get("parts", [])
+            
+            # 处理各个部分，获取前三个关键词的值
+            keywords = []
+            for i in range(min(3, len(parts_config))):
+                part_config = parts_config[i]
+                part_value = self._process_part(part_config)
+                # 如果值为None或空字符串，填None，否则填实际值
+                keywords.append(part_value if part_value else None)
+            
+            # 如果关键词不足3个，用None填充
+            while len(keywords) < 3:
+                keywords.append(None)
+            
+            # 构建列表：[名称, 关键词1, 关键词2, 关键词3]
+            result.append([name] + keywords)
+        
+        return tuple(result)
+    
     def generate_full_output(self) -> str:
         """
         生成完整的输出字符串（包含所有组件和备注）
@@ -578,7 +609,7 @@ class SpecificationMapping:
 
 
 # 使用示例
-"""
+
 if __name__ == "__main__":
     # 示例 JSON 数据
     example_json ={
@@ -719,8 +750,9 @@ if __name__ == "__main__":
     # 创建映射实例
     mapping = SpecificationMapping(example_json)
     
-    # 生成UTF-8列表格式输出（不包含remarks）
-    output_list = mapping.generate_output_list()
-    for item in output_list:
-        print(item)        
-        """
+    # 生成元组格式输出：[名称, 关键词1, 关键词2, 关键词3]
+    output_tuple = mapping.generate_output_tuple()
+    for item in output_tuple:
+        print(item)
+              
+        
