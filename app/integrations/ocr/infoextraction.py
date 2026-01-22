@@ -110,7 +110,8 @@ def extract_info(content: List[Dict[str, Any]]) -> Dict[str, Any]:
         "name_plate": {},
         "optional_spare_parts": "",
         "display_language": {},
-        "remarks": ""
+        "remarks": "",
+        "additional_info": []
     }
     
     # Track state for parsing
@@ -243,16 +244,30 @@ def extract_info(content: List[Dict[str, Any]]) -> Dict[str, Any]:
     if "primary" in result["display_language"]:
         result["name_plate"]["language"] = result["display_language"]["primary"]
     
-    # Extract text elements for additional info
+    # Collect all non-table content as additional info
     for element in content:
-        if element.get("category") == "Text" and "text" in element:
-            text = element["text"]
-            # Check if it contains special notes or remarks
-            if any(keyword in text for keyword in ["同种规格做", "台", "WG", "规格"]):
-                if result["remarks"]:
-                    result["remarks"] += " " + text
-                else:
-                    result["remarks"] = text
+        category = element.get("category")
+        # Skip Table and Picture categories
+        if category and category not in ["Table", "Picture"]:
+            element_info = {
+                "category": category,
+                "bbox": element.get("bbox", [])
+            }
+            # Add text content if present
+            if "text" in element and element["text"]:
+                element_info["text"] = element["text"]
+            
+            # Only add if there's text content
+            if "text" in element_info:
+                result["additional_info"].append(element_info)
+                
+                # Also extract special keywords to remarks for backward compatibility
+                text = element["text"]
+                if any(keyword in text for keyword in ["同种规格做", "台", "WG", "规格"]):
+                    if result["remarks"]:
+                        result["remarks"] += " " + text
+                    else:
+                        result["remarks"] = text
     
     return result
 

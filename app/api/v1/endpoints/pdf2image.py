@@ -2,13 +2,18 @@ import os
 import uuid
 import logging
 from typing import Dict, Any, Optional, List
+from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, File, UploadFile
+from fastapi import APIRouter, HTTPException, File, UploadFile, Query, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from app.integrations.ocr.pdf2image import pdf_to_images, pdf_to_single_image, get_pdf_page_count
 from app.integrations.ocr.image2url import upload_file_to_minio
 from app.core.executor import executor_manager, CancellationToken
+from app.core.dependencies import get_db
+from app.core.storage import upload_stream_to_minio
+from app.models.orm.file_resource import FileResource
 
 router = APIRouter()
 
@@ -43,6 +48,7 @@ class ImageInfo(BaseModel):
     filename: str
     url: Optional[str] = None
     file_size: int
+    file_id: Optional[int] = None  # 数据库中的文件记录 ID
 
 class PdfConvertResult(BaseModel):
     """PDF 转图片结果模型"""
@@ -61,7 +67,9 @@ def background_pdf_convert_task(
     first_page: Optional[int] = None,
     last_page: Optional[int] = None,
     upload_to_minio: bool = True,
-    file_name_prefix: Optional[str] = None
+    file_name_prefix: Optional[str] = None,
+    uploader: str = "anonymous",
+    db: Session = None
 ) -> Dict[str, Any]:
     """
     后台执行 PDF 转图片任务（使用 ExecutorManager）
@@ -77,6 +85,8 @@ def background_pdf_convert_task(
         last_page: 结束页码（可选）
         upload_to_minio: 是否上传到 MinIO
         file_name_prefix: 文件名前缀（可选）
+        uploader: 上传者标识
+        db: 数据库会话
     
     Returns:
         转换结果字典
@@ -137,8 +147,9 @@ def background_pdf_convert_task(
             filename = f"{base_filename}_page_{page_num:03d}.jpg"
             
             url = None
+            file_id = None
             if upload_to_minio:
-                # 上传到 MinIO
+                # 生成唯一文件名
                 unique_filename = f"{uuid.uuid4().hex}_{filename}"
                 if file_name_prefix:
                     unique_filename = f"{file_name_prefix}/{unique_filename}"
@@ -147,6 +158,28 @@ def background_pdf_convert_task(
                 
                 logger.info(f"上传图片 {idx}/{len(image_results)}: {unique_filename}")
                 url = upload_file_to_minio(img_bytes, unique_filename)
+                
+                # 如果提供了数据库会话，则保存文件记录
+                if db:
+                    try:
+                        file_record = FileResource(
+                            file_name=filename,
+                            unique_name=unique_filename,
+                            minio_object_path=unique_filename,
+                            content_type="image/jpeg",
+                            file_size=len(img_bytes),
+                            uploader=uploader,
+                        )
+                        db.add(file_record)
+                        db.commit()
+                        db.refresh(file_record)
+                        file_id = file_record.id
+                        logger.info(f"文件记录已保存到数据库: ID={file_id}, 文件名={filename}")
+                    except Exception as e:
+                        logger.error(f"保存文件记录到数据库失败: {e}", exc_info=True)
+                        db.rollback()
+                        # 继续执行，不中断任务
+                
                 filename = unique_filename
             
             images_info.append(
@@ -154,7 +187,8 @@ def background_pdf_convert_task(
                     page_number=page_num,
                     filename=filename,
                     url=url,
-                    file_size=len(img_bytes)
+                    file_size=len(img_bytes),
+                    file_id=file_id
                 ).model_dump()
             )
         
@@ -185,7 +219,9 @@ def background_pdf_convert_task(
 @router.post("/pdf/convert", response_model=PdfConvertResponse)
 async def convert_pdf_to_images(
     file: UploadFile = File(...),
-    request: PdfConvertRequest = PdfConvertRequest()
+    request: PdfConvertRequest = PdfConvertRequest(),
+    uploader: str = Query(default="anonymous", description="上传者标识"),
+    db: Session = Depends(get_db)
 ) -> PdfConvertResponse:
     """
     异步转换 PDF 为图片（使用 ExecutorManager）
@@ -193,6 +229,8 @@ async def convert_pdf_to_images(
     Args:
         file: 待转换的 PDF 文件
         request: 转换配置参数
+        uploader: 上传者标识（可选，默认为 anonymous）
+        db: 数据库会话
     
     Returns:
         包含任务ID的响应（客户端可通过 task_id 查询结果）
@@ -236,7 +274,9 @@ async def convert_pdf_to_images(
             request.first_page,
             request.last_page,
             request.upload_to_minio,
-            request.file_name_prefix
+            request.file_name_prefix,
+            uploader,  # 上传者标识
+            db  # 数据库会话
         )
         
         logger.info(f"启动 PDF 转图片任务: {task_id}")

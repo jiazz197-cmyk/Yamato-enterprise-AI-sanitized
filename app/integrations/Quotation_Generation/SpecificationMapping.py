@@ -114,6 +114,44 @@ class ValueTransformers:
             if condition.upper() in value_upper:
                 return output
         return value
+    
+    @staticmethod
+    def get_priority_value(spec_obj: Dict[str, Any], mapping: Dict[str, str]) -> str:
+        """
+        根据优先级获取值：note > value > 其他
+        
+        Args:
+            spec_obj: 规格对象，包含 value, note 等字段
+            mapping: 值映射表
+        
+        Returns:
+            处理后的值
+        """
+        if not spec_obj or not isinstance(spec_obj, dict):
+            return ""
+        
+        # 优先级1: 检查 note 字段
+        note = spec_obj.get("note", "")
+        if note and note.strip():
+            # 对 note 应用映射
+            note_upper = note.upper()
+            for key, mapped_value in mapping.items():
+                if key.upper() in note_upper:
+                    return mapped_value
+            return note
+        
+        # 优先级2: 检查 value 字段
+        value = spec_obj.get("value", "")
+        if value and value.strip():
+            # 对 value 应用映射
+            value_upper = value.upper()
+            for key, mapped_value in mapping.items():
+                if key.upper() in value_upper:
+                    return mapped_value
+            return value
+        
+        # 优先级3: 返回空字符串（将使用其他参数或默认值）
+        return ""
 
 
 # 输出规则配置
@@ -140,7 +178,7 @@ OUTPUT_RULES = [
         "template": "顶锥（{parts}）",
         "parts": [
             {"source": "meta.model", "transform": ["extract_model_number", "normalize_model"]},
-            {"source": "spec.8_lfp_lip.value", "transform": ["map_value"], "mapping": {"FLAT LIP": "平", "FLAT": "平"}}
+            {"source": "spec.8_lfp_lip.value", "transform": ["get_priority_value"], "mapping": {"FLAT LIP": "平", "FLAT": "平"}}
         ]
     },
     {
@@ -157,7 +195,7 @@ OUTPUT_RULES = [
         "parts": [
             {"source": "static", "value": "03系列"},
             {"source": "spec.11_fb_spring.value", "transform": ["map_value"], "mapping": {"YES": "有弹簧", "NO": "无弹簧"}},
-            {"source": "spec.8_lfp_lip.value", "transform": ["map_value"], "mapping": {"FLAT LIP": "平", "FLAT": "平"}}
+            {"source": "spec.8_lfp_lip.value", "transform": ["get_priority_value"], "mapping": {"FLAT LIP": "平", "FLAT": "平"}}
         ]
     },
     {
@@ -296,6 +334,7 @@ class SpecificationMapping:
             "check_contains": ValueTransformers.check_contains,
             "extract_pattern": ValueTransformers.extract_pattern,
             "conditional_format": ValueTransformers.conditional_format,
+            "get_priority_value": ValueTransformers.get_priority_value,
         }
     
     def _get_value(self, source: str) -> Any:
@@ -329,7 +368,7 @@ class SpecificationMapping:
         应用转换器链
         
         Args:
-            value: 原始值
+            value: 原始值（可能是字符串或字典对象）
             transforms: 转换器名称列表
             **kwargs: 转换器参数
         
@@ -352,6 +391,10 @@ class SpecificationMapping:
                 elif transform_name == "conditional_format":
                     condition_map = kwargs.get("conditional", {})
                     result = transformer(result, condition_map)
+                elif transform_name == "get_priority_value":
+                    # get_priority_value 需要整个对象，而不是字符串
+                    mapping = kwargs.get("mapping", {})
+                    result = transformer(value, mapping)
                 else:
                     result = transformer(result)
         
@@ -374,10 +417,20 @@ class SpecificationMapping:
             return part_config.get("value", "")
         
         # 从数据源获取值
-        value = self._get_value(source)
+        transforms = part_config.get("transform", [])
+        
+        # 如果使用 get_priority_value 转换器，需要获取整个对象而不是 .value
+        if "get_priority_value" in transforms:
+            # 移除 .value 后缀以获取整个对象
+            if source.endswith(".value"):
+                source_obj = source[:-6]  # 移除 ".value"
+                value = self._get_value(source_obj)
+            else:
+                value = self._get_value(source)
+        else:
+            value = self._get_value(source)
         
         # 应用转换器
-        transforms = part_config.get("transform", [])
         kwargs = {k: v for k, v in part_config.items() if k not in ["source", "transform", "key", "default", "default_key", "conditional"]}
         
         result = self._apply_transforms(value, transforms, **kwargs) if value is not None else ""
