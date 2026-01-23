@@ -166,24 +166,73 @@ async def lifespan(app: FastAPI):
     yield  # 应用运行中
     
     # === Shutdown ===
-    # 1. 关闭文档处理线程池
-    try:
-        from app.core.executor import executor_manager
-        executor_manager.shutdown(wait=True, cancel_futures=True, timeout=30.0)
-        print("✅ 线程池已关闭")
-    except Exception as e:
-        print(f"⚠️  关闭文档处理线程池时出错: {e}")
+    import asyncio
+    import signal
+    import sys
     
-    # 2. 关闭 Redis 连接
-    try:
-        await redis_manager.close()
-    except Exception:
-        pass
+    print("\n🛑 开始关闭...")
     
-    print("正在清理 RAG 系统资源...")
-    if hasattr(app.state, 'rag') and app.state.rag:
-        app.state.rag.cleanup()
-    print("RAG 系统资源清理完成")
+    # 设置全局关闭超时（10秒后强制退出）
+    def force_exit(signum=None, frame=None):
+        print("\n⚠️  关闭超时，强制退出")
+        sys.exit(1)
+    
+    # 注册超时信号
+    signal.signal(signal.SIGALRM, force_exit)
+    signal.alarm(10)  # 10秒后触发
+    
+    try:
+        # 1. 先清理 RAG 系统（非阻塞）
+        try:
+            if hasattr(app.state, 'rag') and app.state.rag:
+                app.state.rag.cleanup()
+            print("✅ RAG 系统清理完成")
+        except Exception as e:
+            print(f"⚠️  清理 RAG 时出错: {e}")
+        
+        # 2. 关闭线程池（不等待，直接取消）
+        try:
+            from app.core.executor import executor_manager
+            # wait=False: 不等待任务完成
+            # cancel_futures=True: 取消所有等待中的任务
+            executor_manager.shutdown(wait=False, cancel_futures=True)
+            print("✅ 线程池已关闭")
+        except Exception as e:
+            print(f"⚠️  关闭线程池时出错: {e}")
+        
+        # 3. 移除观察者（1秒超时）
+        try:
+            from app.api.taskmanager import task_manager
+            await asyncio.wait_for(task_manager.remove_all_observers(), timeout=1.0)
+            print("✅ 观察者已清理")
+        except asyncio.TimeoutError:
+            print("⚠️  清理观察者超时，跳过")
+        except Exception as e:
+            print(f"⚠️  清理观察者时出错: {e}")
+        
+        # 4. 关闭 WebSocket（1秒超时）
+        try:
+            from app.api.v1.websocket_notifier import ws_manager
+            await asyncio.wait_for(ws_manager.disconnect_all(), timeout=1.0)
+            print("✅ WebSocket 已关闭")
+        except asyncio.TimeoutError:
+            print("⚠️  WebSocket 关闭超时，跳过")
+        except Exception as e:
+            print(f"⚠️  关闭 WebSocket 时出错: {e}")
+        
+        # 5. 关闭 Redis（2秒超时）
+        try:
+            await asyncio.wait_for(redis_manager.close(), timeout=2.0)
+            print("✅ Redis 已关闭")
+        except asyncio.TimeoutError:
+            print("⚠️  Redis 关闭超时，跳过")
+        except Exception as e:
+            print(f"⚠️  关闭 Redis 时出错: {e}")
+        
+    finally:
+        # 取消超时警报
+        signal.alarm(0)
+        print("🛑 关闭完成\n")
 
 def create_app() -> FastAPI:
     app = FastAPI(

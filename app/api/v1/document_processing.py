@@ -87,11 +87,12 @@ def process_documents_background(
     import asyncio
     import time
     from app.integrations.doc_processing.pipeline import DocumentProcessingPipeline
+    from app.api.taskmanager import TaskManager
     
     logger.info(f"[{task_id}] 开始后台处理，文件数: {len(file_ids)}")
     
-    # 🆕 使用全局 task_manager（带观察者），在独立事件循环中运行
-    from app.api.taskmanager import task_manager as global_task_manager
+    # 🆕 创建线程专用的 TaskManager 实例（避免事件循环冲突）
+    thread_tm = TaskManager.create_thread_safe_instance()
     
     # 创建线程专用的事件循环
     loop = asyncio.new_event_loop()
@@ -107,7 +108,7 @@ def process_documents_background(
         task_exists = False
         for attempt in range(5):
             try:
-                task_status = loop.run_until_complete(global_task_manager.get_task_status(task_id))
+                task_status = loop.run_until_complete(thread_tm.get_task_status(task_id))
                 if task_status:
                     task_exists = True
                     logger.info(f"[{task_id}] 任务已找到，开始处理")
@@ -122,7 +123,7 @@ def process_documents_background(
             return {"status": "error", "message": "任务创建超时"}
         
         # 启动任务
-        loop.run_until_complete(global_task_manager.start_task(task_id))
+        loop.run_until_complete(thread_tm.start_task(task_id))
         
         # 构建数据库配置
         db_config = {
@@ -154,7 +155,7 @@ def process_documents_background(
                 if token.is_cancelled():
                     logger.info(f"[{task_id}] 任务被取消，停止下载")
                     loop.run_until_complete(
-                        global_task_manager.fail_task(task_id, "用户取消任务", "任务已取消")
+                        thread_tm.fail_task(task_id, "用户取消任务", "任务已取消")
                     )
                     return {"status": "cancelled", "message": "任务被取消"}
                 
@@ -166,7 +167,7 @@ def process_documents_background(
                 # 更新进度：下载阶段
                 progress = int((i / len(file_ids)) * 30)  # 下载占30%进度
                 loop.run_until_complete(
-                    global_task_manager.update_task_progress(
+                    thread_tm.update_task_progress(
                         task_id, progress, f"正在下载第 {i+1}/{len(file_ids)} 个文件: {file_record.file_name}"
                     )
                 )
@@ -188,7 +189,7 @@ def process_documents_background(
             if token.is_cancelled():
                 logger.info(f"[{task_id}] 任务被取消，停止处理")
                 loop.run_until_complete(
-                    global_task_manager.fail_task(task_id, "用户取消任务", "任务已取消")
+                    thread_tm.fail_task(task_id, "用户取消任务", "任务已取消")
                 )
                 return {"status": "cancelled", "message": "任务被取消"}
             
@@ -196,7 +197,7 @@ def process_documents_background(
             
             # 更新进度：处理阶段
             loop.run_until_complete(
-                global_task_manager.update_task_progress(task_id, 30, f"开始处理 {len(streams)} 个文件...")
+                thread_tm.update_task_progress(task_id, 30, f"开始处理 {len(streams)} 个文件...")
             )
             
             # 处理文档（这里可以添加进度回调）
@@ -207,7 +208,7 @@ def process_documents_background(
             
             # 更新进度：完成
             loop.run_until_complete(
-                global_task_manager.update_task_progress(task_id, 90, "正在保存结果...")
+                thread_tm.update_task_progress(task_id, 90, "正在保存结果...")
             )
             
             # 标记任务完成
@@ -219,20 +220,27 @@ def process_documents_background(
             }
             
             loop.run_until_complete(
-                global_task_manager.complete_task(task_id, final_result, "文档处理完成")
+                thread_tm.complete_task(task_id, final_result, "文档处理完成")
             )
             
             logger.info(f"[{task_id}] 处理完成: {final_result}")
             return final_result
             
         finally:
-            db.close()
+            # ✅ 明确提交或回滚，避免自动 ROLLBACK 延迟
+            try:
+                # 只读操作，提交即可（即使有异常也不影响）
+                db.commit()
+            except Exception:
+                db.rollback()
+            finally:
+                db.close()
         
     except Exception as e:
         logger.error(f"[{task_id}] 处理失败: {e}", exc_info=True)
         try:
             loop.run_until_complete(
-                global_task_manager.fail_task(task_id, str(e), "文档处理失败")
+                thread_tm.fail_task(task_id, str(e), "文档处理失败")
             )
         except Exception as e2:
             logger.error(f"[{task_id}] 标记失败状态时出错: {e2}")
@@ -240,7 +248,30 @@ def process_documents_background(
     finally:
         # 清理资源
         try:
-            loop.close()
+            # 清理 Redis 连接（如果使用）- 添加超时机制
+            if hasattr(thread_tm, 'storage') and hasattr(thread_tm.storage, 'redis_client'):
+                if thread_tm.storage.redis_client is not None:
+                    try:
+                        # 先断开连接池
+                        async def close_redis_with_timeout():
+                            if hasattr(thread_tm.storage.redis_client, 'connection_pool'):
+                                await thread_tm.storage.redis_client.connection_pool.disconnect()
+                            await thread_tm.storage.redis_client.aclose()
+                        
+                        # 使用超时保护（2秒超时）
+                        loop.run_until_complete(
+                            asyncio.wait_for(close_redis_with_timeout(), timeout=2.0)
+                        )
+                        logger.debug(f"[{task_id}] Redis连接已关闭")
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[{task_id}] Redis关闭超时，强制继续")
+                    except Exception as e:
+                        logger.warning(f"[{task_id}] 关闭Redis连接失败: {e}")
+            
+            # 关闭事件循环
+            if loop and not loop.is_closed():
+                loop.close()
+                logger.debug(f"[{task_id}] 事件循环已关闭")
         except Exception as e:
             logger.warning(f"[{task_id}] 清理资源时出错: {e}")
 

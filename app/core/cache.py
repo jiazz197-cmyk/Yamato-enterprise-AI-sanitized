@@ -66,11 +66,21 @@ class AsyncRedisManager:
         return await self._test_connection()
 
     async def close(self):
-        """关闭 Redis 连接"""
+        """关闭 Redis 连接（优雅关闭，带超时保护）"""
         try:
+            logger.info("正在关闭 Redis 连接...")
+            # 先关闭连接池
+            if hasattr(self.redis_client, 'connection_pool'):
+                pool = self.redis_client.connection_pool
+                # 断开所有活跃连接
+                await pool.disconnect()
+                logger.info("✅ Redis 连接池已断开")
+            
+            # 关闭客户端
             await self.redis_client.aclose()
+            logger.info("✅ Redis 客户端已关闭")
         except Exception as e:
-            logger.error(f"Error closing Redis connection: {e}")
+            logger.error(f"关闭 Redis 连接时出错: {e}", exc_info=True)
 
     # ==================== 通用缓存操作 ====================
     async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:

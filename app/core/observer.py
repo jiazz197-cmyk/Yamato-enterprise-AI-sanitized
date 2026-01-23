@@ -171,6 +171,20 @@ class TaskSubject:
             for event_type_set in self._filtered_observers.values():
                 event_type_set.discard(observer)
     
+    async def detach_all(self) -> int:
+        """
+        注销所有观察者（用于关闭时清理）
+        
+        Returns:
+            注销的观察者数量
+        """
+        async with self._lock:
+            count = len(self._observers)
+            self._observers.clear()
+            self._filtered_observers.clear()
+            logger.info(f"🔌 已注销所有观察者: {count} 个")
+            return count
+    
     async def notify(self, event: TaskEvent) -> None:
         """
         通知所有相关观察者

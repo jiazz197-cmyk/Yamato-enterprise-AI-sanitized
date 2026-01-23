@@ -67,6 +67,27 @@ class WebSocketConnectionManager:
         if task_id:
             return len(self.active_connections.get(task_id, set()))
         return sum(len(conns) for conns in self.active_connections.values())
+    
+    async def disconnect_all(self):
+        """Disconnect all WebSocket connections gracefully"""
+        total_count = self.get_connection_count()
+        if total_count == 0:
+            logger.info("没有活跃的 WebSocket 连接需要关闭")
+            return
+        
+        logger.info(f"正在关闭 {total_count} 个 WebSocket 连接...")
+        
+        # Close all connections
+        for task_id, websockets in list(self.active_connections.items()):
+            for websocket in list(websockets):
+                try:
+                    await websocket.close(code=1001, reason="Server shutdown")
+                except Exception as e:
+                    logger.debug(f"关闭 WebSocket 时出错: {e}")
+        
+        # Clear all connections
+        self.active_connections.clear()
+        logger.info("✅ 所有 WebSocket 连接已关闭")
 
 
 # Global connection manager

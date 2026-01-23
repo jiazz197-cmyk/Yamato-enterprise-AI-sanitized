@@ -612,26 +612,51 @@ class RAGRetrieverSystem:
             logger.error(f"创建统一检索器失败: {e}")
             raise
 
-    def cleanup(self):
-        """清理资源"""
+    def cleanup(self, silent=False):
+        """
+        清理资源
+        
+        Args:
+            silent: 是否静默模式（不记录日志），用于析构函数调用
+        """
         try:
-            logger.info("开始清理RAG系统资源...")
+            if not silent:
+                logger.info("开始清理RAG系统资源...")
 
             # 清理数据库连接
             if hasattr(self, 'engine') and self.engine:
                 self.engine.dispose()
-                logger.info("数据库连接已清理")
+                if not silent:
+                    logger.info("数据库连接已清理")
 
-            logger.info("RAG系统资源清理完成")
+            if not silent:
+                logger.info("RAG系统资源清理完成")
 
         except Exception as e:
-            logger.warning(f"清理资源时出错: {e}")
+            # 静默模式下不记录日志（避免 Python 关闭时的错误）
+            if not silent:
+                try:
+                    logger.warning(f"清理资源时出错: {e}")
+                except:
+                    pass  # 如果 logger 已经被销毁，忽略
 
     def __del__(self):
-        """析构函数"""
+        """
+        析构函数 - 在对象销毁时自动调用
+        
+        注意：使用 silent=True 避免 Python 关闭时的 logging 错误
+        """
         try:
-            self.cleanup()
+            # 检查 Python 是否正在关闭
+            import sys
+            if sys is None or sys.meta_path is None:
+                # Python 正在关闭，静默清理
+                return
+            
+            # 静默清理（不记录日志）
+            self.cleanup(silent=True)
         except:
+            # 完全捕获所有异常，避免析构函数中的错误
             pass
 
 

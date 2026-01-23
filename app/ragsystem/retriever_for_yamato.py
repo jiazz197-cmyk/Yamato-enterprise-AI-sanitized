@@ -293,10 +293,17 @@ class OptimizedRetriever:
         return self.model_manager.get_memory_info()
     
     def __del__(self):
-        """析构函数"""
+        """析构函数 - 在对象销毁时自动调用"""
         try:
+            # 检查 Python 是否正在关闭
+            import sys
+            if sys is None or sys.meta_path is None:
+                # Python 正在关闭，跳过清理
+                return
+            
             self.cleanup()
         except:
+            # 完全捕获所有异常，避免析构函数中的错误
             pass
 
 

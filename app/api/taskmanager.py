@@ -240,6 +240,17 @@ class TaskManager:
         stats["observer_enabled"] = self._observer_enabled
         return stats
     
+    async def remove_all_observers(self) -> int:
+        """
+        移除所有观察者（用于关闭时清理）
+        
+        Returns:
+            移除的观察者数量
+        """
+        count = await self._subject.detach_all()
+        logger.info(f"✨ TaskManager 已移除所有观察者: {count} 个")
+        return count
+    
     async def _emit_event(
         self, 
         event_type: TaskEventType,
@@ -274,7 +285,10 @@ class TaskManager:
                 task_type=task_type,
                 **kwargs
             )
+            # 🐛 调试日志：记录事件发布
+            logger.debug(f"📡 准备发布事件: {event_type.value} [task_id={task_id}]")
             await self._subject.notify(event)
+            logger.debug(f"✅ 事件发布完成: {event_type.value} [task_id={task_id}]")
         except Exception as e:
             # 观察者通知失败不应影响任务执行
             logger.warning(f"⚠️  发布任务事件失败 [{event_type.value}]: {e}")
@@ -629,6 +643,20 @@ class TaskManager:
             logger.warning(f"无法为后台线程创建 Redis 存储，使用内存存储: {e}")
             instance.storage = MemoryTaskStorage()
             instance.storage_type = "memory"
+        
+        # ✨ 关键修复：共享全局单例的观察者（确保事件能被发布到 WebSocket）
+        # 虽然 Redis 连接是线程独立的，但观察者可以共享（观察者内部会处理线程安全）
+        global_instance = TaskManager._instance
+        if global_instance and hasattr(global_instance, '_subject'):
+            instance._subject = global_instance._subject
+            instance._observer_enabled = global_instance._observer_enabled
+            observer_count = len(global_instance._subject._observers) if hasattr(global_instance._subject, '_observers') else 0
+            logger.info(f"✨ 线程安全实例已共享全局观察者（{observer_count} 个观察者）")
+        else:
+            # 如果全局实例还没有观察者，初始化空的观察者
+            instance._subject = TaskSubject()
+            instance._observer_enabled = True
+            logger.warning("⚠️  线程安全实例创建了独立观察者（全局实例不可用）")
         
         return instance
 

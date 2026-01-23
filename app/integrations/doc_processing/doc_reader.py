@@ -22,7 +22,7 @@ from langchain_core.documents import Document
 import langchain_compat  # noqa: F401
 
 from .exceptions import DocumentParseError
-from .text_splitter import TagGenerator, TokenAwareTextSplitter
+from .text_splitter import TagGenerator, TokenAwareTextSplitter, ExcelHeaderPreservingSplitter
 
 logger = logging.getLogger(__name__)
 
@@ -589,6 +589,7 @@ class DocumentProcessor:
         text_splitter: TokenAwareTextSplitter,
         tag_generator: TagGenerator = None,
         num_tags: int = 5,
+        excel_splitter: ExcelHeaderPreservingSplitter = None,
     ) -> List[Document]:
         try:
             file_ext = self.get_file_extension(file_input)
@@ -614,6 +615,37 @@ class DocumentProcessor:
             
             text, tables = parser(file_input)
 
+            # ✅ Excel文件特殊处理：使用保留表头的分割方式
+            if file_ext in ("xlsx", "xls") and tables and excel_splitter:
+                logger.info(f"使用Excel表头保留分割器处理文件: {file_name}")
+                metadata = self.extract_metadata(file_input, text)
+                chunks: List[Document] = []
+                
+                # 对每个表格使用保留表头分割器
+                for table_idx, table in enumerate(tables):
+                    try:
+                        # 使用Excel专用分割器
+                        split_texts = excel_splitter.split_excel_data(table)
+                        
+                        for text_chunk in split_texts:
+                            chunk_metadata = {
+                                **metadata,
+                                "token_count": excel_splitter.count_tokens(text_chunk),
+                                "table_index": table_idx,
+                                "split_method": "excel_header_preserving",
+                            }
+                            if tag_generator and text_chunk.strip():
+                                chunk_metadata["tags"] = tag_generator.extract_tags(text_chunk, num_tags=num_tags)
+                            chunks.append(Document(page_content=text_chunk, metadata=chunk_metadata))
+                    except Exception as e:
+                        logger.warning(f"表格{table_idx}分割失败: {e}，跳过该表格")
+                        continue
+                
+                metadata["chunk_count"] = len(chunks)
+                logger.info(f"Excel文件分割完成，共生成 {len(chunks)} 个chunk")
+                return chunks
+
+            # 其他文件类型使用原有逻辑
             if tables:
                 table_texts = []
                 for table in tables:
