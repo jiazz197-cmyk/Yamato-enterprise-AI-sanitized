@@ -2,6 +2,28 @@
 规格映射模块
 将提取的 JSON 格式规格数据转换为标准化的字典格式
 基于配置驱动的映射系统，根据KV动态生成输出
+
+字段访问方式：
+1. 字段名访问（传统方式）：
+   - "meta.model" - 访问meta字段下的model
+   - "spec.25_common_bed.value" - 访问spec字段下25_common_bed的value
+   
+2. 位置索引访问（推荐，更具普适性）：
+   - "spec[25].value" - 访问spec字段下第25个（从0开始）键值对的value
+   - "spec@25.value" - 同上，使用@符号的替代语法
+   
+位置索引的优势：
+- 不依赖具体字段名称，即使字段名变化，只要位置不变，代码仍可正常工作
+- 更适合处理动态生成或格式不固定的数据
+- 提高代码的可维护性和扩展性
+
+示例：
+    # 传统方式（依赖字段名）
+    {"source": "spec.25_common_bed.value", "transform": ["map_value"], "mapping": {...}}
+    
+    # 位置索引方式（推荐）
+    {"source": "spec[25].value", "transform": ["map_value"], "mapping": {...}}
+    {"source": "spec@25.value", "transform": ["map_value"], "mapping": {...}}
 """
 from typing import Dict, Any, Optional, List, Callable, Tuple
 import json
@@ -155,6 +177,20 @@ class ValueTransformers:
 
 
 # 输出规则配置
+# 
+# 配置说明：
+# 1. source字段支持两种访问方式：
+#    - 字段名访问：如 "spec.25_common_bed.value"（依赖具体字段名）
+#    - 位置索引访问：如 "spec[25].value" 或 "spec@25.value"（推荐，更具普适性）
+# 
+# 2. 位置索引从0开始计数，访问spec字典中第N个键值对
+# 
+# 3. 建议使用位置索引方式，这样即使字段名变化，只要位置不变，配置仍然有效
+#
+# 示例对比：
+#    传统方式：{"source": "spec.25_common_bed.value", ...}
+#    位置索引：{"source": "spec[25].value", ...}  # 推荐
+#
 OUTPUT_RULES = [
     {
         "name": "机架",
@@ -339,10 +375,14 @@ class SpecificationMapping:
     
     def _get_value(self, source: str) -> Any:
         """
-        根据源路径获取值
+        根据源路径获取值，支持字段名和位置索引两种方式
         
         Args:
-            source: 源路径，格式如 "meta.model" 或 "spec.25_common_bed.value"
+            source: 源路径，支持以下格式：
+                - "meta.model" - 通过字段名访问
+                - "spec.25_common_bed.value" - 通过字段名访问
+                - "spec[25].value" - 通过位置索引访问（从0开始）
+                - "spec@25.value" - 通过位置索引访问（从0开始）
         
         Returns:
             对应的值
@@ -352,7 +392,47 @@ class SpecificationMapping:
         
         for part in parts:
             if isinstance(value, dict):
-                value = value.get(part)
+                # 检查是否使用位置索引语法: spec[25] 或 spec@25
+                if '[' in part and ']' in part:
+                    # 提取字段名和索引: spec[25] -> spec, 25
+                    field_name = part[:part.index('[')]
+                    index_str = part[part.index('[')+1:part.index(']')]
+                    if index_str.isdigit():
+                        index = int(index_str)
+                        # 获取字段对应的字典
+                        field_dict = value.get(field_name)
+                        if isinstance(field_dict, dict):
+                            # 按位置获取第index个键值对
+                            keys = list(field_dict.keys())
+                            if 0 <= index < len(keys):
+                                value = field_dict[keys[index]]
+                            else:
+                                return None
+                        else:
+                            return None
+                    else:
+                        return None
+                elif '@' in part:
+                    # 提取字段名和索引: spec@25 -> spec, 25
+                    field_name, index_str = part.split('@', 1)
+                    if index_str.isdigit():
+                        index = int(index_str)
+                        # 获取字段对应的字典
+                        field_dict = value.get(field_name)
+                        if isinstance(field_dict, dict):
+                            # 按位置获取第index个键值对
+                            keys = list(field_dict.keys())
+                            if 0 <= index < len(keys):
+                                value = field_dict[keys[index]]
+                            else:
+                                return None
+                        else:
+                            return None
+                    else:
+                        return None
+                else:
+                    # 普通字段名访问
+                    value = value.get(part)
             elif isinstance(value, list) and part.isdigit():
                 value = value[int(part)] if int(part) < len(value) else None
             else:
@@ -634,6 +714,50 @@ class SpecificationMapping:
             return value
         return None
     
+    def get_spec_index_mapping(self) -> Dict[int, str]:
+        """
+        获取spec字段的位置索引映射表
+        
+        Returns:
+            字典，键为位置索引（从0开始），值为字段名
+            
+        示例：
+            {
+                0: "0_power_supply_v",
+                1: "1_power_supply_hz",
+                2: "2_surface",
+                ...
+            }
+        """
+        if not isinstance(self.spec, dict):
+            return {}
+        
+        return {index: key for index, key in enumerate(self.spec.keys())}
+    
+    def print_spec_index_mapping(self) -> None:
+        """
+        打印spec字段的位置索引映射表，方便配置时查看
+        
+        输出格式：
+            [0] 0_power_supply_v
+            [1] 1_power_supply_hz
+            [2] 2_surface
+            ...
+        """
+        mapping = self.get_spec_index_mapping()
+        print("=" * 60)
+        print("Spec字段位置索引映射表")
+        print("=" * 60)
+        for index, key in mapping.items():
+            print(f"[{index:2d}] {key}")
+        print("=" * 60)
+        print(f"总计: {len(mapping)} 个字段")
+        print("\n使用方式:")
+        print('  字段名访问: {"source": "spec.2_surface.value", ...}')
+        print('  位置索引访问: {"source": "spec[2].value", ...}  # 推荐')
+        print("=" * 60)
+
+    
     def to_dict(self) -> Dict[str, Any]:
         """将规格数据转换为标准字典格式"""
         return {
@@ -803,9 +927,47 @@ if __name__ == "__main__":
     # 创建映射实例
     mapping = SpecificationMapping(example_json)
     
+    print("\n" + "=" * 60)
+    print("示例1: 查看spec字段的位置索引映射")
+    print("=" * 60)
+    mapping.print_spec_index_mapping()
+    
+    print("\n" + "=" * 60)
+    print("示例2: 测试位置索引访问")
+    print("=" * 60)
+    # 测试通过位置索引访问
+    print("通过字段名访问 spec.2_surface.value:")
+    print(f"  结果: {mapping._get_value('spec.2_surface.value')}")
+    
+    print("\n通过位置索引访问 spec[2].value:")
+    print(f"  结果: {mapping._get_value('spec[2].value')}")
+    
+    print("\n通过位置索引访问 spec@2.value:")
+    print(f"  结果: {mapping._get_value('spec@2.value')}")
+    
+    print("\n" + "=" * 60)
+    print("示例3: 生成元组格式输出")
+    print("=" * 60)
     # 生成元组格式输出：[名称, 关键词1, 关键词2, 关键词3]
     output_tuple = mapping.generate_output_tuple()
     for item in output_tuple:
         print(item)
+    
+    print("\n" + "=" * 60)
+    print("配置建议:")
+    print("=" * 60)
+    print("推荐使用位置索引方式配置OUTPUT_RULES，示例：")
+    print("""
+    {
+        "name": "机架",
+        "template": "机架（{parts}）",
+        "parts": [
+            {"source": "meta.model", "transform": ["extract_model_number", "normalize_model"]},
+            {"source": "spec[25].value", "transform": ["map_value"], "mapping": {"PAINTED ON SS": "SS", "SS": "SS"}},
+            {"source": "spec[15].value", "transform": ["extract_degree"]}
+        ]
+    }
+    """)
+    print("=" * 60)
               
         
