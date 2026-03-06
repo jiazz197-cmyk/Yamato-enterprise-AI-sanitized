@@ -2,6 +2,7 @@
 智能组合秤订单填表 API
 """
 from datetime import datetime
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Header, HTTPException
 
@@ -39,8 +40,12 @@ async def submit_closing_form(
     写入 data_doc_collection_1 表的 text、metadata_、embedding 列。
 
     前端须在请求头中携带 `X-Username`，值为当前登录用户名。
+    支持 URL 编码（如 %E5%BC%A0%E4%B8%89），后端会自动解码。
     """
     try:
+        # 0. URL 解码用户名（支持前端传中文等非 ASCII 字符的编码形式）
+        uploader = unquote(x_username, encoding="utf-8")
+
         # 1. 生成格式化的表单文本
         form_text = form_data.to_formatted_text()
         form_text = clean_text_for_postgres(form_text)
@@ -48,7 +53,7 @@ async def submit_closing_form(
         # 2. 构建 metadata（用户名、上传时间）
         upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         metadata = {
-            "uploader": x_username,
+            "uploader": uploader,
             "upload_time": upload_time,
         }
 
@@ -78,7 +83,7 @@ async def submit_closing_form(
 
         logger.info(
             "填表提交成功: uploader=%s, upload_time=%s",
-            x_username,
+            uploader,
             upload_time,
         )
 
