@@ -3,7 +3,7 @@
 """
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -27,27 +27,18 @@ CLOSING_FORM_TABLE_PREFIX = "doc_collection"
 CLOSING_FORM_INSTANCE_ID = 1
 
 
-def _get_db_config() -> dict:
-    """获取数据库配置"""
-    return {
-        "host": settings.POSTGRES_SERVER,
-        "user": settings.POSTGRES_USER,
-        "password": settings.POSTGRES_PASSWORD,
-        "database": settings.POSTGRES_DB,
-        "port": settings.POSTGRES_PORT,
-    }
-
-
 @router.post("/submit", response_model=ClosingFormSubmitResponse)
 async def submit_closing_form(
     form_data: ClosingFormSubmit,
-    uploader: str = Query(default="anonymous", description="上传用户名"),
+    x_username: str = Header(default="anonymous", alias="X-Username", description="由前端从登录态中获取并注入的用户名"),
 ):
     """
     提交智能组合秤订单填表数据
 
     将表单数据格式化为文本，调用 BGE-M3 进行 1024 维向量化，
     写入 data_doc_collection_1 表的 text、metadata_、embedding 列。
+
+    前端须在请求头中携带 `X-Username`，值为当前登录用户名。
     """
     try:
         # 1. 生成格式化的表单文本
@@ -57,7 +48,7 @@ async def submit_closing_form(
         # 2. 构建 metadata（用户名、上传时间）
         upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         metadata = {
-            "uploader": uploader,
+            "uploader": x_username,
             "upload_time": upload_time,
         }
 
@@ -65,7 +56,13 @@ async def submit_closing_form(
         node = TextNode(text=form_text, metadata=metadata)
 
         # 4. 初始化嵌入模型和向量存储
-        db_config = _get_db_config()
+        db_config = {
+            "host": settings.POSTGRES_SERVER,
+            "user": settings.POSTGRES_USER,
+            "password": settings.POSTGRES_PASSWORD,
+            "database": settings.POSTGRES_DB,
+            "port": settings.POSTGRES_PORT,
+        }
         embedding_model = BGEM3EmbeddingWrapper()
         vector_store_manager = VectorStoreManager(
             db_config=db_config,
@@ -81,7 +78,7 @@ async def submit_closing_form(
 
         logger.info(
             "填表提交成功: uploader=%s, upload_time=%s",
-            uploader,
+            x_username,
             upload_time,
         )
 
