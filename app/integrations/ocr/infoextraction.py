@@ -372,7 +372,7 @@ def extract_info_with_retry(image_url: str, api_url: str = "http://localhost:80/
 
 def main():
     """Test function for development"""
-    image_url = "http://minio:9000/yamatodev/temp/1b69813d78aa418293ee98452dacfc34_ADW-0314S规格书_page_001.jpg"
+    image_url = "http://minio:9000/yamatodev/temp/61e64fdc2a464919805ff49d9ae108a8_2026-3-41111_page_001.jpg"
     
     try:
         info = extract_info_with_retry(image_url, max_retries=3)
