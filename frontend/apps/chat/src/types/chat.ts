@@ -1,0 +1,118 @@
+/**
+ * Dify API 类型定义
+ */
+
+// 消息角色
+export type MessageRole = 'user' | 'assistant'
+
+// 消息对象
+export interface Message {
+  id?: string
+  role: MessageRole
+  content: string
+  timestamp?: string
+  conversationId?: string
+}
+
+// 会话对象
+export interface Conversation {
+  id: string
+  name: string
+  inputs: Record<string, unknown>
+  status: string
+  introduction: string
+  created_at: number
+  updated_at: number
+}
+
+// 发送消息请求参数
+export interface ChatMessageRequest {
+  query: string
+  user: string
+  conversation_id?: string
+  inputs?: Record<string, unknown>
+  response_mode: 'streaming' | 'blocking'
+  files?: Array<{
+    type: string
+    transfer_method: string
+    url?: string
+    upload_file_id?: string
+  }>
+}
+
+// SSE 事件类型
+export type SSEEventType = 
+  | 'message' 
+  | 'agent_message'
+  | 'agent_thought'
+  | 'message_file'
+  | 'message_end'
+  | 'message_replace'
+  | 'error'
+  | 'ping'
+
+// SSE 消息事件
+export interface SSEMessageEvent {
+  event: 'message' | 'agent_message'
+  task_id: string
+  id: string
+  conversation_id: string
+  answer: string
+  created_at: number
+}
+
+// SSE 消息结束事件
+export interface SSEMessageEndEvent {
+  event: 'message_end'
+  task_id: string
+  id: string
+  conversation_id: string
+  metadata: {
+    usage: {
+      prompt_tokens: number
+      completion_tokens: number
+      total_tokens: number
+    }
+    retriever_resources?: unknown[]
+  }
+}
+
+// SSE 错误事件
+export interface SSEErrorEvent {
+  event: 'error'
+  task_id: string
+  code: string
+  message: string
+  status: number
+}
+
+// SSE 事件联合类型
+export type SSEEvent = SSEMessageEvent | SSEMessageEndEvent | SSEErrorEvent
+
+// 获取会话列表响应
+export interface ConversationsResponse {
+  data: Conversation[]
+  has_more: boolean
+  limit: number
+  page: number
+}
+
+// 获取消息列表响应
+export interface MessagesResponse {
+  data: Message[]
+  has_more: boolean
+  limit: number
+}
+
+// 重命名会话请求
+export interface RenameConversationRequest {
+  name: string
+  auto_generate?: boolean
+}
+
+// API 错误响应
+export interface ApiError {
+  code: string
+  message: string
+  status: number
+}
