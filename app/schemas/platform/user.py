@@ -6,6 +6,8 @@ from pydantic import BaseModel, EmailStr
 
 # 精简版角色
 class RoleSimple(BaseModel):
+    model_config = {"from_attributes": True}
+
     id: int
     name: str
 
@@ -32,6 +34,8 @@ class UserUpdate(BaseModel):
 
 
 class UserRead(BaseModel):
+    model_config = {"from_attributes": True}
+
     id: int
     username: str
     name: Optional[str] = None
