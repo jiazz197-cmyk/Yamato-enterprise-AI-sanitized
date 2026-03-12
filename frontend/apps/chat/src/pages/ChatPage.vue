@@ -134,8 +134,50 @@
         </div>
 
         <div class="chat-input-container">
+          <div v-if="selectedFiles.length > 0" class="file-preview-list">
+            <div
+              v-for="(file, index) in selectedFiles"
+              :key="index"
+              class="file-preview-item"
+            >
+              <div class="file-preview-thumb">
+                <img
+                  v-if="isImage(file.type)"
+                  :src="file.data"
+                  :alt="file.name"
+                  class="file-preview-img"
+                />
+                <div
+                  v-else
+                  class="file-preview-icon-bg"
+                  :style="{ background: getFileIconColor(file.type) }"
+                >
+                  <span class="file-preview-ext">{{ getFileExt(file.name) }}</span>
+                </div>
+              </div>
+              <span class="file-preview-name">{{ file.name }}</span>
+              <button class="file-preview-remove" type="button" @click="removeFile(index)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M18 6L6 18M6 6l12 12"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+
           <div class="chat-input-wrapper">
-            <button class="chat-upload-btn" type="button" title="上传文件">
+            <input
+              ref="fileInputRef"
+              type="file"
+              multiple
+              style="display: none"
+              @change="handleFileSelect"
+            />
+            <button class="chat-upload-btn" type="button" title="上传文件" @click="fileInputRef?.click()">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
                 <path
                   d="M12 5v14M5 12h14"
@@ -195,14 +237,21 @@
       cancel-text="取消"
       @confirm="confirmDelete"
     />
+
+    <ChatSettingsDialog
+      v-model="showSettingsDialog"
+      :initial-settings="chatSettings"
+      @confirm="handleSettingsConfirm"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, nextTick, onMounted } from 'vue'
-import { MessageList, MessageItem, ConfirmDialog, Input } from '@yamato/components'
+import { MessageList, MessageItem, ConfirmDialog, Input, ChatSettingsDialog } from '@yamato/components'
+import type { ChatSettings } from '@yamato/components'
 import { sendChatMessage, getConversations, getMessages, renameConversation as apiRenameConversation, stopChatMessage } from '../services/chat'
-import type { Conversation } from '../types/chat'
+import type { Conversation, ChatFile } from '../types/chat'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -236,12 +285,81 @@ const chatHistory = ref<ChatHistoryItem[]>([
 const currentConversationId = ref<string | undefined>(undefined)
 const currentTaskId = ref<string | undefined>(undefined)
 
+const SETTINGS_STORAGE_KEY = 'yamato_chat_settings'
+const showSettingsDialog = ref(false)
+const chatSettings = ref<ChatSettings>({ userId: '', search: 'online' })
+const selectedFiles = ref<ChatFile[]>([])
+const fileInputRef = ref<HTMLInputElement | null>(null)
+
 let streamingAbortController: AbortController | null = null
 
 const setChatMenuBtn = (chatId: string, el: any) => {
   if (el) {
     chatMenuBtns.value[chatId] = el as HTMLElement
   }
+}
+
+const loadCachedSettings = () => {
+  try {
+    const cached = localStorage.getItem(SETTINGS_STORAGE_KEY)
+    if (cached) {
+      chatSettings.value = JSON.parse(cached) as ChatSettings
+    }
+  } catch {
+    // ignore
+  }
+}
+
+const handleSettingsConfirm = (settings: ChatSettings) => {
+  chatSettings.value = settings
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+  } catch {
+    // ignore
+  }
+}
+
+const isImage = (type: string) => type.startsWith('image/')
+
+const getFileExt = (name: string) => {
+  const ext = name.split('.').pop()?.toUpperCase() ?? 'FILE'
+  return ext.length > 4 ? ext.substring(0, 4) : ext
+}
+
+const getFileIconColor = (type: string) => {
+  if (type.includes('pdf')) return '#FF4444'
+  if (type.includes('word') || type.includes('document')) return '#2B7CD3'
+  if (type.includes('excel') || type.includes('spreadsheet') || type.includes('sheet')) return '#1D6F42'
+  if (type.includes('text') || type.includes('plain')) return '#888888'
+  return '#5F6368'
+}
+
+const fileToBase64 = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+const handleFileSelect = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  if (!input.files) return
+  for (const file of Array.from(input.files)) {
+    const data = await fileToBase64(file)
+    selectedFiles.value.push({
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      data,
+    })
+  }
+  input.value = ''
+}
+
+const removeFile = (index: number) => {
+  selectedFiles.value.splice(index, 1)
 }
 
 const formatTime = (): string => {
@@ -293,6 +411,9 @@ const sendMessage = async () => {
   const currentInput = inputMessage.value
   inputMessage.value = ''
 
+  const filesToSend = [...selectedFiles.value]
+  selectedFiles.value = []
+
   isLoading.value = true
   streamingAbortController = new AbortController()
 
@@ -307,10 +428,15 @@ const sendMessage = async () => {
   messages.value.push(assistantMessage)
 
   try {
-    // 调用真实的 Dify API
+    // 调用 API
     const result = await sendChatMessage(
       currentInput,
       currentConversationId.value,
+      {
+        userId: chatSettings.value.userId,
+        search: chatSettings.value.search,
+        files: filesToSend,
+      },
       {
         onMessage: (content: string) => {
           // 流式接收消息内容
@@ -357,7 +483,8 @@ const createNewChat = () => {
   messages.value = []
   currentConversationId.value = undefined
   currentTaskId.value = undefined
-  
+  selectedFiles.value = []
+
   // 添加欢迎消息
   const welcomeMessage: Message = {
     role: 'assistant',
@@ -365,8 +492,9 @@ const createNewChat = () => {
     timestamp: formatTime(),
   }
   messages.value.push(welcomeMessage)
-  
-  // TODO: 后续可以将新会话添加到历史记录
+
+  // 显示设置弹窗
+  showSettingsDialog.value = true
 }
 
 const loadChat = async (chatId: string) => {
@@ -495,6 +623,9 @@ const confirmDelete = () => {
 }
 
 onMounted(async () => {
+  // 加载缓存设置
+  loadCachedSettings()
+
   // 初始化欢迎消息
   const welcomeMessage: Message = {
     role: 'assistant',
@@ -502,6 +633,9 @@ onMounted(async () => {
     timestamp: formatTime(),
   }
   messages.value.push(welcomeMessage)
+
+  // 显示设置弹窗
+  showSettingsDialog.value = true
 
   // 加载会话历史
   try {
@@ -897,6 +1031,87 @@ onMounted(async () => {
   40% {
     transform: scale(1);
     opacity: 1;
+  }
+}
+
+.file-preview-list {
+  width: 70%;
+  min-width: 480px;
+  max-width: 960px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.file-preview-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 4px;
+  background: #f1f3f4;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  max-width: 220px;
+}
+
+.file-preview-thumb {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.file-preview-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.file-preview-icon-bg {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.file-preview-ext {
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.5px;
+}
+
+.file-preview-name {
+  font-size: 12px;
+  color: #202124;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+  flex: 1;
+}
+
+.file-preview-remove {
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9aa0a6;
+  border-radius: 50%;
+  flex-shrink: 0;
+  padding: 0;
+
+  &:hover {
+    background: #e8eaed;
+    color: #5f6368;
   }
 }
 

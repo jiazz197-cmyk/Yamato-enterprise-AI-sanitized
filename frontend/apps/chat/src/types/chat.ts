@@ -25,19 +25,27 @@ export interface Conversation {
   updated_at: number
 }
 
+// 搜索模式
+export type SearchMode = 'online' | 'local' | 'both'
+
+// 聊天附件文件
+export interface ChatFile {
+  name: string
+  type: string
+  size: number
+  data: string // base64 data URL
+}
+
 // 发送消息请求参数
 export interface ChatMessageRequest {
-  query: string
-  user: string
+  search: SearchMode
+  user_id: string
+  userinput: {
+    query: string
+    files: ChatFile[]
+  }
   conversation_id?: string
-  inputs?: Record<string, unknown>
   response_mode: 'streaming' | 'blocking'
-  files?: Array<{
-    type: string
-    transfer_method: string
-    url?: string
-    upload_file_id?: string
-  }>
 }
 
 // SSE 事件类型

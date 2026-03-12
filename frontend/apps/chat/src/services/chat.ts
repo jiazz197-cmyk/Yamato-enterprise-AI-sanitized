@@ -1,7 +1,8 @@
 import { config } from '../config'
 import { createHeaders } from './api'
 import type {
-  ChatMessageRequest,
+  ChatFile,
+  SearchMode,
   SSEEvent,
   Conversation,
   ConversationsResponse,
@@ -24,17 +25,22 @@ export interface SSECallbacks {
 export const sendChatMessage = async (
   query: string,
   conversationId: string | undefined,
+  settings: { userId: string; search: SearchMode; files: ChatFile[] },
   callbacks: SSECallbacks
 ): Promise<{ taskId: string; conversationId: string }> => {
   const url = `${config.apiBaseUrl}/chat-messages`
-  
-  const requestBody: ChatMessageRequest = {
-    query,
-    user: 'user', // 暂定为 user，后续会加上用户管理功能
+
+  const requestBody = {
+    search: settings.search,
+    user_id: settings.userId,
+    userinput: {
+      query,
+      files: settings.files,
+    },
     conversation_id: conversationId,
     response_mode: 'streaming',
   }
-  
+
   const response = await fetch(url, {
     method: 'POST',
     headers: createHeaders(),
