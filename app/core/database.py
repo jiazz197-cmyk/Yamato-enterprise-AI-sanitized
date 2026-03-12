@@ -171,9 +171,15 @@ def init_db_tables():
     """
     try:
         # 导入所有 ORM 模型（确保注册到 Base.metadata）
-        from app.models.orm.file_resource import FileResource
-        from app.models.orm.knowledge import KnowledgeInstance
-        
+        from app.models.orm.file_resource import FileResource  # noqa: F401
+        from app.models.orm.knowledge import KnowledgeInstance  # noqa: F401
+        from app.models.orm.platform import (  # noqa: F401
+            User, UserLoginHistory, UserPreferences, UserSubscription,
+            Role, Permission, user_role_table, role_permission_table,
+            ProjectSpace, ProjectMember, ProjectTask, DataShare,
+            PlatformAuditLog, MigrationLog, MigrationBackup,
+        )
+
         # 创建所有表（已存在的表会被跳过）
         Base.metadata.create_all(bind=engine)
         
