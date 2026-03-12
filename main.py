@@ -54,7 +54,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-
 from app.api.v1 import api_router
 from app.core.cache import redis_manager
 from app.core.config import settings

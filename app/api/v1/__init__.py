@@ -5,7 +5,7 @@ Aggregates all v1 API endpoints
 from fastapi import APIRouter
 
 from app.api.v1 import example, file_manager, document_processing, websocket_notifier
-from app.api.v1.endpoints import image2url, retriever, pdf2image, chat_summary
+from app.api.v1.endpoints import image2url, retriever, pdf2image, chat_summary, closing_form
 
 api_router = APIRouter()
 
@@ -18,3 +18,4 @@ api_router.include_router(image2url.router, prefix="/image2url", tags=["Image Pr
 api_router.include_router(pdf2image.router, prefix="/pdf2image", tags=["PDF Processing"])
 api_router.include_router(retriever.router, prefix="/retriever", tags=["Retriever"])
 api_router.include_router(chat_summary.router, prefix="/chat-summary", tags=["Chat Summary"])
+api_router.include_router(closing_form.router, prefix="/closing-form", tags=["Closing Form"])
