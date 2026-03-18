@@ -15,6 +15,7 @@ from app.integrations.Chat_message_archive.message_extractor import (
     update_user_profile_with_new_queries,
     UserProfileDB
 )
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -50,7 +51,7 @@ def create_chat_summary(request: ChatSummaryRequest):
         
         # Call the message extractor function with default settings
         result = update_user_profile_with_new_queries(
-            api_key="app-bBMVW3TWyJ94CobDSDuQpzTQ",  # TODO: Move to settings
+            api_key=settings.CHAT_API_KEY,
             user_id=request.user_id,
             conversation_id=request.conversation_id,
             limit=request.limit

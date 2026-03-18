@@ -218,6 +218,8 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     ENABLE_PROMETHEUS: bool = Field(True, env="ENABLE_PROMETHEUS")
     ENABLE_HEALTH_CHECK: bool = Field(True, env="ENABLE_HEALTH_CHECK")
 
+    CHAT_API_KEY: str = Field("app-change_me_chat_api_key", env="CHAT_API_KEY")
+
     # 开发模式
     RELOAD: bool = Field(False, env="RELOAD")
 
