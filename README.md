@@ -187,6 +187,6 @@ pnpm dev
 
 <div align="center">
 
-Made with by Yamato Shanghai Team
+Made with by Shanghai Marinetime 331 Team
 
 </div>
