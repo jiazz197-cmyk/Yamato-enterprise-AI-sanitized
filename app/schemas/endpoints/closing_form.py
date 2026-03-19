@@ -65,3 +65,19 @@ class ClosingFormSubmitResponse(BaseModel):
     success: bool = True
     message: str = "提交成功"
     form_text: Optional[str] = None
+
+
+class ClosingFormRecord(BaseModel):
+    """单条已提交表单记录"""
+
+    id: str
+    text: str
+    upload_time: Optional[str] = None
+
+
+class ClosingFormListResponse(BaseModel):
+    """用户已提交表单列表响应"""
+
+    success: bool = True
+    total: int = 0
+    records: list[ClosingFormRecord] = []

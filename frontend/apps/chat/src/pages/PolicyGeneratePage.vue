@@ -2,8 +2,29 @@
   <div class="page">
     <PageHeader title="报单填写" subtitle="填写信息并生成表单文档" />
 
+    <div class="page__tabs">
+      <button
+        class="page__tab"
+        :class="{ 'page__tab--active': activeTab === 'form' }"
+        type="button"
+        @click="activeTab = 'form'"
+      >
+        填写表单
+      </button>
+      <button
+        class="page__tab"
+        :class="{ 'page__tab--active': activeTab === 'records' }"
+        type="button"
+        @click="switchToRecords"
+      >
+        我的表单
+      </button>
+    </div>
+
     <div class="page__content">
-      <form class="form" @submit.prevent="submitForm">
+
+      <!-- 填写表单 -->
+      <form v-if="activeTab === 'form'" class="form" @submit.prevent="submitForm">
 
         <section class="form-section">
           <div class="form-section__title">基本信息</div>
@@ -225,6 +246,98 @@
         </div>
 
       </form>
+
+      <!-- 我的表单 -->
+      <div v-else class="records">
+
+        <div class="records__toolbar">
+          <button class="records__refresh" type="button" :disabled="loadingRecords" @click="loadRecords">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              :class="{ 'records__refresh-icon--spinning': loadingRecords }"
+              class="records__refresh-icon"
+              aria-hidden="true"
+            >
+              <path
+                d="M1 4v6h6M23 20v-6h-6"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            刷新
+          </button>
+          <span class="records__count">共 {{ records.length }} 条</span>
+        </div>
+
+        <div v-if="loadingRecords" class="records__loading">
+          <div class="records__loading-dots">
+            <span></span><span></span><span></span>
+          </div>
+        </div>
+
+        <div v-else-if="records.length === 0" class="records__empty">
+          暂无提交记录
+        </div>
+
+        <div v-else class="records__list">
+          <div
+            v-for="record in records"
+            :key="record.id"
+            class="record-card"
+            :class="{ 'record-card--expanded': expandedId === record.id }"
+          >
+            <div class="record-card__header" @click="toggleExpand(record.id)">
+              <div class="record-card__meta">
+                <span class="record-card__time">{{ record.upload_time || '—' }}</span>
+                <span class="record-card__summary">{{ getSummary(record.text) }}</span>
+              </div>
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                class="record-card__chevron"
+                aria-hidden="true"
+              >
+                <path
+                  d="M6 9l6 6 6-6"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </div>
+
+            <div v-if="expandedId === record.id" class="record-card__body">
+              <div class="record-fields">
+                <div
+                  v-for="field in parseFields(record.text)"
+                  :key="field.label"
+                  class="record-field"
+                >
+                  <span class="record-field__label">{{ field.label }}</span>
+                  <span class="record-field__value">{{ field.value }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
     </div>
   </div>
 </template>
@@ -256,6 +369,19 @@ interface FormData {
   scale_type: string
 }
 
+interface FormRecord {
+  id: string
+  text: string
+  upload_time: string | null
+}
+
+interface ParsedField {
+  label: string
+  value: string
+}
+
+const activeTab = ref<'form' | 'records'>('form')
+
 const createEmptyForm = (): FormData => ({
   customer_name: '',
   product_type: '',
@@ -280,6 +406,10 @@ const createEmptyForm = (): FormData => ({
 
 const form = ref<FormData>(createEmptyForm())
 const submitting = ref(false)
+
+const records = ref<FormRecord[]>([])
+const loadingRecords = ref(false)
+const expandedId = ref<string | null>(null)
 
 const getCurrentUser = (): string => {
   try {
@@ -321,6 +451,58 @@ const submitForm = async () => {
     submitting.value = false
   }
 }
+
+const loadRecords = async () => {
+  loadingRecords.value = true
+  try {
+    const username = getCurrentUser()
+    const response = await fetch(`${config.apiBaseUrl}/closing-form/list`, {
+      headers: { 'X-Username': username },
+    })
+    if (response.ok) {
+      const data = (await response.json()) as { records: FormRecord[] }
+      records.value = data.records ?? []
+    } else {
+      const text = await response.text()
+      alert(`加载失败：${response.status} ${text}`)
+    }
+  } catch (err) {
+    alert(`加载失败：${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    loadingRecords.value = false
+  }
+}
+
+const switchToRecords = () => {
+  activeTab.value = 'records'
+  if (records.value.length === 0) {
+    void loadRecords()
+  }
+}
+
+const toggleExpand = (id: string) => {
+  expandedId.value = expandedId.value === id ? null : id
+}
+
+const parseFields = (text: string): ParsedField[] => {
+  return text
+    .split(', ')
+    .map((part) => {
+      const colonIdx = part.indexOf('：')
+      if (colonIdx === -1) return null
+      return { label: part.slice(0, colonIdx).trim(), value: part.slice(colonIdx + 1).trim() }
+    })
+    .filter((f): f is ParsedField => f !== null)
+}
+
+const getSummary = (text: string): string => {
+  const fields = parseFields(text)
+  const customer = fields.find((f) => f.label === '客户名称')?.value ?? ''
+  const model = fields.find((f) => f.label === '型号规格')?.value ?? ''
+  const qty = fields.find((f) => f.label === '数量')?.value ?? ''
+  const parts = [customer, model, qty ? `×${qty}` : ''].filter(Boolean)
+  return parts.join('  ')
+}
 </script>
 
 <style scoped lang="scss">
@@ -331,12 +513,45 @@ const submitForm = async () => {
   overflow: hidden;
 }
 
+.page__tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 32px;
+  border-bottom: 1px solid #e8eaed;
+  background: #ffffff;
+  flex-shrink: 0;
+}
+
+.page__tab {
+  padding: 10px 20px;
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  color: #5f6368;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.2s ease, border-color 0.2s ease;
+
+  &:hover {
+    color: #1a73e8;
+  }
+
+  &--active {
+    color: #1a73e8;
+    font-weight: 600;
+    border-bottom-color: #1a73e8;
+  }
+}
+
 .page__content {
   flex: 1;
   overflow: auto;
   padding: 24px 32px;
   background: #ffffff;
 }
+
+/* ===== 填写表单 ===== */
 
 .form {
   max-width: 960px;
@@ -442,5 +657,191 @@ const submitForm = async () => {
     opacity: 0.6;
     cursor: not-allowed;
   }
+}
+
+/* ===== 我的表单 ===== */
+
+.records {
+  max-width: 960px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.records__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.records__refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid #d2e3fc;
+  background: #f8f9fa;
+  color: #1a73e8;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+
+  &:hover:not(:disabled) {
+    background: #e8f0fe;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+.records__refresh-icon {
+  flex-shrink: 0;
+  transition: transform 0.4s linear;
+
+  &--spinning {
+    animation: spin 0.8s linear infinite;
+  }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.records__count {
+  font-size: 13px;
+  color: #5f6368;
+}
+
+.records__loading {
+  display: flex;
+  justify-content: center;
+  padding: 40px 0;
+}
+
+.records__loading-dots {
+  display: flex;
+  gap: 6px;
+
+  span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #1a73e8;
+    animation: dot-bounce 1.2s ease-in-out infinite;
+
+    &:nth-child(2) { animation-delay: 0.2s; }
+    &:nth-child(3) { animation-delay: 0.4s; }
+  }
+}
+
+@keyframes dot-bounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+.records__empty {
+  padding: 48px 0;
+  text-align: center;
+  font-size: 14px;
+  color: #9aa0a6;
+}
+
+.records__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.record-card {
+  border-radius: 10px;
+  border: 1px solid #e8eaed;
+  background: #ffffff;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(60, 64, 67, 0.08);
+  transition: box-shadow 0.2s ease;
+
+  &:hover {
+    box-shadow: 0 2px 6px rgba(60, 64, 67, 0.15);
+  }
+
+  &--expanded {
+    border-color: #c5d9f8;
+  }
+}
+
+.record-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.record-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.record-card__time {
+  font-size: 12px;
+  color: #9aa0a6;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.record-card__summary {
+  font-size: 13px;
+  color: #202124;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-card__chevron {
+  flex-shrink: 0;
+  color: #9aa0a6;
+  transition: transform 0.2s ease;
+
+  .record-card--expanded & {
+    transform: rotate(180deg);
+  }
+}
+
+.record-card__body {
+  border-top: 1px solid #e8eaed;
+  padding: 16px;
+  background: #fafbfc;
+}
+
+.record-fields {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px 24px;
+}
+
+.record-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.record-field__label {
+  font-size: 11px;
+  color: #9aa0a6;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.record-field__value {
+  font-size: 13px;
+  color: #202124;
 }
 </style>
