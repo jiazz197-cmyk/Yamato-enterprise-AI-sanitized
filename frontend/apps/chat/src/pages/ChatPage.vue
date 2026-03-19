@@ -496,7 +496,13 @@ const sendMessage = async () => {
           startStreamRenderer()
         },
         onEnd: (data) => {
-          flushRenderImmediately()
+          // If the animation timer is not running, flush immediately.
+          // If it is running, let it animate to completion naturally — do not
+          // cancel it here, otherwise all buffered SSE events (which arrive in a
+          // single reader.read() on loopback) would be rendered at once.
+          if (streamRenderTimer === undefined) {
+            flushRenderImmediately()
+          }
           const conversationId =
             typeof (data as { conversation_id?: unknown }).conversation_id === 'string'
               ? (data as { conversation_id: string }).conversation_id

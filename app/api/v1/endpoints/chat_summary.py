@@ -50,7 +50,7 @@ def create_chat_summary(request: ChatSummaryRequest):
         
         # Call the message extractor function with default settings
         result = update_user_profile_with_new_queries(
-            api_key="app-bBMVW3TWyJ94CobDSDuQpzTQ",  # TODO: Move to settings
+            api_key="app-change_me_chat_api_key",  # TODO: Move to settings
             user_id=request.user_id,
             conversation_id=request.conversation_id,
             limit=request.limit
