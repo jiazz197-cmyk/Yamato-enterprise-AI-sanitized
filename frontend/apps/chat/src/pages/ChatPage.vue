@@ -441,6 +441,11 @@ const sendMessage = async () => {
     timestamp: formatTime(),
   }
   messages.value.push(assistantMessage)
+  // Retrieve the reactive proxy that Vue wraps around the pushed object.
+  // Direct assignment to the raw `assistantMessage` local variable bypasses
+  // Vue's Proxy set-trap entirely, so the DOM never updates reactively.
+  // All content mutations must go through this proxy reference instead.
+  const reactiveAssistantMessage = messages.value[messages.value.length - 1]
 
   let renderedContent = ''
   let targetContent = ''
@@ -456,7 +461,7 @@ const sendMessage = async () => {
   const flushRenderImmediately = () => {
     stopStreamRenderer()
     renderedContent = targetContent
-    assistantMessage.content = renderedContent
+    reactiveAssistantMessage.content = renderedContent
   }
 
   const startStreamRenderer = () => {
@@ -474,7 +479,7 @@ const sendMessage = async () => {
       const step = Math.max(1, Math.min(8, Math.ceil(remaining / 6)))
       const nextLength = Math.min(targetContent.length, renderedContent.length + step)
       renderedContent = targetContent.slice(0, nextLength)
-      assistantMessage.content = renderedContent
+      reactiveAssistantMessage.content = renderedContent
       scrollToBottom()
     }, 16)
   }
@@ -515,7 +520,7 @@ const sendMessage = async () => {
         },
         onError: (error) => {
           stopStreamRenderer()
-          assistantMessage.content = `错误: ${error.message}`
+          reactiveAssistantMessage.content = `错误: ${error.message}`
           isLoading.value = false
           currentTaskId.value = undefined
           if (import.meta.env.DEV) {
