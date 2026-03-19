@@ -1,133 +1,230 @@
 <template>
   <div class="page">
-    <PageHeader title="报单生成" subtitle="填写信息并生成表单文档" />
+    <PageHeader title="报单填写" subtitle="填写信息并生成表单文档" />
 
     <div class="page__content">
-      <section class="order-card" aria-label="历史订单信息">
-        <header class="order-card__header">
-          <div class="order-card__title">历史订单信息</div>
-          <div class="order-card__actions">
-            <button class="order-card__button" type="button" @click="addRow">
-              <span class="order-card__button-icon" aria-hidden="true">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-                  <path
-                    d="M12 5v14M5 12h14"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                  />
-                </svg>
-              </span>
-              <span>新增一行</span>
-            </button>
-            <button class="order-card__button order-card__button--primary" type="button" @click="submitOrders">
-              <span>提交</span>
-            </button>
-          </div>
-        </header>
+      <form class="form" @submit.prevent="submitForm">
 
-        <div class="order-card__body">
-          <div class="order-table-wrapper">
-            <table class="order-table">
-              <thead>
-                <tr>
-                  <th scope="col">子件名称</th>
-                  <th scope="col">材料编码</th>
-                  <th scope="col">数量</th>
-                  <th scope="col">单价</th>
-                  <th scope="col">总价</th>
-                  <th scope="col" class="order-table__col--actions">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in orderRows" :key="row.id">
-                  <td>
-                    <input
-                      v-model="row.partName"
-                      type="text"
-                      class="order-table__input"
-                      placeholder="请输入子件名称"
-                    />
-                  </td>
-                  <td>
-                    <input
-                      v-model="row.materialCode"
-                      type="text"
-                      class="order-table__input"
-                      placeholder="请输入材料编码"
-                    />
-                  </td>
-                  <td>
-                    <input
-                      v-model="row.quantity"
-                      type="number"
-                      min="0"
-                      class="order-table__input order-table__input--number"
-                      placeholder="0"
-                    />
-                  </td>
-                  <td>
-                    <input
-                      v-model="row.unitPrice"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      class="order-table__input order-table__input--number"
-                      placeholder="0.00"
-                    />
-                  </td>
-                  <td>
-                    <input
-                      v-model="row.totalPrice"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      class="order-table__input order-table__input--number"
-                      placeholder="0.00"
-                    />
-                  </td>
-                  <td class="order-table__col--actions">
-                    <button
-                      class="order-table__delete-button"
-                      type="button"
-                      title="删除该行"
-                      aria-label="删除该行订单数据"
-                      @click="removeRow(row.id)"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <path
-                          d="M5 7h14M10 11v6M14 11v6M9 7l1-3h4l1 3M7 7v12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V7"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        />
-                      </svg>
-                    </button>
-                  </td>
-                </tr>
-                <tr class="order-table__add-row">
-                  <td colspan="6">
-                    <button class="order-table__add-row-button" type="button" @click="addRow">
-                      <span class="order-table__add-row-icon" aria-hidden="true">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-                          <path
-                            d="M12 5v14M5 12h14"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                          />
-                        </svg>
-                      </span>
-                      <span class="order-table__add-row-text">新增一行订单数据</span>
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+        <section class="form-section">
+          <div class="form-section__title">基本信息</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label class="form-field__label" for="customer_name">客户名称</label>
+              <input
+                id="customer_name"
+                v-model="form.customer_name"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入客户名称"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="product_type">产品类型</label>
+              <input
+                id="product_type"
+                v-model="form.product_type"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入产品类型"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="model_spec">型号规格</label>
+              <input
+                id="model_spec"
+                v-model="form.model_spec"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入型号规格"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="quantity">数量</label>
+              <input
+                id="quantity"
+                v-model.number="form.quantity"
+                type="number"
+                min="0"
+                class="form-field__input"
+                placeholder="请输入数量"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="price_excluding_tax">不含税单价</label>
+              <input
+                id="price_excluding_tax"
+                v-model.number="form.price_excluding_tax"
+                type="number"
+                min="0"
+                step="0.01"
+                class="form-field__input"
+                placeholder="请输入不含税单价"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="production_number">生产编号</label>
+              <input
+                id="production_number"
+                v-model="form.production_number"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入生产编号"
+              />
+            </div>
           </div>
+        </section>
+
+        <section class="form-section">
+          <div class="form-section__title">物料与称重</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label class="form-field__label" for="material_name">物料名称</label>
+              <input
+                id="material_name"
+                v-model="form.material_name"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入物料名称"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="weighing_spec">称重规格</label>
+              <input
+                id="weighing_spec"
+                v-model="form.weighing_spec"
+                type="text"
+                class="form-field__input"
+                placeholder="例如：10g"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="speed">速度（次/分）</label>
+              <input
+                id="speed"
+                v-model.number="form.speed"
+                type="number"
+                min="0"
+                class="form-field__input"
+                placeholder="请输入速度"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="precision">精度</label>
+              <input
+                id="precision"
+                v-model="form.precision"
+                type="text"
+                class="form-field__input"
+                placeholder="例如：≤1g"
+              />
+            </div>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <div class="form-section__title">零部件配置</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label class="form-field__label" for="top_cone_type">顶锥形式</label>
+              <input
+                id="top_cone_type"
+                v-model="form.top_cone_type"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入顶锥形式"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="linear_vibration_type">线振形式</label>
+              <input
+                id="linear_vibration_type"
+                v-model="form.linear_vibration_type"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入线振形式"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="material_layer_ring">料层圈</label>
+              <input
+                id="material_layer_ring"
+                v-model="form.material_layer_ring"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入料层圈"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="feed_hopper">进料斗</label>
+              <input
+                id="feed_hopper"
+                v-model="form.feed_hopper"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入进料斗"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="metering_hopper">计量斗</label>
+              <input
+                id="metering_hopper"
+                v-model="form.metering_hopper"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入计量斗"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="memory_hopper">存储斗</label>
+              <input
+                id="memory_hopper"
+                v-model="form.memory_hopper"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入存储斗"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="chute_angle">溜槽角度</label>
+              <input
+                id="chute_angle"
+                v-model="form.chute_angle"
+                type="text"
+                class="form-field__input"
+                placeholder="例如：50°"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="collection_hopper_type">集合斗形式</label>
+              <input
+                id="collection_hopper_type"
+                v-model="form.collection_hopper_type"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入集合斗形式"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="scale_type">秤体类型</label>
+              <input
+                id="scale_type"
+                v-model="form.scale_type"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入秤体类型"
+              />
+            </div>
+          </div>
+        </section>
+
+        <div class="form-actions">
+          <button class="form-actions__reset" type="button" @click="resetForm">重置</button>
+          <button class="form-actions__submit" type="submit" :disabled="submitting">
+            {{ submitting ? '提交中…' : '提交' }}
+          </button>
         </div>
-      </section>
+
+      </form>
     </div>
   </div>
 </template>
@@ -135,43 +232,94 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { PageHeader } from '@yamato/components'
+import { config } from '../config'
 
-interface OrderRow {
-  id: number
-  partName: string
-  materialCode: string
-  quantity: string
-  unitPrice: string
-  totalPrice: string
+interface FormData {
+  customer_name: string
+  product_type: string
+  model_spec: string
+  quantity: number | null
+  price_excluding_tax: number | null
+  production_number: string
+  material_name: string
+  weighing_spec: string
+  speed: number | null
+  precision: string
+  top_cone_type: string
+  linear_vibration_type: string
+  material_layer_ring: string
+  feed_hopper: string
+  metering_hopper: string
+  memory_hopper: string
+  chute_angle: string
+  collection_hopper_type: string
+  scale_type: string
 }
 
-const createEmptyRow = (): OrderRow => ({
-  id: Date.now() + Math.floor(Math.random() * 1000),
-  partName: '',
-  materialCode: '',
-  quantity: '',
-  unitPrice: '',
-  totalPrice: '',
+const createEmptyForm = (): FormData => ({
+  customer_name: '',
+  product_type: '',
+  model_spec: '',
+  quantity: null,
+  price_excluding_tax: null,
+  production_number: '',
+  material_name: '',
+  weighing_spec: '',
+  speed: null,
+  precision: '',
+  top_cone_type: '',
+  linear_vibration_type: '',
+  material_layer_ring: '',
+  feed_hopper: '',
+  metering_hopper: '',
+  memory_hopper: '',
+  chute_angle: '',
+  collection_hopper_type: '',
+  scale_type: '',
 })
 
-const orderRows = ref<OrderRow[]>([createEmptyRow()])
+const form = ref<FormData>(createEmptyForm())
+const submitting = ref(false)
 
-const addRow = () => {
-  orderRows.value.push(createEmptyRow())
-}
-
-const removeRow = (id: number) => {
-  if (orderRows.value.length === 1) {
-    orderRows.value = [createEmptyRow()]
-    return
+const getCurrentUser = (): string => {
+  try {
+    const raw = localStorage.getItem(config.settingsStorageKey)
+    if (!raw) return 'anonymous'
+    const parsed = JSON.parse(raw) as { user?: unknown; userId?: unknown }
+    return String(parsed.user ?? parsed.userId ?? '').trim() || 'anonymous'
+  } catch {
+    return 'anonymous'
   }
-
-  orderRows.value = orderRows.value.filter((row) => row.id !== id)
 }
 
-const submitOrders = () => {
-  // 这里预留后续与后端接口对接的位置
-  void orderRows
+const resetForm = () => {
+  form.value = createEmptyForm()
+}
+
+const submitForm = async () => {
+  submitting.value = true
+  try {
+    const username = getCurrentUser()
+    const response = await fetch(`${config.apiBaseUrl}/closing-form/submit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Username': username,
+      },
+      body: JSON.stringify(form.value),
+    })
+    if (response.ok) {
+      alert('提交成功')
+      resetForm()
+    } else {
+      const text = await response.text()
+      alert(`提交失败：${response.status} ${text}`)
+    }
+  } catch (err) {
+    alert(`提交失败：${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    submitting.value = false
+  }
 }
 </script>
 
@@ -190,175 +338,109 @@ const submitOrders = () => {
   background: #ffffff;
 }
 
-.order-card {
+.form {
+  max-width: 960px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.form-section {
   border-radius: 12px;
   border: 1px solid #e8eaed;
   background: #ffffff;
   padding: 16px 20px 20px;
   box-shadow: 0 1px 2px rgba(60, 64, 67, 0.1);
-  max-width: 100%;
 }
 
-.order-card__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-  gap: 12px;
-}
-
-.order-card__title {
-  font-size: 16px;
+.form-section__title {
+  font-size: 14px;
   font-weight: 600;
-  color: #202124;
-}
-
-.order-card__actions {
-  display: flex;
-  gap: 8px;
-}
-
-.order-card__button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid #d2e3fc;
-  background: #f8f9fa;
   color: #1a73e8;
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e8f0fe;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px 24px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-field__label {
   font-size: 13px;
-  cursor: pointer;
-  transition: background 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-
-  &:hover {
-    background: #e8f0fe;
-    border-color: #c1d4f7;
-    box-shadow: 0 1px 2px rgba(60, 64, 67, 0.15);
-  }
-}
-
-.order-card__button--primary {
-  background: #1a73e8;
-  border-color: #1a73e8;
-  color: #ffffff;
-
-  &:hover {
-    background: #185abc;
-    border-color: #185abc;
-  }
-}
-
-.order-card__button-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.order-card__body {
-  margin-top: 4px;
-}
-
-.order-table-wrapper {
-  overflow-x: auto;
-}
-
-.order-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-  color: #202124;
-  min-width: 720px;
-}
-
-.order-table th,
-.order-table td {
-  border: 1px solid #e8eaed;
-  padding: 8px 10px;
-  text-align: left;
-  background-color: #ffffff;
-}
-
-.order-table th {
-  background: #f8f9fa;
   font-weight: 500;
   color: #5f6368;
   white-space: nowrap;
 }
 
-.order-table__input {
-  width: 100%;
-  padding: 4px 6px;
-  border-radius: 4px;
+.form-field__input {
+  padding: 7px 10px;
+  border-radius: 6px;
   border: 1px solid #dadce0;
   font-size: 13px;
   color: #202124;
+  width: 100%;
   box-sizing: border-box;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 
   &:focus {
     outline: none;
     border-color: #1a73e8;
-    box-shadow: 0 0 0 1px rgba(26, 115, 232, 0.2);
+    box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.15);
+  }
+
+  &::placeholder {
+    color: #bdc1c6;
   }
 }
 
-.order-table__input--number {
-  text-align: right;
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
-.order-table__col--actions {
-  width: 64px;
-  text-align: center;
-}
-
-.order-table__delete-button {
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 50%;
-  color: #5f6368;
-  transition: background 0.2s ease, color 0.2s ease;
-
-  &:hover {
-    background: #fce8e6;
-    color: #d93025;
-  }
-}
-
-.order-table__add-row {
+.form-actions__reset {
+  padding: 8px 20px;
+  border-radius: 999px;
+  border: 1px solid #dadce0;
   background: #f8f9fa;
-}
-
-.order-table__add-row-button {
-  width: 100%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border-radius: 8px;
-  border: 1px dashed #c1d4f7;
-  background: #f1f3f4;
-  color: #1a73e8;
+  color: #5f6368;
   font-size: 13px;
   cursor: pointer;
   transition: background 0.2s ease, border-color 0.2s ease;
 
   &:hover {
-    background: #e8f0fe;
-    border-color: #1a73e8;
+    background: #e8eaed;
+    border-color: #c1c7cd;
   }
 }
 
-.order-table__add-row-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
+.form-actions__submit {
+  padding: 8px 24px;
+  border-radius: 999px;
+  border: none;
+  background: #1a73e8;
+  color: #ffffff;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s ease;
 
-.order-table__add-row-text {
-  white-space: nowrap;
+  &:hover:not(:disabled) {
+    background: #185abc;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
 }
 </style>
-

@@ -19,7 +19,7 @@
           文件管理
         </RouterLink>
         <RouterLink class="sidebar-nav__item" active-class="is-active" to="/policy">
-          报单生成
+          报单填写
         </RouterLink>
       </nav>
 
