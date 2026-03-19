@@ -19,6 +19,12 @@
   <div :class="['message-item', `message-item--${role}`]">
     <div class="message-item__avatar">
       <div v-if="role === 'user'" class="avatar avatar--user">U</div>
+      <img
+        v-else-if="assistantAvatarUrl"
+        :src="assistantAvatarUrl"
+        class="avatar avatar--assistant-img"
+        alt="AI"
+      />
       <div v-else class="avatar avatar--assistant">AI</div>
     </div>
     <div class="message-item__content">
@@ -67,6 +73,7 @@ interface Props {
   content: string
   timestamp?: string
   isStreaming?: boolean
+  assistantAvatarUrl?: string
 }
 
 const props = defineProps<Props>()
@@ -351,6 +358,14 @@ const toggleThought = () => {
   &--assistant {
     background: #34a853;
     color: white;
+  }
+
+  &--assistant-img {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
   }
 }
 </style>

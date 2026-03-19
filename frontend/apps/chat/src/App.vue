@@ -5,6 +5,7 @@
   <div v-else id="app" class="app-shell">
     <Sidebar
       title="yamato"
+      logo-url="/yamato_icon.png"
       :user-name="userName"
       :user-avatar-url="userAvatarUrl"
       user-desc="在线"
@@ -51,6 +52,7 @@ import { computed, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { Sidebar, ConfirmDialog } from '@yamato/components'
 import { config } from './config'
+import { useIdleTimer } from './composables/useIdleTimer'
 
 const sidebarUserId = ref('')
 
@@ -100,6 +102,33 @@ const confirmLogout = async () => {
   }
   await router.push('/login')
 }
+
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000
+
+const autoLogout = async () => {
+  try {
+    localStorage.removeItem(config.authTokenStorageKey)
+  } catch {
+    // ignore
+  }
+  await router.push('/login')
+}
+
+const { start: startIdleTimer, stop: stopIdleTimer } = useIdleTimer(IDLE_TIMEOUT_MS, () => {
+  void autoLogout()
+})
+
+if (!isLoginPage.value) {
+  startIdleTimer()
+}
+
+watch(isLoginPage, (onLoginPage) => {
+  if (onLoginPage) {
+    stopIdleTimer()
+  } else {
+    startIdleTimer()
+  }
+})
 </script>
 
 <style scoped lang="scss">

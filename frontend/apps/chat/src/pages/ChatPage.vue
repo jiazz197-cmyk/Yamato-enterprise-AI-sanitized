@@ -59,6 +59,7 @@
               :role="message.role"
               :content="message.content"
               :timestamp="message.role === 'user' ? message.timestamp : undefined"
+              assistant-avatar-url="/ai_icon.png"
             />
             <div v-if="isLoading" class="loading-indicator">
               <div class="loading-dots">

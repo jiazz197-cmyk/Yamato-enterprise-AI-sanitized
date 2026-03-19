@@ -29,7 +29,8 @@
           <path d="M21 12H3M21 6H3M21 18H3" />
         </svg>
       </button>
-      <h2 class="sidebar__title">{{ title }}</h2>
+      <img v-if="logoUrl" :src="logoUrl" class="sidebar__logo" alt="logo" />
+      <h2 v-else class="sidebar__title">{{ title }}</h2>
     </div>
     <div class="sidebar__content">
       <slot />
@@ -57,6 +58,7 @@ import { computed } from 'vue'
 
 interface SidebarProps {
   title?: string
+  logoUrl?: string
   userName?: string
   userAvatarUrl?: string
   userDesc?: string
@@ -140,6 +142,15 @@ const toggle = () => {
     transition: opacity 0.2s ease, max-width 0.3s ease;
   }
 
+  &__logo {
+    height: 32px;
+    width: auto;
+    max-width: 120px;
+    object-fit: contain;
+    display: block;
+    transition: opacity 0.2s ease;
+  }
+
   &__content {
     flex: 1;
     overflow-y: auto;
@@ -159,6 +170,10 @@ const toggle = () => {
   .sidebar__title {
     opacity: 0;
     max-width: 0;
+  }
+
+  .sidebar__logo {
+    opacity: 0;
   }
 
   .sidebar__content {
