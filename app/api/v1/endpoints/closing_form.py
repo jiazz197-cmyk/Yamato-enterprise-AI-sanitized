@@ -4,9 +4,12 @@
 from datetime import datetime
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.dependencies import get_db
 from app.core.logging import get_logger
 from app.integrations.doc_processing.embedding_store import (
     BGEM3EmbeddingWrapper,
@@ -15,6 +18,8 @@ from app.integrations.doc_processing.embedding_store import (
 from app.integrations.doc_processing.exceptions import EmbeddingError, VectorStoreError
 from app.integrations.doc_processing.pipeline import clean_text_for_postgres
 from app.schemas.endpoints.closing_form import (
+    ClosingFormListResponse,
+    ClosingFormRecord,
     ClosingFormSubmit,
     ClosingFormSubmitResponse,
 )
@@ -102,3 +107,48 @@ async def submit_closing_form(
     except Exception as e:
         logger.exception("填表提交失败")
         raise HTTPException(status_code=500, detail=f"提交失败: {str(e)}")
+
+
+# 填表记录所在的 PostgreSQL 表（LlamaIndex PGVectorStore 自动加 data_ 前缀）
+_CLOSING_FORM_TABLE = f"data_{CLOSING_FORM_TABLE_PREFIX}_{CLOSING_FORM_INSTANCE_ID}"
+
+
+@router.get("/list", response_model=ClosingFormListResponse)
+async def list_closing_forms(
+    x_username: str = Header(default="anonymous", alias="X-Username", description="当前登录用户名"),
+    db: Session = Depends(get_db),
+):
+    """
+    查询当前用户已提交的填表记录
+
+    从 data_doc_collection_1 表中按 metadata_->>'uploader' 过滤，
+    按 id 倒序返回该用户的所有历史表单。
+    """
+    try:
+        uploader = unquote(x_username, encoding="utf-8")
+
+        rows = db.execute(
+            text(
+                f"SELECT id, text, metadata_->>'upload_time' AS upload_time"
+                f" FROM {_CLOSING_FORM_TABLE}"
+                f" WHERE metadata_->>'uploader' = :uploader"
+                f" ORDER BY metadata_->>'upload_time' DESC"
+            ),
+            {"uploader": uploader},
+        ).fetchall()
+
+        records = [
+            ClosingFormRecord(
+                id=str(row.id),
+                text=row.text or "",
+                upload_time=row.upload_time,
+            )
+            for row in rows
+        ]
+
+        logger.info("查询填表记录: uploader=%s, count=%d", uploader, len(records))
+        return ClosingFormListResponse(success=True, total=len(records), records=records)
+
+    except Exception as e:
+        logger.exception("查询填表记录失败")
+        raise HTTPException(status_code=500, detail=f"查询失败: {str(e)}")
