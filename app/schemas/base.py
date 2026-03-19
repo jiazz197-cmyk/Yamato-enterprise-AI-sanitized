@@ -63,3 +63,25 @@ class ReportRequest(BaseModel):
 
     question: str
     structure_data: dict
+
+class ChatSummaryRequest(BaseModel):
+    """Request model for chat summary creation"""
+    user_id: str
+    conversation_id: str
+    limit: Optional[int] = 20
+
+class ChatSummaryResponse(BaseModel):
+    """Response model for chat summary"""
+    user_id: str
+    conversation_id: str
+    query_count: int
+    previous_summary: Optional[str] = None
+    new_summary: Optional[str] = None
+    is_first_time: bool
+    db_updated: bool
+
+class UserSummaryResponse(BaseModel):
+    """Response model for user summary query"""
+    user_id: str
+    latest_summary: Optional[str] = None
+    exists: bool

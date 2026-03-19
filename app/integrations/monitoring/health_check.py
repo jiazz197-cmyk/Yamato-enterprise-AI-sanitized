@@ -18,20 +18,35 @@ logger = get_logger("health_check")
 
 class HealthCheckService:
     """
-    系统健康检查服务
+    系统健康检查服务（单例模式）
     
     特性：
     - 并行检查各服务，减少总耗时
     - 每次检查使用独立的数据库会话
     - 超时控制，避免单个服务阻塞整体响应
+    - ✅ 单例模式确保全局唯一实例
     """
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls, timeout: float = 2.0):
+        """确保只创建一个 HealthCheckService 实例"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
     
     def __init__(self, timeout: float = 2.0):
         """
+        初始化（只执行一次）
+        
         Args:
             timeout: 单个服务检查的超时时间（秒）
         """
+        if self._initialized:
+            return
+        
         self.check_timeout = timeout
+        self.__class__._initialized = True
     
     async def check_all_services(self) -> Dict[str, Dict[str, Any]]:
         """

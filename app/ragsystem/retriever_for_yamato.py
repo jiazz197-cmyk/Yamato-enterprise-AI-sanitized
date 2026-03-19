@@ -94,12 +94,11 @@ class ModelManager:
             reranker = self.get_reranker()
             
             try:
-                # 禁用LLM，仅做检索
-                Settings.llm = None
-                
+                # 创建查询引擎（仅做检索，不使用 LLM）
                 query_engine = RetrieverQueryEngine.from_args(
                     retriever=retriever,
                     node_postprocessors=[reranker] if reranker else [],
+                    streaming=False,  # 禁用流式输出
                 )
                 self._query_engines_cache[cache_key] = query_engine
                 print(f"查询引擎缓存: {collection_name}")
@@ -157,6 +156,10 @@ class OptimizedRetriever:
         self.model_manager = ModelManager()
         self.model_manager.set_rag_system(rag_system)
         
+        # 从 RAG 系统获取 default_top_n 配置
+        self.default_top_n = getattr(rag_system, 'default_top_n', 3)
+        print(f"OptimizedRetriever 使用 top_n={self.default_top_n}")
+        
         # 初始化查询引擎
         self._initialize_query_engines()
     
@@ -197,10 +200,15 @@ class OptimizedRetriever:
         raw_docs = self.query_engines.query(question)
         source_nodes = raw_docs.source_nodes
         
+        # 🔍 添加调试信息
+        print(f"🔍 检索到的文档块数量: {len(source_nodes)}")
+        
         sources = []
         contents = []
         
-        for node in source_nodes:
+        for i, node in enumerate(source_nodes):
+            # 打印每个节点的得分
+            print(f"  节点 {i+1} - Score: {node.score:.4f} - Source: {node.metadata.get('source', 'Unknown')}")
             source = node.metadata.get('source', 'Unknown')
             content = node.text.strip()
             sources.append(source)
@@ -233,7 +241,9 @@ class OptimizedRetriever:
                 raw_docs = query_engine.query(question)
                 source_nodes = raw_docs.source_nodes
                 
-                for node in source_nodes[:2]:  # 每个collection最多取2个结果
+                # 使用配置的 top_n 而不是硬编码的 2
+                max_results_per_collection = self.default_top_n if len(collections_to_query) == 1 else 2
+                for node in source_nodes[:max_results_per_collection]:
                     source = node.metadata.get('source', f'Unknown_{collection_name}')
                     content = node.text.strip()
                     all_sources.append(source)
@@ -283,10 +293,17 @@ class OptimizedRetriever:
         return self.model_manager.get_memory_info()
     
     def __del__(self):
-        """析构函数"""
+        """析构函数 - 在对象销毁时自动调用"""
         try:
+            # 检查 Python 是否正在关闭
+            import sys
+            if sys is None or sys.meta_path is None:
+                # Python 正在关闭，跳过清理
+                return
+            
             self.cleanup()
         except:
+            # 完全捕获所有异常，避免析构函数中的错误
             pass
 
 

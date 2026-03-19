@@ -152,6 +152,9 @@ class HTTPReranker(BaseNodePostprocessor):
         
         query_str = query_bundle.query_str
         
+        # 🔍 添加调试信息
+        logger.info(f"🔍 Reranker 输入: {len(nodes)} 个节点, top_n={self.top_n}")
+        
         try:
             # 准备文档列表
             documents = [node.node.get_content() for node in nodes]
@@ -170,6 +173,12 @@ class HTTPReranker(BaseNodePostprocessor):
             response.raise_for_status()
             result = response.json()
             
+            # 🔍 记录 API 返回的结果数量
+            if "results" in result:
+                logger.info(f"🔍 Reranker API 返回了 {len(result['results'])} 个结果")
+            elif "rankings" in result:
+                logger.info(f"🔍 Reranker API 返回了 {len(result['rankings'])} 个结果")
+            
             # 解析响应并重新排序节点
             # 兼容多种响应格式
             if "results" in result:
@@ -182,6 +191,7 @@ class HTTPReranker(BaseNodePostprocessor):
                     node = nodes[idx]
                     node.score = score
                     reranked_nodes.append(node)
+                logger.info(f"🔍 Reranker 输出: {len(reranked_nodes)} 个节点")
                 return reranked_nodes
             elif "rankings" in result:
                 # 格式2: {"rankings": [{"doc_index": 0, "score": 0.9}, ...]}
@@ -193,6 +203,7 @@ class HTTPReranker(BaseNodePostprocessor):
                     node = nodes[idx]
                     node.score = score
                     reranked_nodes.append(node)
+                logger.info(f"🔍 Reranker 输出: {len(reranked_nodes)} 个节点")
                 return reranked_nodes
             else:
                 logger.warning(f"未知的重排序响应格式: {result}，返回原始节点")
@@ -379,6 +390,12 @@ class RAGRetrieverSystem:
         self.default_top_n = default_top_n
         logger.info(f"检索参数配置 - top_k: {default_top_k}, top_n: {default_top_n}")
 
+        # 🔧 配置全局参数（仅做检索，不使用 LLM）
+        Settings.llm = None  # 禁用 LLM
+        Settings.context_window = 8192  # 设置上下文窗口大小
+        Settings.num_output = 512  # 设置输出 token 数量
+        logger.info("已配置检索模式（禁用 LLM，仅做向量检索）")
+
         # 初始化核心组件
         self.embedding_model = self._init_embedding_model()
         self.reranker = self._init_reranker()
@@ -523,6 +540,7 @@ class RAGRetrieverSystem:
 
             retriever = self.get_retriever_for_collection(collection_name, embedding_model=embedding_model, top_k=top_k)
 
+            # 创建 QueryEngine（不使用 LLM 生成，只返回检索结果）
             if use_reranker and self.reranker:
                 # 如果需要使用不同的 top_n，创建新的 reranker 实例
                 if reranker_top_n != self.default_top_n:
@@ -535,10 +553,14 @@ class RAGRetrieverSystem:
                     reranker = self.reranker
                 return RetrieverQueryEngine.from_args(
                     retriever=retriever,
-                    node_postprocessors=[reranker]
+                    node_postprocessors=[reranker],
+                    streaming=False,  # 禁用流式输出
                 )
             else:
-                return RetrieverQueryEngine.from_args(retriever=retriever)
+                return RetrieverQueryEngine.from_args(
+                    retriever=retriever,
+                    streaming=False,  # 禁用流式输出
+                )
 
         except Exception as e:
             logger.error(f"创建Query Engine失败: {e}")
@@ -590,26 +612,51 @@ class RAGRetrieverSystem:
             logger.error(f"创建统一检索器失败: {e}")
             raise
 
-    def cleanup(self):
-        """清理资源"""
+    def cleanup(self, silent=False):
+        """
+        清理资源
+        
+        Args:
+            silent: 是否静默模式（不记录日志），用于析构函数调用
+        """
         try:
-            logger.info("开始清理RAG系统资源...")
+            if not silent:
+                logger.info("开始清理RAG系统资源...")
 
             # 清理数据库连接
             if hasattr(self, 'engine') and self.engine:
                 self.engine.dispose()
-                logger.info("数据库连接已清理")
+                if not silent:
+                    logger.info("数据库连接已清理")
 
-            logger.info("RAG系统资源清理完成")
+            if not silent:
+                logger.info("RAG系统资源清理完成")
 
         except Exception as e:
-            logger.warning(f"清理资源时出错: {e}")
+            # 静默模式下不记录日志（避免 Python 关闭时的错误）
+            if not silent:
+                try:
+                    logger.warning(f"清理资源时出错: {e}")
+                except:
+                    pass  # 如果 logger 已经被销毁，忽略
 
     def __del__(self):
-        """析构函数"""
+        """
+        析构函数 - 在对象销毁时自动调用
+        
+        注意：使用 silent=True 避免 Python 关闭时的 logging 错误
+        """
         try:
-            self.cleanup()
+            # 检查 Python 是否正在关闭
+            import sys
+            if sys is None or sys.meta_path is None:
+                # Python 正在关闭，静默清理
+                return
+            
+            # 静默清理（不记录日志）
+            self.cleanup(silent=True)
         except:
+            # 完全捕获所有异常，避免析构函数中的错误
             pass
 
 

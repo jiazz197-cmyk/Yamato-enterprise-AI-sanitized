@@ -2,15 +2,23 @@
 异步任务管理器
 用于管理长时间运行的后台任务的状态和结果
 支持 Redis 存储和内存存储两种模式
+
+🆕 新特性：
+- 线程安全的异步操作辅助方法
+- 与 ExecutorManager 协作支持
+- ✨ 观察者模式支持（可选，不影响原有轮询机制）
 """
 
+import asyncio
 import json
+import threading
 import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime
-from typing import Dict, Any, Optional, Literal
+from typing import Dict, Any, Optional, Literal, List
 
 from app.core.logging import request_logger as logger
+from app.core.observer import TaskSubject, TaskObserver, TaskEvent, TaskEventType
 
 
 @dataclass
@@ -81,20 +89,42 @@ class MemoryTaskStorage:
 
 class TaskManager:
     """
-    异步任务管理器
+    异步任务管理器（单例模式）
     
     职责：
     - 管理任务状态（pending/running/completed/failed）
     - 存储任务元数据和结果
     - 提供任务查询接口
+    - 🆕 提供线程安全的异步操作辅助方法
+    - ✨ 支持观察者模式（事件驱动通知）
     
     注意：
     - 仅负责状态管理，不负责任务执行
     - 不管理线程池或进程池
-    - 任务的实际执行由调用方负责
+    - 任务的实际执行由调用方负责（通常是 ExecutorManager）
+    - 🆕 支持在后台线程中调用异步方法
+    - ✅ 全局单例，确保任务状态统一管理
+    - ✨ 观察者模式与轮询机制并存，互不影响
     """
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls):
+        """确保只创建一个 TaskManager 实例（主实例）"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
     
     def __init__(self):
+        """初始化（只执行一次）"""
+        if self._initialized:
+            # 确保观察者相关属性存在（兼容旧实例）
+            if not hasattr(self, '_subject'):
+                self._subject = TaskSubject()
+            if not hasattr(self, '_observer_enabled'):
+                self._observer_enabled = True
+            return
+        
         self.task_prefix = "task:"
         self.default_ttl = 3600 * 24  # 24小时
         
@@ -102,9 +132,18 @@ class TaskManager:
         self.storage = MemoryTaskStorage()
         self.storage_type = "memory"
         self._init_attempted = False
+        
+        # 🆕 线程本地存储（用于在后台线程中创建独立的事件循环）
+        self._thread_local = threading.local()
+        
+        # ✨ 观察者模式支持（可选特性）
+        self._subject = TaskSubject()
+        self._observer_enabled = True  # 全局开关
 
         # 尝试初始化存储
         self._try_init_storage()
+        
+        self.__class__._initialized = True
 
     def _try_init_storage(self):
         """尝试初始化存储（优先 Redis，降级到内存）"""
@@ -140,6 +179,119 @@ class TaskManager:
         """生成任务ID"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         return f"{task_type}_{timestamp}_{uuid.uuid4().hex[:8]}"
+    
+    # ==================== 观察者模式接口 ====================
+    
+    async def register_observer(
+        self, 
+        observer: TaskObserver,
+        event_types: Optional[List[TaskEventType]] = None
+    ) -> None:
+        """
+        注册任务观察者
+        
+        Args:
+            observer: 观察者实例
+            event_types: 可选，只接收特定类型的事件（None = 接收所有事件）
+        
+        Example:
+            ```python
+            # 注册接收所有事件的观察者
+            await task_manager.register_observer(MyObserver())
+            
+            # 注册只接收完成和失败事件的观察者
+            await task_manager.register_observer(
+                AlertObserver(),
+                event_types=[TaskEventType.TASK_COMPLETED, TaskEventType.TASK_FAILED]
+            )
+            ```
+        """
+        await self._subject.attach(observer, event_types)
+        logger.info(f"✨ TaskManager 注册观察者: {observer.get_observer_name()}")
+    
+    async def unregister_observer(self, observer: TaskObserver) -> None:
+        """
+        注销任务观察者
+        
+        Args:
+            observer: 要注销的观察者实例
+        """
+        await self._subject.detach(observer)
+        logger.info(f"✨ TaskManager 注销观察者: {observer.get_observer_name()}")
+    
+    def enable_observers(self) -> None:
+        """启用观察者通知（全局开关）"""
+        self._observer_enabled = True
+        logger.info("✨ TaskManager 观察者通知已启用")
+    
+    def disable_observers(self) -> None:
+        """禁用观察者通知（全局开关）"""
+        self._observer_enabled = False
+        logger.info("✨ TaskManager 观察者通知已禁用")
+    
+    def get_observer_stats(self) -> Dict[str, Any]:
+        """
+        获取观察者统计信息
+        
+        Returns:
+            包含观察者数量、事件数等信息的字典
+        """
+        stats = self._subject.get_stats()
+        stats["observer_enabled"] = self._observer_enabled
+        return stats
+    
+    async def remove_all_observers(self) -> int:
+        """
+        移除所有观察者（用于关闭时清理）
+        
+        Returns:
+            移除的观察者数量
+        """
+        count = await self._subject.detach_all()
+        logger.info(f"✨ TaskManager 已移除所有观察者: {count} 个")
+        return count
+    
+    async def _emit_event(
+        self, 
+        event_type: TaskEventType,
+        task_id: str,
+        task_type: str,
+        **kwargs
+    ) -> None:
+        """
+        发布任务事件（内部方法）
+        
+        Args:
+            event_type: 事件类型
+            task_id: 任务ID
+            task_type: 任务类型
+            **kwargs: 其他事件数据（status, progress, message, result, error 等）
+        
+        Note:
+            - 如果观察者已禁用，此方法不会执行任何操作
+            - 事件发布不会阻塞主流程（即使失败也不影响任务执行）
+        """
+        # 容错检查：确保观察者相关属性存在
+        if not hasattr(self, '_observer_enabled') or not hasattr(self, '_subject'):
+            return
+        
+        if not self._observer_enabled:
+            return
+        
+        try:
+            event = TaskEvent(
+                event_type=event_type,
+                task_id=task_id,
+                task_type=task_type,
+                **kwargs
+            )
+            # 🐛 调试日志：记录事件发布
+            logger.debug(f"📡 准备发布事件: {event_type.value} [task_id={task_id}]")
+            await self._subject.notify(event)
+            logger.debug(f"✅ 事件发布完成: {event_type.value} [task_id={task_id}]")
+        except Exception as e:
+            # 观察者通知失败不应影响任务执行
+            logger.warning(f"⚠️  发布任务事件失败 [{event_type.value}]: {e}")
 
     async def create_task(self, task_type: str, metadata: Optional[Dict[str, Any]] = None) -> str:
         """创建新任务"""
@@ -160,6 +312,16 @@ class TaskManager:
                 raise Exception(f"无法保存任务状态: {task_id}")
 
             logger.info(f"创建任务: {task_id} (类型: {task_type}, 存储: {self.storage_type})")
+            
+            # ✨ 发布任务创建事件
+            await self._emit_event(
+                TaskEventType.TASK_CREATED,
+                task_id=task_id,
+                task_type=task_type,
+                status="pending",
+                metadata=metadata
+            )
+            
             return task_id
 
         except Exception as e:
@@ -181,6 +343,16 @@ class TaskManager:
             success = await self._save_task_status(task_status)
             if success:
                 logger.info(f"启动任务: {task_id}")
+                
+                # ✨ 发布任务启动事件
+                await self._emit_event(
+                    TaskEventType.TASK_STARTED,
+                    task_id=task_id,
+                    task_type=task_status.task_type,
+                    status="running",
+                    progress=0
+                )
+            
             return success
 
         except Exception as e:
@@ -198,7 +370,20 @@ class TaskManager:
             if message:
                 task_status.message = message
 
-            return await self._save_task_status(task_status)
+            success = await self._save_task_status(task_status)
+            
+            if success:
+                # ✨ 发布进度更新事件
+                await self._emit_event(
+                    TaskEventType.TASK_PROGRESS_UPDATED,
+                    task_id=task_id,
+                    task_type=task_status.task_type,
+                    status=task_status.status,
+                    progress=task_status.progress,
+                    message=message
+                )
+            
+            return success
 
         except Exception as e:
             logger.error(f"更新任务进度时发生错误 {task_id}: {e}")
@@ -220,6 +405,18 @@ class TaskManager:
             success = await self._save_task_status(task_status)
             if success:
                 logger.info(f"完成任务: {task_id}")
+                
+                # ✨ 发布任务完成事件
+                await self._emit_event(
+                    TaskEventType.TASK_COMPLETED,
+                    task_id=task_id,
+                    task_type=task_status.task_type,
+                    status="completed",
+                    progress=100,
+                    message=message,
+                    result=result
+                )
+            
             return success
 
         except Exception as e:
@@ -241,6 +438,17 @@ class TaskManager:
             success = await self._save_task_status(task_status)
             if success:
                 logger.error(f"任务失败: {task_id} - {error}")
+                
+                # ✨ 发布任务失败事件
+                await self._emit_event(
+                    TaskEventType.TASK_FAILED,
+                    task_id=task_id,
+                    task_type=task_status.task_type,
+                    status="failed",
+                    message=message,
+                    error=error
+                )
+            
             return success
 
         except Exception as e:
@@ -342,6 +550,115 @@ class TaskManager:
             logger.error(f"列出任务失败: {e}")
             return []
     
+    # 🆕 线程安全的辅助方法
+    
+    @staticmethod
+    def create_thread_safe_instance():
+        """
+        为后台线程创建独立的 TaskManager 实例
+        
+        ⚠️ 重要：由于 Redis 连接绑定到事件循环，在后台线程中必须创建独立实例
+        
+        Returns:
+            新的 TaskManager 实例（带有独立的事件循环和存储）
+        
+        Example:
+            ```python
+            def background_task(token, task_id):
+                # 在后台线程中创建独立的 TaskManager
+                thread_tm = TaskManager.create_thread_safe_instance()
+                
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                try:
+                    loop.run_until_complete(thread_tm.start_task(task_id))
+                    # ... 执行任务 ...
+                    loop.run_until_complete(thread_tm.complete_task(task_id, result))
+                finally:
+                    loop.close()
+            ```
+        """
+        import redis.asyncio as redis
+        from app.core.config import settings
+        
+        # 创建新实例（不使用单例）
+        instance = object.__new__(TaskManager)
+        instance.task_prefix = "task:"
+        instance.default_ttl = 3600 * 24
+        instance._init_attempted = True  # 跳过全局初始化
+        
+        # 尝试创建 Redis 存储
+        try:
+            redis_kwargs = {
+                "max_connections": settings.REDIS_MAX_CONNECTIONS,
+                "decode_responses": True,
+            }
+            if settings.REDIS_PASSWORD:
+                redis_kwargs["password"] = settings.REDIS_PASSWORD
+            
+            # 创建线程专用的 Redis 客户端
+            redis_client = redis.from_url(settings.REDIS_URL, **redis_kwargs)
+            
+            # 创建简单的 Redis 存储包装器
+            class ThreadRedisStorage:
+                def __init__(self, client):
+                    self.redis_client = client
+                
+                async def set(self, key, value, ttl=None):
+                    import json
+                    if isinstance(value, (dict, list)):
+                        value = json.dumps(value, ensure_ascii=False)
+                    if ttl:
+                        return await self.redis_client.setex(key, ttl, value)
+                    return await self.redis_client.set(key, value)
+                
+                async def get(self, key):
+                    import json
+                    value = await self.redis_client.get(key)
+                    if value is None:
+                        return None
+                    try:
+                        return json.loads(value)
+                    except (json.JSONDecodeError, TypeError):
+                        return value
+                
+                async def delete(self, key):
+                    return bool(await self.redis_client.delete(key))
+                
+                async def keys(self, pattern):
+                    result = []
+                    async for key in self.redis_client.scan_iter(match=pattern):
+                        if isinstance(key, bytes):
+                            key = key.decode('utf-8')
+                        result.append(key)
+                    return result
+            
+            instance.storage = ThreadRedisStorage(redis_client)
+            instance.storage_type = "redis"
+            logger.debug("为后台线程创建了独立的 Redis 存储")
+            
+        except Exception as e:
+            # 降级到内存存储
+            logger.warning(f"无法为后台线程创建 Redis 存储，使用内存存储: {e}")
+            instance.storage = MemoryTaskStorage()
+            instance.storage_type = "memory"
+        
+        # ✨ 关键修复：共享全局单例的观察者（确保事件能被发布到 WebSocket）
+        # 虽然 Redis 连接是线程独立的，但观察者可以共享（观察者内部会处理线程安全）
+        global_instance = TaskManager._instance
+        if global_instance and hasattr(global_instance, '_subject'):
+            instance._subject = global_instance._subject
+            instance._observer_enabled = global_instance._observer_enabled
+            observer_count = len(global_instance._subject._observers) if hasattr(global_instance._subject, '_observers') else 0
+            logger.info(f"✨ 线程安全实例已共享全局观察者（{observer_count} 个观察者）")
+        else:
+            # 如果全局实例还没有观察者，初始化空的观察者
+            instance._subject = TaskSubject()
+            instance._observer_enabled = True
+            logger.warning("⚠️  线程安全实例创建了独立观察者（全局实例不可用）")
+        
+        return instance
 
 
 # 全局任务管理器实例

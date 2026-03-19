@@ -9,7 +9,7 @@ from llama_index.core.schema import TextNode
 from .doc_reader import DocumentProcessor
 from .embedding_store import BGEM3EmbeddingWrapper, VectorStoreManager
 from .exceptions import DocumentProcessingError
-from .text_splitter import TagGenerator, TokenAwareTextSplitter
+from .text_splitter import TagGenerator, TokenAwareTextSplitter, ExcelHeaderPreservingSplitter
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,8 @@ class DocumentProcessingPipeline:
         self.num_tags = num_tags
 
         self.text_splitter = TokenAwareTextSplitter(chunk_size, chunk_overlap)
+        # ✅ 添加Excel专用分割器
+        self.excel_splitter = ExcelHeaderPreservingSplitter(chunk_size, chunk_overlap)
         self.tag_generator = TagGenerator(device=device)
         self.document_processor = DocumentProcessor()
         # 嵌入模型改为调用远程 Docker 服务，通过环境变量配置接口地址和模型名
@@ -116,11 +118,13 @@ class DocumentProcessingPipeline:
         processed = 0
         for file_path in files:
             try:
+                # ✅ 传递Excel专用分割器
                 chunks = self.document_processor.process_document(
                     file_path,
                     self.text_splitter,
                     tag_generator=self.tag_generator,
                     num_tags=self.num_tags,
+                    excel_splitter=self.excel_splitter,
                 )
                 if not chunks:
                     continue
