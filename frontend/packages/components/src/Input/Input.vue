@@ -1,22 +1,23 @@
 <template>
   <div class="input-wrapper">
     <textarea
-      v-if="multiline"
-      :class="['input', 'input--multiline', { 'input--disabled': disabled }]"
-      :placeholder="placeholder"
-      :value="modelValue"
-      :disabled="disabled"
-      :rows="rows"
+      v-if="props.multiline"
+      ref="textareaRef"
+      :class="['input', 'input--multiline', { 'input--disabled': props.disabled }]"
+      :placeholder="props.placeholder"
+      :value="props.modelValue"
+      :disabled="props.disabled"
+      :rows="props.rows"
       @input="handleInput"
-      @keydown.enter.exact="handleEnter"
+      @keydown.enter.exact.prevent="handleEnter"
     ></textarea>
     <input
       v-else
-      :class="['input', { 'input--disabled': disabled }]"
-      :type="type"
-      :placeholder="placeholder"
-      :value="modelValue"
-      :disabled="disabled"
+      :class="['input', { 'input--disabled': props.disabled }]"
+      :type="props.type"
+      :placeholder="props.placeholder"
+      :value="props.modelValue"
+      :disabled="props.disabled"
       @input="handleInput"
       @keydown.enter="handleEnter"
     />
@@ -24,6 +25,8 @@
 </template>
 
 <script setup lang="ts">
+import { nextTick, onMounted, ref, watch } from 'vue'
+
 interface Props {
   modelValue: string
   type?: string
@@ -33,13 +36,15 @@ interface Props {
   rows?: number
 }
 
-withDefaults(defineProps<Props>(), {
+const props = withDefaults(defineProps<Props>(), {
   type: 'text',
   placeholder: '',
   disabled: false,
   multiline: false,
   rows: 1,
 })
+
+const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
@@ -49,11 +54,65 @@ const emit = defineEmits<{
 const handleInput = (event: Event) => {
   const target = event.target as HTMLInputElement | HTMLTextAreaElement
   emit('update:modelValue', target.value)
+
+  if (props.multiline && target instanceof HTMLTextAreaElement) {
+    nextTick(() => {
+      adjustTextareaHeight(target, true)
+    })
+  }
 }
 
-const handleEnter = (event: KeyboardEvent) => {
+const handleEnter = () => {
   emit('enter')
 }
+
+const adjustTextareaHeight = (
+  element?: HTMLTextAreaElement | null,
+  scrollToEnd = false
+) => {
+  const textarea = element ?? textareaRef.value
+  if (!textarea || !props.multiline) {
+    return
+  }
+
+  const computedStyle = window.getComputedStyle(textarea)
+  const lineHeight = Number.parseFloat(computedStyle.lineHeight) || 24
+  const paddingTop = Number.parseFloat(computedStyle.paddingTop) || 0
+  const paddingBottom = Number.parseFloat(computedStyle.paddingBottom) || 0
+  const borderTop = Number.parseFloat(computedStyle.borderTopWidth) || 0
+  const borderBottom = Number.parseFloat(computedStyle.borderBottomWidth) || 0
+  const verticalOffset = paddingTop + paddingBottom + borderTop + borderBottom
+
+  const minRows = Math.max(1, props.rows)
+  const minHeight = lineHeight * minRows + verticalOffset
+  const maxHeight = lineHeight * 5 + verticalOffset
+
+  textarea.style.height = 'auto'
+  const desiredHeight = Math.max(minHeight, Math.min(textarea.scrollHeight, maxHeight))
+  textarea.style.height = `${desiredHeight}px`
+
+  const hasOverflow = textarea.scrollHeight > maxHeight
+  textarea.style.overflowY = hasOverflow ? 'auto' : 'hidden'
+
+  if (hasOverflow && scrollToEnd) {
+    textarea.scrollTop = textarea.scrollHeight
+  }
+}
+
+onMounted(() => {
+  if (props.multiline) {
+    adjustTextareaHeight()
+  }
+})
+
+watch(
+  () => [props.modelValue, props.multiline, props.rows],
+  () => {
+    nextTick(() => {
+      adjustTextareaHeight()
+    })
+  }
+)
 </script>
 
 <style lang="scss" scoped>
@@ -66,6 +125,7 @@ const handleEnter = (event: KeyboardEvent) => {
   padding: 12px 16px;
   border: 1px solid #dadce0;
   border-radius: 24px;
+  box-sizing: border-box;
   font-size: 16px;
   outline: none;
   transition: all 0.2s ease;
@@ -86,8 +146,32 @@ const handleEnter = (event: KeyboardEvent) => {
     resize: none;
     font-family: inherit;
     line-height: 1.5;
-    max-height: calc(1.5em * 5 + 24px); /* 5行 + padding */
-    overflow-y: auto;
+    padding-bottom: 14px;
+    max-height: calc(1.5em * 5 + 26px); /* 5行 + padding */
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #d3d7dc transparent;
+
+    &::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    &::-webkit-scrollbar-track {
+      background: transparent;
+      margin: 6px 0;
+    }
+
+    &::-webkit-scrollbar-thumb {
+      background: #d3d7dc;
+      border-radius: 8px;
+      border: 2px solid transparent;
+      background-clip: content-box;
+    }
+
+    &::-webkit-scrollbar-thumb:hover {
+      background: #c2c8cf;
+      background-clip: content-box;
+    }
     
     /* 隐藏滚动条调整按钮 */
     &::-webkit-resizer {

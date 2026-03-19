@@ -10,6 +10,22 @@ interface AppConfig {
   env: string
   userName?: string
   userAvatarUrl?: string
+  /**
+   * 登录接口相对路径，例如 `/auth/login`
+   */
+  loginEndpoint: string
+  /**
+   * 获取当前用户信息的接口相对路径，例如 `/auth/me`
+   */
+  meEndpoint: string
+  /**
+   * 存储登录 Token 的 localStorage Key
+   */
+  authTokenStorageKey: string
+  /**
+   * 存储用户设置的 localStorage Key
+   */
+  settingsStorageKey: string
 }
 
 const getConfig = (): AppConfig => {
@@ -33,6 +49,26 @@ const getConfig = (): AppConfig => {
     throw new Error('VITE_CHAT_API_KEY is required in .env file')
   }
 
+  const loginEndpoint = import.meta.env.VITE_LOGIN_ENDPOINT
+  if (!loginEndpoint) {
+    throw new Error('VITE_LOGIN_ENDPOINT is required in .env file')
+  }
+
+  const meEndpoint = import.meta.env.VITE_ME_ENDPOINT
+  if (!meEndpoint) {
+    throw new Error('VITE_ME_ENDPOINT is required in .env file')
+  }
+
+  const authTokenStorageKey = import.meta.env.VITE_AUTH_TOKEN_KEY
+  if (!authTokenStorageKey) {
+    throw new Error('VITE_AUTH_TOKEN_KEY is required in .env file')
+  }
+
+  const settingsStorageKey = import.meta.env.VITE_SETTINGS_STORAGE_KEY
+  if (!settingsStorageKey) {
+    throw new Error('VITE_SETTINGS_STORAGE_KEY is required in .env file')
+  }
+
   return {
     port: portNumber,
     apiBaseUrl,
@@ -40,6 +76,10 @@ const getConfig = (): AppConfig => {
     env: import.meta.env.VITE_ENV || import.meta.env.MODE,
     userName: import.meta.env.VITE_USER_NAME,
     userAvatarUrl: import.meta.env.VITE_USER_AVATAR_URL,
+    loginEndpoint,
+    meEndpoint,
+    authTokenStorageKey,
+    settingsStorageKey,
   }
 }
 

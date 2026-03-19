@@ -1,9 +1,6 @@
 <template>
   <div class="page">
-    <div class="page__header">
-      <h1 class="page__title">文件管理</h1>
-      <p class="page__subtitle">上传、浏览与管理你的文件</p>
-    </div>
+    <PageHeader title="文件管理" subtitle="上传、浏览与管理你的文件" />
 
     <div class="page__content">
       <div class="toolbar">
@@ -34,7 +31,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Button, TaskCard } from '@yamato/components'
+import { Button, TaskCard, PageHeader } from '@yamato/components'
 
 type TaskStatus = 'in_progress' | 'cancelled' | 'completed'
 
@@ -140,27 +137,6 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.page__header {
-  padding: 14px 32px;
-  border-bottom: none;
-  background: #ffffff;
-}
-
-.page__title {
-  font-size: 24px;
-  font-weight: 500;
-  color: #1976d2;
-  margin: 0 0 4px 0;
-  line-height: 1.2;
-}
-
-.page__subtitle {
-  font-size: 14px;
-  color: #5f6368;
-  margin: 0;
-  line-height: 1.2;
 }
 
 .page__content {

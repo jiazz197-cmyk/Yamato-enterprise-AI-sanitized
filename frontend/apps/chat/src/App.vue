@@ -1,5 +1,8 @@
 <template>
-  <div id="app" class="app-shell">
+  <div v-if="isLoginPage" class="login-shell">
+    <RouterView />
+  </div>
+  <div v-else id="app" class="app-shell">
     <Sidebar
       title="yamato"
       :user-name="userName"
@@ -19,26 +22,94 @@
           报单生成
         </RouterLink>
       </nav>
+
+      <template #user-actions>
+        <button class="logout-btn" type="button" @click="openLogoutDialog">
+          退出
+        </button>
+      </template>
     </Sidebar>
 
     <main class="app-main">
       <RouterView />
     </main>
+
+    <ConfirmDialog
+      v-model="showLogoutDialog"
+      title="退出登录"
+      message="确定要退出当前账号吗？"
+      type="warning"
+      confirm-text="退出"
+      cancel-text="取消"
+      @confirm="confirmLogout"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import { RouterLink, RouterView } from 'vue-router'
-import { Sidebar } from '@yamato/components'
+import { computed, ref, watch } from 'vue'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+import { Sidebar, ConfirmDialog } from '@yamato/components'
 import { config } from './config'
 
-const userName = computed(() => config.userName || '')
+const sidebarUserId = ref('')
+
+const readSidebarUserId = () => {
+  try {
+    const raw = localStorage.getItem(config.settingsStorageKey)
+    if (!raw) {
+      sidebarUserId.value = ''
+      return
+    }
+
+    const parsed = JSON.parse(raw) as { userId?: unknown; user?: unknown }
+    sidebarUserId.value = String(parsed.userId ?? parsed.user ?? '').trim()
+  } catch {
+    sidebarUserId.value = ''
+  }
+}
+
+const userName = computed(() => sidebarUserId.value || config.userName || '')
 const userAvatarUrl = computed(() => config.userAvatarUrl || '')
+
+const route = useRoute()
+const router = useRouter()
+
+const showLogoutDialog = ref(false)
+
+const isLoginPage = computed(() => route.name === 'login')
+
+readSidebarUserId()
+
+watch(
+  () => route.fullPath,
+  () => {
+    readSidebarUserId()
+  }
+)
+
+const openLogoutDialog = () => {
+  showLogoutDialog.value = true
+}
+
+const confirmLogout = async () => {
+  try {
+    localStorage.removeItem(config.authTokenStorageKey)
+  } catch {
+    // ignore
+  }
+  await router.push('/login')
+}
 </script>
 
 <style scoped lang="scss">
 .app-shell {
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.login-shell {
   width: 100%;
   height: 100vh;
   overflow: hidden;
@@ -77,6 +148,27 @@ const userAvatarUrl = computed(() => config.userAvatarUrl || '')
     background: #d2e3fc;
     color: #1976d2;
     font-weight: 600;
+  }
+}
+
+.logout-btn {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: none;
+  background: #e8f0fe;
+  color: #1a73e8;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.1s ease;
+
+  &:hover {
+    background: #d2e3fc;
+    color: #174ea6;
+  }
+
+  &:active {
+    transform: translateY(1px);
   }
 }
 </style>

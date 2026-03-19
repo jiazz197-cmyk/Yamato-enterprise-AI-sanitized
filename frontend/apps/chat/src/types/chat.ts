@@ -26,24 +26,15 @@ export interface Conversation {
 }
 
 // 搜索模式
-export type SearchMode = 'online' | 'local' | 'both'
-
-// 聊天附件文件
-export interface ChatFile {
-  name: string
-  type: string
-  size: number
-  data: string // base64 data URL
-}
+export type SearchMode = '联网搜索' | '本地检索' | '本地&网络'
 
 // 发送消息请求参数
 export interface ChatMessageRequest {
-  search: SearchMode
+  user: string
   user_id: string
-  userinput: {
-    query: string
-    files: ChatFile[]
-  }
+  search: SearchMode
+  query: string
+  inputs: Record<string, unknown>
   conversation_id?: string
   response_mode: 'streaming' | 'blocking'
 }
@@ -61,12 +52,23 @@ export type SSEEventType =
 
 // SSE 消息事件
 export interface SSEMessageEvent {
-  event: 'message' | 'agent_message'
+  event: 'message' | 'agent_message' | 'message_replace'
   task_id: string
   id: string
   conversation_id: string
   answer: string
   created_at: number
+}
+
+export interface SSEAgentThoughtEvent {
+  event: 'agent_thought'
+  task_id: string
+  id?: string
+  conversation_id?: string
+  thought?: string
+  message?: string
+  answer?: string
+  created_at?: number
 }
 
 // SSE 消息结束事件
@@ -95,7 +97,7 @@ export interface SSEErrorEvent {
 }
 
 // SSE 事件联合类型
-export type SSEEvent = SSEMessageEvent | SSEMessageEndEvent | SSEErrorEvent
+export type SSEEvent = SSEMessageEvent | SSEAgentThoughtEvent | SSEMessageEndEvent | SSEErrorEvent
 
 // 获取会话列表响应
 export interface ConversationsResponse {

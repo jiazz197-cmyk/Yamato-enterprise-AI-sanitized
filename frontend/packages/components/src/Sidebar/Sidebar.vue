@@ -1,3 +1,4 @@
+/* 会话列表折叠 */
 <template>
   <aside
     :class="['sidebar', { 'sidebar--collapsed': collapsed }]"
@@ -40,7 +41,10 @@
           <span v-else class="sidebar-user__avatar-text">{{ avatarText }}</span>
         </div>
         <div class="sidebar-user__meta">
-          <div class="sidebar-user__name">{{ displayName }}</div>
+          <div class="sidebar-user__top-row">
+            <div class="sidebar-user__name">{{ displayName }}</div>
+            <slot name="user-actions" />
+          </div>
           <div class="sidebar-user__desc">{{ userDesc }}</div>
         </div>
       </div>
@@ -213,6 +217,13 @@ const toggle = () => {
     font-weight: 500;
     color: #202124;
     line-height: 1.2;
+  }
+
+  &__top-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
   }
 
   &__desc {

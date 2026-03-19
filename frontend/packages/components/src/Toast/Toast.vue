@@ -1,3 +1,4 @@
+/* 一个任务完成提示组件，用于在页面顶部居中显示提示信息，并在一定时间后自动消失 */
 <template>
   <Transition name="toast">
     <div v-if="visible" :class="['toast', `toast--${type}`]">

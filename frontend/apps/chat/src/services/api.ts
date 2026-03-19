@@ -1,12 +1,36 @@
 import { config } from '../config'
 import type { ApiError } from '../types/chat'
 
+const getAuthToken = (): string | null => {
+  try {
+    const token = localStorage.getItem(config.authTokenStorageKey)
+    return token || null
+  } catch {
+    return null
+  }
+}
+
 /**
  * 创建标准请求头
+ * 聊天接口使用 Chat API Key
+ */
+export const createChatHeaders = (): HeadersInit => {
+  return {
+    Authorization: `Bearer ${config.chatApiKey}`,
+    'Content-Type': 'application/json',
+  }
+}
+
+/**
+ * 创建业务接口请求头
+ * 优先使用登录后获取的 Token，未登录时回退到 Chat API Key
  */
 export const createHeaders = (): HeadersInit => {
+  const token = getAuthToken()
+  const authValue = token ? `Bearer ${token}` : `Bearer ${config.chatApiKey}`
+
   return {
-    'Authorization': `Bearer ${config.chatApiKey}`,
+    Authorization: authValue,
     'Content-Type': 'application/json',
   }
 }

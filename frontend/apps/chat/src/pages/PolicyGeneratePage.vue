@@ -1,9 +1,6 @@
 <template>
   <div class="page">
-    <div class="page__header">
-      <h1 class="page__title">报单生成</h1>
-      <p class="page__subtitle">填写信息并生成表单文档</p>
-    </div>
+    <PageHeader title="报单生成" subtitle="填写信息并生成表单文档" />
 
     <div class="page__content">
       <section class="order-card" aria-label="历史订单信息">
@@ -137,6 +134,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { PageHeader } from '@yamato/components'
 
 interface OrderRow {
   id: number
@@ -173,11 +171,7 @@ const removeRow = (id: number) => {
 
 const submitOrders = () => {
   // 这里预留后续与后端接口对接的位置
-  // 当前仅在控制台输出数据，避免硬编码接口信息
-  if (import.meta.env.DEV) {
-    // eslint-disable-next-line no-console
-    console.log('提交历史订单数据：', orderRows.value)
-  }
+  void orderRows
 }
 </script>
 
@@ -187,27 +181,6 @@ const submitOrders = () => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.page__header {
-  padding: 14px 32px;
-  border-bottom: none;
-  background: #ffffff;
-}
-
-.page__title {
-  font-size: 24px;
-  font-weight: 500;
-  color: #1976d2;
-  margin: 0 0 4px 0;
-  line-height: 1.2;
-}
-
-.page__subtitle {
-  font-size: 14px;
-  color: #5f6368;
-  margin: 0;
-  line-height: 1.2;
 }
 
 .page__content {

@@ -1,10 +1,17 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
+import { config } from '../config'
 
 const routes: RouteRecordRaw[] = [
   {
     path: '/',
     redirect: '/chat',
+  },
+  {
+    path: '/login',
+    name: 'login',
+    component: () => import('@/pages/LoginPage.vue'),
+    meta: { title: '登录' },
   },
   {
     path: '/chat',
@@ -29,6 +36,27 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
+})
+
+router.beforeEach((to, _from, next) => {
+  let token: string | null = null
+  try {
+    token = localStorage.getItem(config.authTokenStorageKey)
+  } catch {
+    token = null
+  }
+
+  if (!token && to.path !== '/login') {
+    next('/login')
+    return
+  }
+
+  if (token && to.path === '/login') {
+    next('/chat')
+    return
+  }
+
+  next()
 })
 
 router.afterEach((to) => {

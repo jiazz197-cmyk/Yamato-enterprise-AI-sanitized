@@ -1,7 +1,6 @@
 import { config } from '../config'
-import { createHeaders } from './api'
+import { createChatHeaders } from './api'
 import type {
-  ChatFile,
   SearchMode,
   SSEEvent,
   Conversation,
@@ -19,31 +18,185 @@ export interface SSECallbacks {
   onError?: (error: Error) => void
 }
 
+interface ParsedSSEBlock {
+  event?: string
+  data?: string
+}
+
+type RawSSEEvent = Partial<SSEEvent> & {
+  event?: string
+  answer?: string
+  message?: string
+  task_id?: string
+  conversation_id?: string
+  output_text?: string
+  text?: string
+  content?: string
+  data?: unknown
+  outputs?: unknown
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
+
+const getStringValue = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.length > 0 ? value : undefined
+
+const pickFirstString = (values: unknown[]): string | undefined => {
+  for (const value of values) {
+    const text = getStringValue(value)
+    if (text) {
+      return text
+    }
+  }
+  return undefined
+}
+
+const extractEventContent = (payload: RawSSEEvent): string | undefined => {
+  const direct = pickFirstString([
+    payload.answer,
+    payload.output_text,
+    payload.text,
+    payload.content,
+    payload.message,
+  ])
+
+  if (direct) {
+    return direct
+  }
+
+  if (isRecord(payload.outputs)) {
+    const fromOutputs = pickFirstString([
+      payload.outputs.text,
+      payload.outputs.content,
+      payload.outputs.answer,
+      payload.outputs.output_text,
+      payload.outputs.result,
+    ])
+    if (fromOutputs) {
+      return fromOutputs
+    }
+  }
+
+  if (isRecord(payload.data)) {
+    const fromData = pickFirstString([
+      payload.data.text,
+      payload.data.content,
+      payload.data.answer,
+      payload.data.output_text,
+      payload.data.result,
+      payload.data.message,
+    ])
+    if (fromData) {
+      return fromData
+    }
+
+    if (isRecord(payload.data.outputs)) {
+      return pickFirstString([
+        payload.data.outputs.text,
+        payload.data.outputs.content,
+        payload.data.outputs.answer,
+        payload.data.outputs.output_text,
+        payload.data.outputs.result,
+      ])
+    }
+  }
+
+  return undefined
+}
+
+const extractStreamChunkContent = (payload: RawSSEEvent): string | undefined =>
+  pickFirstString([
+    payload.answer,
+    payload.output_text,
+    payload.text,
+    payload.content,
+  ])
+
+const mergeStreamContent = (current: string, incoming: string): string => {
+  if (!current) {
+    return incoming
+  }
+
+  if (incoming.startsWith(current)) {
+    return incoming
+  }
+
+  if (current.endsWith(incoming)) {
+    return current
+  }
+
+  return `${current}${incoming}`
+}
+
+const parseSSEBlock = (block: string): ParsedSSEBlock => {
+  const normalizedBlock = block.replace(/\r/g, '')
+  const lines = normalizedBlock.split('\n')
+  const dataLines: string[] = []
+  let eventName: string | undefined
+
+  for (const line of lines) {
+    if (!line || line.startsWith(':')) {
+      continue
+    }
+
+    if (line.startsWith('event:')) {
+      eventName = line.substring(6).trim()
+      continue
+    }
+
+    if (line.startsWith('data:')) {
+      dataLines.push(line.substring(5).trimStart())
+    }
+  }
+
+  return {
+    event: eventName,
+    data: dataLines.length > 0 ? dataLines.join('\n') : undefined,
+  }
+}
+
+const isUUID = (value: string | undefined): value is string => {
+  if (!value) {
+    return false
+  }
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+}
+
 /**
  * 发送聊天消息（SSE 流式响应）
  */
 export const sendChatMessage = async (
   query: string,
   conversationId: string | undefined,
-  settings: { userId: string; search: SearchMode; files: ChatFile[] },
+  settings: { user: string; search: SearchMode },
   callbacks: SSECallbacks
 ): Promise<{ taskId: string; conversationId: string }> => {
   const url = `${config.apiBaseUrl}/chat-messages`
+  const user = settings.user.trim()
+
+  if (!user) {
+    throw new Error('Arg user must be provided.')
+  }
+
+  const normalizedConversationId = isUUID(conversationId) ? conversationId : undefined
 
   const requestBody = {
+    user,
+    user_id: user,
     search: settings.search,
-    user_id: settings.userId,
-    userinput: {
-      query,
-      files: settings.files,
+    query,
+    inputs: {
+      search: settings.search,
+      user_id: user,
     },
-    conversation_id: conversationId,
+    ...(normalizedConversationId ? { conversation_id: normalizedConversationId } : {}),
     response_mode: 'streaming',
   }
 
   const response = await fetch(url, {
     method: 'POST',
-    headers: createHeaders(),
+    headers: createChatHeaders(),
     body: JSON.stringify(requestBody),
   })
   
@@ -61,47 +214,114 @@ export const sendChatMessage = async (
   
   let taskId = ''
   let responseConversationId = ''
+  let buffer = ''
+  let rawAccumulatedContent = ''
+  let accumulatedContent = ''
+  let hasStreamedContent = false
+  let fallbackContent = ''
+
+  const processSSEBlock = (block: string) => {
+    const parsed = parseSSEBlock(block)
+
+    if (!parsed.data || parsed.data === '[DONE]') {
+      return
+    }
+
+    let data: RawSSEEvent
+    try {
+      data = JSON.parse(parsed.data) as RawSSEEvent
+    } catch (error) {
+      if (import.meta.env.DEV) {
+        console.warn('Failed to parse SSE data block:', parsed.data, error)
+      }
+      return
+    }
+
+    if (typeof data.task_id === 'string') {
+      taskId = data.task_id
+    }
+    if (typeof data.conversation_id === 'string') {
+      responseConversationId = data.conversation_id
+    }
+
+    const eventType = data.event ?? parsed.event ?? ''
+    const isEndEvent = eventType === 'message_end' || eventType === 'workflow_finished'
+    const isStreamChunkEvent =
+      eventType === 'message' ||
+      eventType === 'agent_message' ||
+      eventType === 'message_replace'
+    const isFallbackCandidateEvent = eventType === 'node_finished' || eventType === 'workflow_finished'
+
+    if (import.meta.env.DEV) {
+      console.debug('[chat-sse-event]', {
+        eventType,
+        isStreamChunkEvent,
+        isEndEvent,
+      })
+    }
+
+    if (isStreamChunkEvent) {
+      const chunkContent = extractStreamChunkContent(data)
+      if (typeof chunkContent === 'string' && chunkContent.length > 0) {
+        rawAccumulatedContent = mergeStreamContent(rawAccumulatedContent, chunkContent)
+        if (rawAccumulatedContent && rawAccumulatedContent !== accumulatedContent) {
+          accumulatedContent = rawAccumulatedContent
+          hasStreamedContent = true
+          callbacks.onMessage?.(accumulatedContent, data as SSEEvent)
+        }
+      }
+    }
+
+    if (isFallbackCandidateEvent) {
+      const candidate = extractEventContent(data)
+      if (typeof candidate === 'string' && candidate.length > 0) {
+        fallbackContent = candidate
+      }
+    }
+
+    if (isEndEvent) {
+      if (!hasStreamedContent && fallbackContent) {
+        accumulatedContent = fallbackContent
+        callbacks.onMessage?.(accumulatedContent, data as SSEEvent)
+        hasStreamedContent = true
+      }
+      callbacks.onEnd?.(data as SSEEvent)
+    } else if (eventType === 'error') {
+      callbacks.onError?.(new Error(typeof data.message === 'string' ? data.message : '请求失败'))
+    }
+  }
   
   try {
     while (true) {
       const { done, value } = await reader.read()
-      
-      if (done) break
-      
-      const chunk = decoder.decode(value, { stream: true })
-      const lines = chunk.split('\n')
-      
-      for (const line of lines) {
-        if (!line.trim() || !line.startsWith('data: ')) continue
-        
-        const dataStr = line.substring(6) // 移除 'data: ' 前缀
-        
-        try {
-          const data = JSON.parse(dataStr) as SSEEvent
-          
-          // 保存 task_id 和 conversation_id
-          if ('task_id' in data) {
-            taskId = data.task_id
-          }
-          if ('conversation_id' in data) {
-            responseConversationId = data.conversation_id
-          }
-          
-          // 处理不同类型的事件
-          if (data.event === 'message' || data.event === 'agent_message') {
-            callbacks.onMessage?.(data.answer, data)
-          } else if (data.event === 'message_end') {
-            callbacks.onEnd?.(data)
-          } else if (data.event === 'error') {
-            callbacks.onError?.(new Error(data.message))
-          }
-        } catch (error) {
-          // 忽略无法解析的行（可能是 ping 事件等）
-          if (import.meta.env.DEV) {
-            console.warn('Failed to parse SSE data:', dataStr, error)
-          }
-        }
+
+      if (done) {
+        buffer += decoder.decode()
+        break
       }
+
+      buffer += decoder.decode(value, { stream: true })
+
+      let boundaryMatch = /\r?\n\r?\n/.exec(buffer)
+      while (boundaryMatch && typeof boundaryMatch.index === 'number') {
+        const eventBoundaryIndex = boundaryMatch.index
+        const separatorLength = boundaryMatch[0].length
+        const rawBlock = buffer.slice(0, eventBoundaryIndex)
+        buffer = buffer.slice(eventBoundaryIndex + separatorLength)
+        processSSEBlock(rawBlock)
+        boundaryMatch = /\r?\n\r?\n/.exec(buffer)
+      }
+    }
+
+    if (buffer.trim()) {
+      processSSEBlock(buffer)
+    }
+
+    if (!hasStreamedContent && fallbackContent) {
+      accumulatedContent = fallbackContent
+      callbacks.onMessage?.(accumulatedContent, {
+        event: 'message_end',
+      } as SSEEvent)
     }
   } catch (error) {
     callbacks.onError?.(error as Error)
@@ -112,7 +332,7 @@ export const sendChatMessage = async (
   
   return {
     taskId,
-    conversationId: responseConversationId || conversationId || '',
+    conversationId: responseConversationId || '',
   }
 }
 
@@ -124,7 +344,7 @@ export const stopChatMessage = async (taskId: string): Promise<void> => {
   
   const response = await fetch(url, {
     method: 'POST',
-    headers: createHeaders(),
+    headers: createChatHeaders(),
   })
   
   if (!response.ok) {
@@ -137,14 +357,16 @@ export const stopChatMessage = async (taskId: string): Promise<void> => {
  * 获取会话列表
  */
 export const getConversations = async (
+  user: string,
   page = 1,
   limit = 20
 ): Promise<ConversationsResponse> => {
-  const url = `${config.apiBaseUrl}/conversations?user=user&page=${page}&limit=${limit}`
+  const normalizedUser = user.trim() || 'user'
+  const url = `${config.apiBaseUrl}/conversations?user=${encodeURIComponent(normalizedUser)}&page=${page}&limit=${limit}`
   
   const response = await fetch(url, {
     method: 'GET',
-    headers: createHeaders(),
+    headers: createChatHeaders(),
   })
   
   if (!response.ok) {
@@ -159,15 +381,17 @@ export const getConversations = async (
  * 获取消息列表
  */
 export const getMessages = async (
+  user: string,
   conversationId: string,
   page = 1,
   limit = 20
 ): Promise<MessagesResponse> => {
-  const url = `${config.apiBaseUrl}/messages?user=user&conversation_id=${conversationId}&page=${page}&limit=${limit}`
+  const normalizedUser = user.trim() || 'user'
+  const url = `${config.apiBaseUrl}/messages?user=${encodeURIComponent(normalizedUser)}&conversation_id=${conversationId}&page=${page}&limit=${limit}`
   
   const response = await fetch(url, {
     method: 'GET',
-    headers: createHeaders(),
+    headers: createChatHeaders(),
   })
   
   if (!response.ok) {
@@ -195,7 +419,7 @@ export const renameConversation = async (
   
   const response = await fetch(url, {
     method: 'POST',
-    headers: createHeaders(),
+    headers: createChatHeaders(),
     body: JSON.stringify(requestBody),
   })
   
