@@ -73,7 +73,16 @@
 
           <div class="chat-input-container">
             <div class="chat-input-wrapper">
-                <div class="chat-input-side chat-input-side--left">
+                <Input
+                  v-model="inputMessage"
+                  class="chat-input"
+                  placeholder="输入消息..."
+                  multiline
+                  :rows="1"
+                  @enter="sendMessage"
+                />
+
+                <div class="chat-input-overlay chat-input-overlay--left">
                   <div ref="searchDropdownRef" class="search-mode-dropdown">
                     <button class="search-mode-btn" type="button" @click.stop="toggleSearchDropdown">
                       <span class="search-mode-label">{{ searchModeLabel }}</span>
@@ -90,16 +99,7 @@
                   </div>
                 </div>
 
-                <Input
-                  v-model="inputMessage"
-                  class="chat-input"
-                  placeholder="输入消息..."
-                  multiline
-                  :rows="1"
-                  @enter="sendMessage"
-                />
-
-                <div class="chat-input-side chat-input-side--right">
+                <div class="chat-input-overlay chat-input-overlay--right">
                   <button
                     class="chat-send-btn"
                     :class="{ 'chat-send-btn--stop': isLoading }"
@@ -266,7 +266,7 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
 
 const showSearchDropdown = ref(false)
 const searchDropdownRef = ref<HTMLElement | null>(null)
-const searchDropdownStyle = ref<Record<string, string>>({ bottom: '0px', left: '0px' })
+const searchDropdownStyle = ref<Record<string, string>>({ top: '0px', left: '0px' })
 
 const searchModeLabel = computed(() => {
   return chatSettings.value.search
@@ -322,7 +322,7 @@ const toggleSearchDropdown = () => {
   if (el) {
     const rect = el.getBoundingClientRect()
     searchDropdownStyle.value = {
-      bottom: `${window.innerHeight - rect.top + 6}px`,
+      top: `${rect.bottom + 6}px`,
       left: `${rect.left}px`,
     }
   }
@@ -835,32 +835,43 @@ onBeforeUnmount(() => {
 .chat-input-wrapper {
   position: relative;
   margin-bottom: 8px;
-  width: min(960px, 90%);
-  min-width: 480px;
-  max-width: 1100px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.chat-input-side {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 180px;
-}
-
-.chat-input-side--left {
-  justify-content: flex-end;
-}
-
-.chat-input-side--right {
-  justify-content: flex-start;
+  width: min(1020px, 90%);
+  min-width: 560px;
+  max-width: 1120px;
 }
 
 .chat-input {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
+
+  :deep(.input) {
+    border: 1px solid transparent;
+    background:
+      linear-gradient(#ffffff, #ffffff) padding-box,
+      linear-gradient(135deg, rgba(66, 133, 244, 0.6), rgba(139, 92, 246, 0.55), rgba(56, 189, 248, 0.55)) border-box;
+    box-shadow: 0 0 10px rgba(66, 133, 244, 0.12);
+    padding: 12px 54px 60px 16px;
+    min-height: 90px;
+  }
+
+  :deep(.input:focus) {
+    border: 1px solid transparent;
+    box-shadow: 0 0 12px rgba(99, 102, 241, 0.18);
+  }
+}
+
+.chat-input-overlay {
+  position: absolute;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+}
+
+.chat-input-overlay--left {
+  left: 12px;
+}
+
+.chat-input-overlay--right {
+  right: 10px;
 }
 
 .chat-send-btn {
@@ -953,11 +964,11 @@ onBeforeUnmount(() => {
 }
 
 .search-mode-btn {
-  height: 36px;
+  height: 30px;
   padding: 0 10px;
   border: 1px solid #dadce0;
-  border-radius: 18px;
-  background: transparent;
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.92);
   color: #5f6368;
   cursor: pointer;
   display: flex;
