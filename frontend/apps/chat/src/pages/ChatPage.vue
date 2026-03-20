@@ -97,6 +97,23 @@
                       </svg>
                     </button>
                   </div>
+
+                  <button
+                    class="knowledge-upload-btn"
+                    type="button"
+                    :disabled="isUploadingKnowledge"
+                    @click.stop="openKnowledgeUpload"
+                  >
+                    {{ isUploadingKnowledge ? '上传中...' : '知识上传' }}
+                  </button>
+
+                  <input
+                    ref="knowledgeUploadInputRef"
+                    class="knowledge-upload-input"
+                    type="file"
+                    multiple
+                    @change="handleKnowledgeUploadChange"
+                  />
                 </div>
 
                 <div class="chat-input-overlay chat-input-overlay--right">
@@ -283,6 +300,10 @@ const { archiveConversation } = useChatSummary({
 })
 
 let streamingAbortController: AbortController | null = null
+const knowledgeUploadInputRef = ref<HTMLInputElement | null>(null)
+const isUploadingKnowledge = ref(false)
+const activeKnowledgeTaskId = ref<string | null>(null)
+let knowledgeStatusPollTimer: number | null = null
 
 const saveCachedSettings = () => {
   try {
@@ -333,6 +354,143 @@ const setSearchMode = (mode: SearchMode) => {
   chatSettings.value.search = mode
   showSearchDropdown.value = false
   saveCachedSettings()
+}
+
+const openKnowledgeUpload = () => {
+  if (isUploadingKnowledge.value) {
+    return
+  }
+  knowledgeUploadInputRef.value?.click()
+}
+
+const getUploadAuthorization = (): string => {
+  try {
+    const token = localStorage.getItem(config.authTokenStorageKey)
+    if (token) {
+      return `Bearer ${token}`
+    }
+  } catch {
+    // ignore
+  }
+  return `Bearer ${config.chatApiKey}`
+}
+
+const clearKnowledgeTaskPolling = () => {
+  if (knowledgeStatusPollTimer !== null) {
+    window.clearTimeout(knowledgeStatusPollTimer)
+    knowledgeStatusPollTimer = null
+  }
+}
+
+const finishKnowledgeTask = () => {
+  clearKnowledgeTaskPolling()
+  activeKnowledgeTaskId.value = null
+  isUploadingKnowledge.value = false
+}
+
+const pollKnowledgeTaskStatus = async (taskId: string) => {
+  try {
+    const response = await fetch(`${config.apiBaseUrl}/docs/status/${encodeURIComponent(taskId)}`, {
+      method: 'GET',
+      headers: {
+        Authorization: getUploadAuthorization(),
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error('知识上传状态查询失败')
+    }
+
+    const result = (await response.json()) as {
+      status?: string
+      progress?: number
+      message?: string
+      error?: string
+    }
+
+    const status = String(result.status ?? '').toLowerCase()
+
+    if (status === 'completed') {
+      showSuccess('知识上传处理完成')
+      finishKnowledgeTask()
+      return
+    }
+
+    if (status === 'failed' || status === 'cancelled') {
+      showError(result.error || result.message || '知识上传处理失败')
+      finishKnowledgeTask()
+      return
+    }
+
+    knowledgeStatusPollTimer = window.setTimeout(() => {
+      void pollKnowledgeTaskStatus(taskId)
+    }, 1500)
+  } catch (error: unknown) {
+    showError(getErrorMessage(error, '知识上传状态查询失败'))
+    finishKnowledgeTask()
+  }
+}
+
+const handleKnowledgeUploadChange = async (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const selectedFiles = target.files ? Array.from(target.files) : []
+
+  if (selectedFiles.length === 0 || isUploadingKnowledge.value) {
+    return
+  }
+
+  const formData = new FormData()
+  for (const file of selectedFiles) {
+    formData.append('files', file)
+  }
+
+  const uploader = String(chatSettings.value.user ?? '').trim() || 'user'
+
+  let keepUploadingState = false
+  isUploadingKnowledge.value = true
+
+  try {
+    const query = new URLSearchParams({
+      instance_id: '2',
+      uploader,
+    })
+
+    const response = await fetch(`${config.apiBaseUrl}/docs/process?${query.toString()}`, {
+      method: 'POST',
+      headers: {
+        Authorization: getUploadAuthorization(),
+      },
+      body: formData,
+    })
+
+    if (!response.ok) {
+      const errorPayload = (await response.json().catch(() => null)) as
+        | { detail?: string; message?: string }
+        | null
+      const message = errorPayload?.detail || errorPayload?.message || '知识上传失败'
+      throw new Error(message)
+    }
+
+    const result = (await response.json()) as { task_id?: string; files_count?: number }
+    const uploadedCount = result.files_count ?? selectedFiles.length
+    const taskId = typeof result.task_id === 'string' ? result.task_id.trim() : ''
+
+    showSuccess(`知识上传任务已创建（${uploadedCount} 个文件）`)
+
+    if (taskId) {
+      keepUploadingState = true
+      activeKnowledgeTaskId.value = taskId
+      clearKnowledgeTaskPolling()
+      void pollKnowledgeTaskStatus(taskId)
+    }
+  } catch (error: unknown) {
+    showError(getErrorMessage(error, '知识上传失败'))
+  } finally {
+    if (!keepUploadingState) {
+      isUploadingKnowledge.value = false
+    }
+    target.value = ''
+  }
 }
 
 const formatTime = (): string => {
@@ -773,6 +931,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleDocumentClick)
+  clearKnowledgeTaskPolling()
 })
 </script>
 
@@ -864,6 +1023,7 @@ onBeforeUnmount(() => {
   bottom: 8px;
   display: flex;
   align-items: center;
+  gap: 8px;
 }
 
 .chat-input-overlay--left {
@@ -969,13 +1129,13 @@ onBeforeUnmount(() => {
   border: 1px solid #dadce0;
   border-radius: 15px;
   background: rgba(255, 255, 255, 0.92);
-  color: #5f6368;
+  color: #202124;
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   white-space: nowrap;
   transition: all 0.2s ease;
 
@@ -988,6 +1148,42 @@ onBeforeUnmount(() => {
 
 .search-mode-label {
   line-height: 1;
+}
+
+.knowledge-upload-btn {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #dadce0;
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #202124;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+
+  &:hover:not(:disabled) {
+    background: #f1f3f4;
+    border-color: #bdc1c6;
+    color: #202124;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+.knowledge-upload-input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .search-mode-menu {

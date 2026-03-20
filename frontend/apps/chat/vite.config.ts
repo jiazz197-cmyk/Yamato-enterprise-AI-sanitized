@@ -64,6 +64,8 @@ export default defineConfig(({ mode }) => {
         [`${apiBase}/chat-summary`]: makeProxy(env.VITE_BACKEND_TARGET),
         // 填表接口属于后端业务服务，不应走 Dify
         [`${apiBase}/closing-form`]: makeProxy(env.VITE_BACKEND_TARGET),
+        // 文档处理接口属于后端业务服务，不应走 Dify
+        [`${apiBase}/docs`]: makeProxy(env.VITE_BACKEND_TARGET),
         // 其余 /api/v1/* → Dify 聊天服务 60086
         [apiBase]: {
           ...makeProxy(env.VITE_DIFY_TARGET),
