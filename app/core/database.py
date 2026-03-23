@@ -171,6 +171,7 @@ def init_db_tables():
     """
     try:
         # 导入所有 ORM 模型（确保注册到 Base.metadata）
+        from app.models.orm.closing_form import PendingForm  # noqa: F401
         from app.models.orm.file_resource import FileResource  # noqa: F401
         from app.models.orm.knowledge import KnowledgeInstance  # noqa: F401
         from app.models.orm.platform import (  # noqa: F401
@@ -182,14 +183,65 @@ def init_db_tables():
 
         # 创建所有表（已存在的表会被跳过）
         Base.metadata.create_all(bind=engine)
-        
+
+        # 简单的数据库迁移：为 data_pending 表添加 status 列（如果不存在）
+        try:
+            with engine.connect() as conn:
+                # 检查 status 列是否存在
+                result = conn.execute(text(
+                    "SELECT column_name "
+                    "FROM information_schema.columns "
+                    "WHERE table_name='data_pending' AND column_name='status'"
+                )).fetchone()
+                
+                if not result:
+                    logger.info("🔧 发现 data_pending 表缺少 status 列，正在添加...")
+                    conn.execute(text(
+                        "ALTER TABLE data_pending ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'pending'"
+                    ))
+                    conn.commit()
+                    logger.info("✅ 成功向 data_pending 表添加 status 列")
+        except Exception as mig_e:
+            logger.error(f"⚠️ data_pending 表迁移失败（如果表还未创建可忽略此错误）: {mig_e}")
+
         # 获取已创建的表列表
         table_names = [table.name for table in Base.metadata.sorted_tables]
         logger.info(f"✅ 数据库表初始化完成，共 {len(table_names)} 个表: {', '.join(table_names)}")
-        
+
     except Exception as e:
         logger.error(f"❌ 数据库表初始化失败: {e}", exc_info=True)
         # 不抛出异常，允许应用继续启动
+
+    # 种子数据独立执行，不受 create_all 是否报错影响
+    _seed_superuser()
+
+
+def _seed_superuser():
+    """Write the default superuser account if it does not already exist."""
+    try:
+        from app.models.orm.platform.user import User, UserRole
+        from app.core.security import hash_password
+
+        db = SessionLocal()
+        try:
+            exists = db.query(User).filter(User.username == "superuser").first()
+            if not exists:
+                su = User(
+                    username="superuser",
+                    email="superuser@yamato.com",
+                    password=hash_password("change_me_super_pass"),
+                    role=UserRole.superuser,
+                    is_active=True,
+                )
+                db.add(su)
+                db.commit()
+                logger.info("✅ 默认 superuser 账号已创建 (superuser / superuser@yamato.com)")
+            else:
+                logger.info("ℹ️ superuser 账号已存在，跳过种子写入")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"❌ superuser 种子写入失败: {e}", exc_info=True)
 
 
 def dispose_engine():

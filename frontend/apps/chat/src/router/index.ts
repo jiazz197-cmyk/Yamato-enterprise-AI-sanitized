@@ -1,6 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import { config } from '../config'
+import { readUserRole } from '../services/auth'
+
+const PUBLIC_PATHS = ['/login', '/register']
 
 const routes: RouteRecordRaw[] = [
   {
@@ -12,6 +15,12 @@ const routes: RouteRecordRaw[] = [
     name: 'login',
     component: () => import('@/pages/LoginPage.vue'),
     meta: { title: '登录' },
+  },
+  {
+    path: '/register',
+    name: 'register',
+    component: () => import('@/pages/RegisterPage.vue'),
+    meta: { title: '注册' },
   },
   {
     path: '/chat',
@@ -31,6 +40,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/pages/PolicyGeneratePage.vue'),
     meta: { title: '保单生成' },
   },
+  {
+    path: '/users',
+    name: 'users',
+    component: () => import('@/pages/UserManagePage.vue'),
+    meta: { title: '用户管理', requiresSuperuser: true },
+  },
 ]
 
 const router = createRouter({
@@ -46,12 +61,19 @@ router.beforeEach((to, _from, next) => {
     token = null
   }
 
-  if (!token && to.path !== '/login') {
+  const isPublic = PUBLIC_PATHS.includes(to.path)
+
+  if (!token && !isPublic) {
     next('/login')
     return
   }
 
-  if (token && to.path === '/login') {
+  if (token && isPublic) {
+    next('/chat')
+    return
+  }
+
+  if (to.meta.requiresSuperuser && readUserRole() !== 'superuser') {
     next('/chat')
     return
   }

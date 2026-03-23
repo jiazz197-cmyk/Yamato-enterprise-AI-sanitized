@@ -11,6 +11,7 @@ class ClosingFormSubmit(BaseModel):
     """填表提交数据"""
 
     date: Optional[str] = Field(None, description="日期，格式：YYYY-MM-DD HH:mm:ss")
+    closing_date: Optional[str] = Field(None, description="成交时间，格式：YYYY-MM-DD")
     customer_name: str = Field(..., description="客户名称")
     product_type: str = Field(..., description="产品类型")
     model_spec: str = Field(..., description="型号规格")
@@ -36,6 +37,7 @@ class ClosingFormSubmit(BaseModel):
         date_str = self.date or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         parts = [
             f"日期：{date_str}",
+            f"成交时间：{self.closing_date or ''}",
             f"客户名称：{self.customer_name}",
             f"产品类型：{self.product_type}",
             f"型号规格：{self.model_spec}",
@@ -73,6 +75,15 @@ class ClosingFormRecord(BaseModel):
     id: str
     text: str
     upload_time: Optional[str] = None
+    uploader: str = ""
+    status: str = "pending"
+
+
+class ClosingFormRejectResponse(BaseModel):
+    """拒绝审批响应"""
+
+    success: bool = True
+    message: str = "审批不通过"
 
 
 class ClosingFormListResponse(BaseModel):
@@ -81,3 +92,10 @@ class ClosingFormListResponse(BaseModel):
     success: bool = True
     total: int = 0
     records: list[ClosingFormRecord] = []
+
+
+class ClosingFormApproveResponse(BaseModel):
+    """审批响应"""
+
+    success: bool = True
+    message: str = "审批通过"

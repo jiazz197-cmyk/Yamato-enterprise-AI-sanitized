@@ -88,7 +88,7 @@
                       <span class="search-mode-label">{{ searchModeLabel }}</span>
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                         <path
-                          d="M6 9l6 6 6-6"
+                          d="M6 15l6-6 6 6"
                           stroke="currentColor"
                           stroke-width="2.5"
                           stroke-linecap="round"
@@ -343,7 +343,7 @@ const toggleSearchDropdown = () => {
   if (el) {
     const rect = el.getBoundingClientRect()
     searchDropdownStyle.value = {
-      top: `${rect.bottom + 6}px`,
+      bottom: `${window.innerHeight - rect.top + 6}px`,
       left: `${rect.left}px`,
     }
   }

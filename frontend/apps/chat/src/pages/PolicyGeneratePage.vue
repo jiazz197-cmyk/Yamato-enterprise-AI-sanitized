@@ -17,7 +17,7 @@
         type="button"
         @click="switchToRecords"
       >
-        我的表单
+        {{ isAdmin ? '全部表单' : '我的表单' }}
       </button>
     </div>
 
@@ -29,6 +29,15 @@
         <section class="form-section">
           <div class="form-section__title">基本信息</div>
           <div class="form-grid">
+            <div class="form-field">
+              <label class="form-field__label" for="closing_date">成交时间</label>
+              <input
+                id="closing_date"
+                v-model="form.closing_date"
+                type="date"
+                class="form-field__input"
+              />
+            </div>
             <div class="form-field">
               <label class="form-field__label" for="customer_name">客户名称</label>
               <input
@@ -247,7 +256,7 @@
 
       </form>
 
-      <!-- 我的表单 -->
+      <!-- 表单记录 -->
       <div v-else class="records">
 
         <div class="records__toolbar">
@@ -296,29 +305,59 @@
             v-for="record in records"
             :key="record.id"
             class="record-card"
-            :class="{ 'record-card--expanded': expandedId === record.id }"
+            :class="{
+              'record-card--expanded': expandedId === record.id,
+              'record-card--pending': record.status === 'pending',
+              'record-card--approved': record.status === 'approved',
+              'record-card--rejected': record.status === 'rejected',
+            }"
           >
             <div class="record-card__header" @click="toggleExpand(record.id)">
               <div class="record-card__meta">
                 <span class="record-card__time">{{ record.upload_time || '—' }}</span>
+                <span v-if="isAdmin && record.uploader" class="record-card__uploader">
+                  {{ record.uploader }}
+                </span>
                 <span class="record-card__summary">{{ getSummary(record.text) }}</span>
               </div>
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                class="record-card__chevron"
-                aria-hidden="true"
-              >
-                <path
-                  d="M6 9l6 6 6-6"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
+              <div class="record-card__right">
+                <span class="status-badge" :class="`status-badge--${record.status}`">
+                  <span class="status-badge__dot"></span>
+                  {{ record.status === 'approved' ? '已通过' : record.status === 'rejected' ? '不通过' : '待审批' }}
+                </span>
+                <div v-if="isAdmin && record.status === 'pending'" class="action-buttons">
+                  <button
+                    class="approve-btn reject-btn"
+                    :disabled="approvingId === record.id"
+                    @click.stop="rejectRecord(record.id)"
+                  >
+                    {{ approvingId === record.id ? '...' : '不通过' }}
+                  </button>
+                  <button
+                    class="approve-btn"
+                    :disabled="approvingId === record.id"
+                    @click.stop="approveRecord(record.id)"
+                  >
+                    {{ approvingId === record.id ? '...' : '通过' }}
+                  </button>
+                </div>
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  class="record-card__chevron"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M6 9l6 6 6-6"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </div>
             </div>
 
             <div v-if="expandedId === record.id" class="record-card__body">
@@ -343,11 +382,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { PageHeader } from '@yamato/components'
+import { computed, ref } from 'vue'
+import { PageHeader, useToast } from '@yamato/components'
+import { apiRequest } from '../services/api'
+import { readUserRole } from '../services/auth'
 import { config } from '../config'
 
 interface FormData {
+  closing_date: string
   customer_name: string
   product_type: string
   model_spec: string
@@ -373,6 +415,8 @@ interface FormRecord {
   id: string
   text: string
   upload_time: string | null
+  uploader: string
+  status: string
 }
 
 interface ParsedField {
@@ -380,9 +424,17 @@ interface ParsedField {
   value: string
 }
 
+const { showSuccess, showError } = useToast()
+
 const activeTab = ref<'form' | 'records'>('form')
 
+const isAdmin = computed(() => {
+  const role = readUserRole()
+  return role === 'admin' || role === 'superuser'
+})
+
 const createEmptyForm = (): FormData => ({
+  closing_date: '',
   customer_name: '',
   product_type: '',
   model_spec: '',
@@ -410,17 +462,7 @@ const submitting = ref(false)
 const records = ref<FormRecord[]>([])
 const loadingRecords = ref(false)
 const expandedId = ref<string | null>(null)
-
-const getCurrentUser = (): string => {
-  try {
-    const raw = localStorage.getItem(config.settingsStorageKey)
-    if (!raw) return 'anonymous'
-    const parsed = JSON.parse(raw) as { user?: unknown; userId?: unknown }
-    return String(parsed.user ?? parsed.userId ?? '').trim() || 'anonymous'
-  } catch {
-    return 'anonymous'
-  }
-}
+const approvingId = ref<string | null>(null)
 
 const resetForm = () => {
   form.value = createEmptyForm()
@@ -429,24 +471,15 @@ const resetForm = () => {
 const submitForm = async () => {
   submitting.value = true
   try {
-    const username = getCurrentUser()
-    const response = await fetch(`${config.apiBaseUrl}/closing-form/submit`, {
+    await apiRequest('/closing-form/submit', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Username': username,
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(form.value),
     })
-    if (response.ok) {
-      alert('提交成功')
-      resetForm()
-    } else {
-      const text = await response.text()
-      alert(`提交失败：${response.status} ${text}`)
-    }
-  } catch (err) {
-    alert(`提交失败：${err instanceof Error ? err.message : String(err)}`)
+    showSuccess('提交成功，等待审批')
+    resetForm()
+  } catch (err: any) {
+    showError(err?.message || err?.detail || '提交失败，请稍后重试')
   } finally {
     submitting.value = false
   }
@@ -455,21 +488,40 @@ const submitForm = async () => {
 const loadRecords = async () => {
   loadingRecords.value = true
   try {
-    const username = getCurrentUser()
-    const response = await fetch(`${config.apiBaseUrl}/closing-form/list`, {
-      headers: { 'X-Username': username },
-    })
-    if (response.ok) {
-      const data = (await response.json()) as { records: FormRecord[] }
-      records.value = data.records ?? []
-    } else {
-      const text = await response.text()
-      alert(`加载失败：${response.status} ${text}`)
-    }
-  } catch (err) {
-    alert(`加载失败：${err instanceof Error ? err.message : String(err)}`)
+    const data = await apiRequest<{ records: FormRecord[] }>('/closing-form/list')
+    records.value = data.records ?? []
+  } catch (err: any) {
+    showError(err?.message || '加载失败')
   } finally {
     loadingRecords.value = false
+  }
+}
+
+const approveRecord = async (formId: string) => {
+  approvingId.value = formId
+  try {
+    await apiRequest(`/closing-form/approve/${formId}`, { method: 'PATCH' })
+    const idx = records.value.findIndex((r) => r.id === formId)
+    if (idx !== -1) records.value[idx] = { ...records.value[idx], status: 'approved' }
+    showSuccess('已审批通过')
+  } catch (err: any) {
+    showError(err?.message || '审批失败')
+  } finally {
+    approvingId.value = null
+  }
+}
+
+const rejectRecord = async (formId: string) => {
+  approvingId.value = formId
+  try {
+    await apiRequest(`/closing-form/reject/${formId}`, { method: 'PATCH' })
+    const idx = records.value.findIndex((r) => r.id === formId)
+    if (idx !== -1) records.value[idx] = { ...records.value[idx], status: 'rejected' }
+    showSuccess('已审批不通过')
+  } catch (err: any) {
+    showError(err?.message || '操作失败')
+  } finally {
+    approvingId.value = null
   }
 }
 
@@ -659,7 +711,7 @@ const getSummary = (text: string): string => {
   }
 }
 
-/* ===== 我的表单 ===== */
+/* ===== 表单记录 ===== */
 
 .records {
   max-width: 960px;
@@ -771,6 +823,18 @@ const getSummary = (text: string): string => {
   &--expanded {
     border-color: #c5d9f8;
   }
+
+  &--pending {
+    border-left: 3px solid #f9ab00;
+  }
+
+  &--approved {
+    border-left: 3px solid #34a853;
+  }
+
+  &--rejected {
+    border-left: 3px solid #ea4335;
+  }
 }
 
 .record-card__header {
@@ -785,8 +849,9 @@ const getSummary = (text: string): string => {
 .record-card__meta {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   min-width: 0;
+  flex: 1;
 }
 
 .record-card__time {
@@ -794,6 +859,16 @@ const getSummary = (text: string): string => {
   color: #9aa0a6;
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.record-card__uploader {
+  font-size: 12px;
+  color: #9aa0a6;
+  white-space: nowrap;
+  flex-shrink: 0;
+  background: #f1f3f4;
+  padding: 1px 7px;
+  border-radius: 999px;
 }
 
 .record-card__summary {
@@ -805,6 +880,14 @@ const getSummary = (text: string): string => {
   white-space: nowrap;
 }
 
+.record-card__right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+
 .record-card__chevron {
   flex-shrink: 0;
   color: #9aa0a6;
@@ -814,6 +897,95 @@ const getSummary = (text: string): string => {
     transform: rotate(180deg);
   }
 }
+
+/* ===== 状态徽章 ===== */
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+
+  &--pending {
+    background: #fef7e0;
+    color: #b06000;
+
+    .status-badge__dot {
+      background: #f9ab00;
+    }
+  }
+
+  &--approved {
+    background: #e6f4ea;
+    color: #137333;
+
+    .status-badge__dot {
+      background: #34a853;
+    }
+  }
+
+  &--rejected {
+    background: #fce8e6;
+    color: #c5221f;
+
+    .status-badge__dot {
+      background: #ea4335;
+    }
+  }
+}
+
+.status-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ===== 审批按钮 ===== */
+
+.action-buttons {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.approve-btn {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: none;
+  background: #e6f4ea;
+  color: #137333;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+  white-space: nowrap;
+
+  &:hover:not(:disabled) {
+    background: #ceead6;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+.reject-btn {
+  color: #c5221f;
+  background: #fce8e6;
+
+  &:hover:not(:disabled) {
+    background: #fad2cf;
+  }
+}
+
+/* ===== 展开内容 ===== */
 
 .record-card__body {
   border-top: 1px solid #e8eaed;

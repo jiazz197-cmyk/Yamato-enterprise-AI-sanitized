@@ -1,7 +1,10 @@
+import uuid
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
+
+from app.models.orm.platform.user import UserRole
 
 
 # 精简版角色
@@ -14,29 +17,35 @@ class RoleSimple(BaseModel):
 
 class UserCreate(BaseModel):
     username: str
-    name: Optional[str] = None  # 姓名
+    name: Optional[str] = None
     email: EmailStr
-    phone: Optional[str] = None  # 手机号码
-    department: Optional[str] = None  # 部门
-    avatar: Optional[str] = None  # 头像
+    phone: Optional[str] = None
+    department: Optional[str] = None
+    avatar: Optional[str] = None
     password: str
+    role: UserRole = UserRole.user
     role_ids: Optional[List[int]] = None
 
 
 class UserUpdate(BaseModel):
-    name: Optional[str] = None  # 姓名
+    name: Optional[str] = None
     email: Optional[EmailStr] = None
-    phone: Optional[str] = None  # 手机号码
-    department: Optional[str] = None  # 部门
-    avatar: Optional[str] = None  # 头像
+    phone: Optional[str] = None
+    department: Optional[str] = None
+    avatar: Optional[str] = None
     password: Optional[str] = None
     role_ids: Optional[List[int]] = None
+
+
+class UserRoleUpdate(BaseModel):
+    """Superuser-only: change a user's role. Cannot grant superuser."""
+    role: UserRole
 
 
 class UserRead(BaseModel):
     model_config = {"from_attributes": True}
 
-    id: int
+    id: uuid.UUID
     username: str
     name: Optional[str] = None
     email: EmailStr
@@ -44,6 +53,7 @@ class UserRead(BaseModel):
     department: Optional[str] = None
     avatar: Optional[str] = None
     is_active: Optional[bool] = True
+    role: UserRole = UserRole.user
     roles: List[RoleSimple] = []
 
 
@@ -57,20 +67,25 @@ class UserLogin(BaseModel):
     password: str
 
 
-# 用户偏好设置
+class UserRegister(BaseModel):
+    username: str = Field(..., min_length=2, max_length=64)
+    email: EmailStr
+    password: str = Field(..., min_length=6, max_length=128)
+    name: Optional[str] = None
+
+
 class UserPreferences(BaseModel):
     id: int
-    user_id: int
+    user_id: uuid.UUID
     email_notify: bool = True
     in_app_notify: bool = True
-    theme: str = 'system'  # light/dark/system
+    theme: str = 'system'
     language: str = 'zh-CN'
 
 
-# 用户登录历史
 class UserLoginHistory(BaseModel):
     id: int
-    user_id: int
+    user_id: uuid.UUID
     login_time: datetime
     ip: Optional[str] = None
     device: Optional[str] = None
@@ -79,9 +94,8 @@ class UserLoginHistory(BaseModel):
         from_attributes = True
 
 
-# 用户订阅数据产品
 class UserSubscription(BaseModel):
     id: int
-    user_id: int
+    user_id: uuid.UUID
     product_id: int
     subscribe_time: Optional[str] = None
