@@ -193,7 +193,7 @@
       v-model="showSummaryDialog"
       :user-id="summaryUserId"
       :api-base-url="config.apiBaseUrl"
-      :api-token="config.chatApiKey"
+      :api-token="authToken"
     />
 
   </div>
@@ -229,6 +229,7 @@ interface ChatHistoryItem {
 
 interface ChatSettings {
   user: string
+  userId?: string
   search: SearchMode
 }
 
@@ -265,6 +266,10 @@ const chatSettings = ref<ChatSettings>({ user: '', search: '联网搜索' })
 
 type CachedChatSettings = {
   user?: string | number
+  userId?: string | number
+  username?: string | number
+  userName?: string | number
+  userUUID?: string | number
   search?: SearchMode
 }
 
@@ -289,14 +294,30 @@ const searchModeLabel = computed(() => {
   return chatSettings.value.search
 })
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
 const summaryUserId = computed(() => {
-  return String(chatSettings.value.user ?? '').trim() || 'user'
+  const candidate = String(chatSettings.value.userId ?? '').trim()
+  if (candidate && !UUID_PATTERN.test(candidate)) {
+    return candidate
+  }
+
+  const fallback = String(chatSettings.value.user ?? '').trim()
+  return fallback
+})
+
+const authToken = computed(() => {
+  try {
+    return localStorage.getItem(config.authTokenStorageKey) || ''
+  } catch {
+    return ''
+  }
 })
 
 const { showSuccess, showError } = useToast()
 const { archiveConversation } = useChatSummary({
   apiBaseUrl: config.apiBaseUrl,
-  apiToken: config.chatApiKey,
+  apiToken: authToken.value,
 })
 
 let streamingAbortController: AbortController | null = null
@@ -307,10 +328,15 @@ let knowledgeStatusPollTimer: number | null = null
 
 const saveCachedSettings = () => {
   try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY)
+    const existing = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+
     localStorage.setItem(
       SETTINGS_STORAGE_KEY,
       JSON.stringify({
+        ...existing,
         user: chatSettings.value.user,
+        userId: chatSettings.value.userId,
         search: chatSettings.value.search,
       })
     )
@@ -324,8 +350,16 @@ const loadCachedSettings = () => {
     const cached = localStorage.getItem(SETTINGS_STORAGE_KEY)
     if (cached) {
       const parsed = JSON.parse(cached) as CachedChatSettings
+      const cachedUser = String(parsed.user ?? parsed.username ?? parsed.userName ?? '').trim()
+      const cachedUserId = String(parsed.userId ?? '').trim()
+      const normalizedUserId =
+        cachedUserId && !UUID_PATTERN.test(cachedUserId)
+          ? cachedUserId
+          : cachedUser || undefined
+
       chatSettings.value = {
-        user: String(parsed.user ?? ''),
+        user: cachedUser || cachedUserId,
+        userId: normalizedUserId,
         search: isSearchMode(parsed.search) ? parsed.search : '联网搜索',
       }
     }

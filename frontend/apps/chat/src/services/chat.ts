@@ -163,6 +163,14 @@ const isUUID = (value: string | undefined): value is string => {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 }
 
+const getAuthToken = (): string => {
+  try {
+    return localStorage.getItem(config.authTokenStorageKey) || ''
+  } catch {
+    return ''
+  }
+}
+
 /**
  * 发送聊天消息（SSE 流式响应）
  */
@@ -181,14 +189,18 @@ export const sendChatMessage = async (
 
   const normalizedConversationId = isUUID(conversationId) ? conversationId : undefined
 
+  const token = getAuthToken()
+
   const requestBody = {
     user,
     user_id: user,
+    token,
     search: settings.search,
     query,
     inputs: {
       search: settings.search,
       user_id: user,
+      token,
     },
     ...(normalizedConversationId ? { conversation_id: normalizedConversationId } : {}),
     response_mode: 'streaming',

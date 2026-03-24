@@ -23,14 +23,16 @@ export const createChatHeaders = (): HeadersInit => {
 
 /**
  * 创建业务接口请求头
- * 优先使用登录后获取的 Token，未登录时回退到 Chat API Key
+ * 仅允许使用登录态 Token，禁止回退到 Chat API Key
  */
 export const createHeaders = (): HeadersInit => {
   const token = getAuthToken()
-  const authValue = token ? `Bearer ${token}` : `Bearer ${config.chatApiKey}`
+  if (!token) {
+    throw new Error('未登录或登录态已失效，请重新登录')
+  }
 
   return {
-    Authorization: authValue,
+    Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
   }
 }

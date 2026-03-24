@@ -4,7 +4,7 @@ import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, File, UploadFile, Query, Depends
+from fastapi import APIRouter, HTTPException, File, UploadFile, Query, Depends, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,8 @@ from app.core.executor import executor_manager, CancellationToken
 from app.core.dependencies import get_db
 from app.core.storage import upload_stream_to_minio
 from app.models.orm.file_resource import FileResource
+from app.core.security import get_current_user, normalize_self_uploader
+from app.models.orm.platform.user import User, UserRole
 
 router = APIRouter()
 
@@ -220,8 +222,9 @@ def background_pdf_convert_task(
 async def convert_pdf_to_images(
     file: UploadFile = File(...),
     request: PdfConvertRequest = PdfConvertRequest(),
-    uploader: str = Query(default="anonymous", description="上传者标识"),
-    db: Session = Depends(get_db)
+    uploader: str = Query(default="anonymous", description="上传者标识（仅允许传本人信息）"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> PdfConvertResponse:
     """
     异步转换 PDF 为图片（使用 ExecutorManager）
@@ -258,6 +261,8 @@ async def convert_pdf_to_images(
         
         logger.info(f"PDF 文件大小: {file_size_mb:.2f} MB")
         
+        normalized_uploader = normalize_self_uploader(uploader, current_user)
+
         # 🆕 使用 ExecutorManager 的统一任务ID生成方法
         task_id = executor_manager.generate_task_id("pdf_convert")
         
@@ -275,10 +280,16 @@ async def convert_pdf_to_images(
             request.last_page,
             request.upload_to_minio,
             request.file_name_prefix,
-            uploader,  # 上传者标识
+            normalized_uploader,  # 上传者标识（已规范化）
             db  # 数据库会话
         )
-        
+
+        task_owner_map = getattr(executor_manager, "_task_owner_map", None)
+        if task_owner_map is None:
+            task_owner_map = {}
+            setattr(executor_manager, "_task_owner_map", task_owner_map)
+        task_owner_map[task_id] = str(current_user.id)
+
         logger.info(f"启动 PDF 转图片任务: {task_id}")
         return PdfConvertResponse(
             task_id=task_id,
@@ -293,7 +304,10 @@ async def convert_pdf_to_images(
         raise HTTPException(status_code=500, detail=f"启动转换任务失败: {str(e)}")
 
 @router.get("/pdf/task/{task_id}")
-async def get_pdf_convert_task_status(task_id: str) -> Dict[str, Any]:
+async def get_pdf_convert_task_status(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
     """
     获取 PDF 转图片任务状态（使用 ExecutorManager）
     
@@ -310,6 +324,11 @@ async def get_pdf_convert_task_status(task_id: str) -> Dict[str, Any]:
         if not future:
             raise HTTPException(status_code=404, detail="任务不存在")
         
+        task_owner_map = getattr(executor_manager, "_task_owner_map", {})
+        owner_id = str(task_owner_map.get(task_id, "")).strip()
+        if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该任务")
+
         # 检查任务状态
         if not future.done():
             # 任务仍在运行
@@ -365,7 +384,10 @@ async def get_pdf_convert_task_status(task_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"获取任务状态失败: {str(e)}")
 
 @router.get("/pdf/task/{task_id}/result")
-async def get_pdf_convert_task_result(task_id: str) -> Dict[str, Any]:
+async def get_pdf_convert_task_result(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
     """
     获取 PDF 转图片任务结果（仅限已完成任务，使用 ExecutorManager）
     
@@ -380,6 +402,11 @@ async def get_pdf_convert_task_result(task_id: str) -> Dict[str, Any]:
         if not future:
             raise HTTPException(status_code=404, detail="任务不存在")
         
+        task_owner_map = getattr(executor_manager, "_task_owner_map", {})
+        owner_id = str(task_owner_map.get(task_id, "")).strip()
+        if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该任务")
+
         if not future.done():
             raise HTTPException(
                 status_code=400,
@@ -426,7 +453,10 @@ async def get_pdf_convert_task_result(task_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"获取任务结果失败: {str(e)}")
 
 @router.delete("/pdf/task/{task_id}")
-async def cancel_pdf_convert_task(task_id: str) -> Dict[str, Any]:
+async def cancel_pdf_convert_task(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
     """
     取消 PDF 转图片任务（使用 ExecutorManager 协作式取消）
     
@@ -441,6 +471,11 @@ async def cancel_pdf_convert_task(task_id: str) -> Dict[str, Any]:
         if not future:
             raise HTTPException(status_code=404, detail="任务不存在")
         
+        task_owner_map = getattr(executor_manager, "_task_owner_map", {})
+        owner_id = str(task_owner_map.get(task_id, "")).strip()
+        if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权取消该任务")
+
         if future.done():
             raise HTTPException(status_code=400, detail="任务已完成，无法取消")
         

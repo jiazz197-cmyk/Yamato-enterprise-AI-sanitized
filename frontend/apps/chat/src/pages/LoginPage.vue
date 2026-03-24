@@ -76,13 +76,18 @@ const handleSubmit = async () => {
     try {
       const me = await getMe()
       const existing = JSON.parse(localStorage.getItem(config.settingsStorageKey) || '{}')
+      const loginUserId = String(me.id || '').trim()
       const loginUser = String(me.username || me.id || '').trim()
+      const loginUserName = String((me as any).name || me.username || me.id || '').trim()
       localStorage.setItem(
         config.settingsStorageKey,
         JSON.stringify({
           ...existing,
           userId: loginUser,
+          userUUID: loginUserId,
           user: loginUser,
+          userName: loginUserName,
+          username: loginUser,
           role: me.role || '',
           search: existing.search || '联网搜索',
         })

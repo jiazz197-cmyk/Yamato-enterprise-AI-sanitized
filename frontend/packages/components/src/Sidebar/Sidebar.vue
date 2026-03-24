@@ -222,9 +222,11 @@ const toggle = () => {
 
   &__meta {
     max-width: 160px;
+    min-width: 0;
     overflow: hidden;
     opacity: 1;
     transition: opacity 0.2s ease;
+    flex: 1;
   }
 
   &__name {
@@ -232,6 +234,11 @@ const toggle = () => {
     font-weight: 500;
     color: #202124;
     line-height: 1.2;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
   }
 
   &__top-row {
@@ -239,6 +246,7 @@ const toggle = () => {
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    min-width: 0;
   }
 
   &__desc {

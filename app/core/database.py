@@ -20,7 +20,7 @@
         return db.execute(select(User)).scalars().all()
 """
 from contextlib import contextmanager
-from typing import Generator
+from typing import Generator, Optional
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -217,27 +217,35 @@ def init_db_tables():
 
 
 def _seed_superuser():
-    """Write the default superuser account if it does not already exist."""
+    """按配置写入 superuser 账号（未配置则跳过）。"""
     try:
         from app.models.orm.platform.user import User, UserRole
         from app.core.security import hash_password
 
+        username: Optional[str] = settings.BOOTSTRAP_SUPERUSER_USERNAME
+        email: Optional[str] = settings.BOOTSTRAP_SUPERUSER_EMAIL
+        password: Optional[str] = settings.BOOTSTRAP_SUPERUSER_PASSWORD
+
+        if not username or not email or not password:
+            logger.info("ℹ️ 未配置 BOOTSTRAP_SUPERUSER_*，跳过 superuser 种子写入")
+            return
+
         db = SessionLocal()
         try:
-            exists = db.query(User).filter(User.username == "superuser").first()
+            exists = db.query(User).filter(User.username == username).first()
             if not exists:
                 su = User(
-                    username="superuser",
-                    email="superuser@yamato.com",
-                    password=hash_password("change_me_super_pass"),
+                    username=username,
+                    email=email,
+                    password=hash_password(password),
                     role=UserRole.superuser,
                     is_active=True,
                 )
                 db.add(su)
                 db.commit()
-                logger.info("✅ 默认 superuser 账号已创建 (superuser / superuser@yamato.com)")
+                logger.info(f"✅ superuser 账号已创建 ({username} / {email})")
             else:
-                logger.info("ℹ️ superuser 账号已存在，跳过种子写入")
+                logger.info(f"ℹ️ superuser 账号已存在，跳过种子写入: {username}")
         finally:
             db.close()
     except Exception as e:

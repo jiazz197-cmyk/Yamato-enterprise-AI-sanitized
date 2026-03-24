@@ -59,6 +59,7 @@ import { useIdleTimer } from './composables/useIdleTimer'
 import { readUserRole } from './services/auth'
 
 const sidebarUserId = ref('')
+const sidebarUserName = ref('')
 const userRole = ref('')
 
 const readSidebarState = () => {
@@ -66,20 +67,29 @@ const readSidebarState = () => {
     const raw = localStorage.getItem(config.settingsStorageKey)
     if (!raw) {
       sidebarUserId.value = ''
+      sidebarUserName.value = ''
       userRole.value = ''
       return
     }
 
-    const parsed = JSON.parse(raw) as { userId?: unknown; user?: unknown; role?: unknown }
-    sidebarUserId.value = String(parsed.userId ?? parsed.user ?? '').trim()
+    const parsed = JSON.parse(raw) as {
+      userId?: unknown
+      user?: unknown
+      userName?: unknown
+      username?: unknown
+      role?: unknown
+    }
+    sidebarUserId.value = String(parsed.userId ?? '').trim()
+    sidebarUserName.value = String(parsed.userName ?? parsed.user ?? parsed.username ?? '').trim()
     userRole.value = String(parsed.role ?? '').trim()
   } catch {
     sidebarUserId.value = ''
+    sidebarUserName.value = ''
     userRole.value = ''
   }
 }
 
-const userName = computed(() => sidebarUserId.value || config.userName || '')
+const userName = computed(() => sidebarUserName.value || sidebarUserId.value || config.userName || '')
 const userAvatarUrl = computed(() => config.userAvatarUrl || '')
 const isSuperuser = computed(() => userRole.value === 'superuser')
 

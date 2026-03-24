@@ -4,10 +4,10 @@
 import os
 import secrets
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Any
 import threading
 
-from pydantic import Field, validator
+from pydantic import Field, validator, field_validator, ValidationInfo
 from pydantic_settings import BaseSettings
 from pydantic._internal._model_construction import ModelMetaclass
 
@@ -27,6 +27,32 @@ def _split_comma_separated(value: Union[str, List[str]]) -> List[str]:
             return ["*"]
         return [item.strip() for item in value.split(",") if item.strip()]
     return value
+
+
+def _is_insecure_value(value: Any) -> bool:
+    """判断敏感配置是否仍为占位符或弱默认值。"""
+    if not isinstance(value, str):
+        return False
+
+    normalized = value.strip().lower()
+    if not normalized:
+        return True
+
+    insecure_keywords = (
+        "change-me",
+        "changeme",
+        "your_",
+        "your-",
+        "placeholder",
+        "example",
+        "demo",
+        "default",
+        "minioadmin",
+        "change_me_super_pass",
+        "app-change_me_chat_api_key",
+    )
+
+    return any(keyword in normalized for keyword in insecure_keywords)
 
 
 class SingletonModelMeta(ModelMetaclass):
@@ -83,10 +109,10 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
         return _split_comma_separated(v)
 
     # 数据库
-    POSTGRES_SERVER: str = Field("localhost", env="POSTGRES_SERVER")
-    POSTGRES_USER: str = Field("postgres", env="POSTGRES_USER")
-    POSTGRES_PASSWORD: str = Field("change_me_pg_password", env="POSTGRES_PASSWORD")
-    POSTGRES_DB: str = Field("postgres", env="POSTGRES_DB")
+    POSTGRES_SERVER: str = Field("127.0.0.1", env="POSTGRES_SERVER")
+    POSTGRES_USER: str = Field("pguser", env="POSTGRES_USER")
+    POSTGRES_PASSWORD: str = Field("change_me_postgres_password", env="POSTGRES_PASSWORD")
+    POSTGRES_DB: str = Field("pgdb", env="POSTGRES_DB")
     POSTGRES_PORT: int = Field(5432, env="POSTGRES_PORT")
 
     @property
@@ -101,7 +127,7 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
         )
 
     # Redis
-    REDIS_HOST: str = Field("localhost", env="REDIS_HOST")
+    REDIS_HOST: str = Field("127.0.0.1", env="REDIS_HOST")
     REDIS_PORT: int = Field(6379, env="REDIS_PORT")
     REDIS_DB: int = Field(0, env="REDIS_DB")
     REDIS_PASSWORD: Optional[str] = Field(default=None, env="REDIS_PASSWORD")
@@ -113,18 +139,23 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
         return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
     # MinIO
-    MINIO_ENDPOINT: str = Field("localhost:9000", env="MINIO_ENDPOINT")
-    MINIO_ACCESS_KEY: str = Field("minioadmin", env="MINIO_ACCESS_KEY")
-    MINIO_SECRET_KEY: str = Field("minioadmin", env="MINIO_SECRET_KEY")
+    MINIO_ENDPOINT: str = Field("127.0.0.1:9000", env="MINIO_ENDPOINT")
+    MINIO_ACCESS_KEY: str = Field("change_me_minio_access_key", env="MINIO_ACCESS_KEY")
+    MINIO_SECRET_KEY: str = Field("change_me_minio_secret_key", env="MINIO_SECRET_KEY")
     MINIO_SECURE: bool = Field(False, env="MINIO_SECURE")
-    MINIO_BUCKET_NAME: str = Field("imagebed", env="MINIO_BUCKET_NAME")
+    MINIO_BUCKET_NAME: str = Field("yamatodev", env="MINIO_BUCKET_NAME")
 
     # 安全
     SECRET_KEY: str = Field(default_factory=lambda: secrets.token_urlsafe(32), env="SECRET_KEY")
     ALGORITHM: str = Field("HS256", env="ALGORITHM")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(60, env="ACCESS_TOKEN_EXPIRE_MINUTES")
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(7, env="REFRESH_TOKEN_EXPIRE_DAYS")
-    INTERNAL_API_KEY: str = Field("your-internal-api-key-change-in-production", env="INTERNAL_API_KEY")
+    INTERNAL_API_KEY: str = Field("change_me_internal_api_key", env="INTERNAL_API_KEY")
+
+    # 启动引导账号（仅建议开发环境使用）
+    BOOTSTRAP_SUPERUSER_USERNAME: Optional[str] = Field(default=None, env="BOOTSTRAP_SUPERUSER_USERNAME")
+    BOOTSTRAP_SUPERUSER_EMAIL: Optional[str] = Field(default=None, env="BOOTSTRAP_SUPERUSER_EMAIL")
+    BOOTSTRAP_SUPERUSER_PASSWORD: Optional[str] = Field(default=None, env="BOOTSTRAP_SUPERUSER_PASSWORD")
 
     # 限流
     RATE_LIMIT_REQUESTS_PER_MINUTE: int = Field(100, env="RATE_LIMIT_REQUESTS_PER_MINUTE")
@@ -184,7 +215,7 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     N8N_API_KEY: Optional[str] = Field(default=None, env="N8N_API_KEY")
     
     # Dify AI 平台
-    DIFY_BASE_URL: str = Field("http://localhost:3000", env="DIFY_BASE_URL")
+    DIFY_BASE_URL: str = Field("http://localhost:80", env="DIFY_BASE_URL")
     DIFY_API_KEY: Optional[str] = Field(default=None, env="DIFY_API_KEY")
     
     # RAGFlow 知识库
@@ -218,7 +249,40 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     ENABLE_PROMETHEUS: bool = Field(True, env="ENABLE_PROMETHEUS")
     ENABLE_HEALTH_CHECK: bool = Field(True, env="ENABLE_HEALTH_CHECK")
 
-    CHAT_API_KEY: str = Field("app-change_me_chat_api_key", env="CHAT_API_KEY")
+    CHAT_API_KEY: str = Field("change_me_chat_api_key", env="CHAT_API_KEY")
+
+    @field_validator(
+        "SECRET_KEY",
+        "INTERNAL_API_KEY",
+        "CHAT_API_KEY",
+        "POSTGRES_PASSWORD",
+        "MINIO_ACCESS_KEY",
+        "MINIO_SECRET_KEY",
+        mode="after",
+    )
+    def validate_sensitive_values(cls, v: str, info: ValidationInfo):
+        """生产环境下禁止使用占位符或弱默认敏感配置。"""
+        env = str((info.data or {}).get("ENVIRONMENT", "development")).lower()
+        field_name = getattr(info, "field_name", "敏感配置")
+
+        if not v or not str(v).strip():
+            raise ValueError(f"{field_name} 不能为空")
+
+        if env in {"production", "prod"} and _is_insecure_value(v):
+            raise ValueError(f"{field_name} 使用了不安全默认值，请通过环境变量覆盖")
+
+        return v
+
+    @validator("BOOTSTRAP_SUPERUSER_PASSWORD")
+    def validate_bootstrap_superuser_password(cls, v: Optional[str], values):
+        """生产环境禁用弱引导密码。"""
+        if v is None:
+            return v
+
+        env = str(values.get("ENVIRONMENT", "development")).lower()
+        if env in {"production", "prod"} and _is_insecure_value(v):
+            raise ValueError("BOOTSTRAP_SUPERUSER_PASSWORD 使用了不安全默认值")
+        return v
 
     # 开发模式
     RELOAD: bool = Field(False, env="RELOAD")

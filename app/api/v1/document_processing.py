@@ -6,7 +6,7 @@ import asyncio
 from io import BytesIO
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Query
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,8 @@ from app.core.storage import (
     MINIO_BUCKET_NAME,
 )
 from app.models.orm.file_resource import FileResource
+from app.models.orm.platform.user import User, UserRole
+from app.core.security import get_current_user, normalize_self_uploader
 
 router = APIRouter()
 logger = get_logger("document_processing")
@@ -283,8 +285,9 @@ async def submit_document_processing(
     instance_id: int = Query(..., description="知识库实例ID"),
     chunk_size: int = Query(500, ge=100, le=2000, description="文本块大小"),
     chunk_overlap: int = Query(50, ge=0, le=500, description="文本块重叠大小"),
-    uploader: str = Query("anonymous", description="上传者标识"),
+    uploader: str = Query("anonymous", description="上传者标识（仅允许传本人信息）"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     提交文档处理任务（异步）
@@ -307,7 +310,9 @@ async def submit_document_processing(
             raise ValidationError("至少需要上传一个文件")
         
         logger.info(f"收到文档处理请求: {len(files)} 个文件, instance_id={instance_id}")
-        
+
+        normalized_uploader = normalize_self_uploader(uploader, current_user)
+
         # 步骤1: 上传文件到 MinIO 并保存元数据
         file_ids = []
         for file in files:
@@ -354,7 +359,7 @@ async def submit_document_processing(
                     minio_object_path=minio_path,
                     content_type=content_type,
                     file_size=file_size,
-                    uploader=uploader,
+                    uploader=normalized_uploader,
                 )
                 db.add(file_record)
                 db.commit()
@@ -379,7 +384,8 @@ async def submit_document_processing(
                 "instance_id": instance_id,
                 "chunk_size": chunk_size,
                 "chunk_overlap": chunk_overlap,
-                "uploader": uploader,
+                "uploader": normalized_uploader,
+                "owner_id": str(current_user.id),
                 "files_count": len(file_ids),
             }
         )
@@ -417,7 +423,10 @@ async def submit_document_processing(
 
 
 @router.get("/status/{task_id}", response_model=TaskStatusResponse, summary="查询任务状态")
-async def get_task_status(task_id: str):
+async def get_task_status(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+):
     """
     查询文档处理任务的状态和进度
     
@@ -431,6 +440,10 @@ async def get_task_status(task_id: str):
         if not task_status:
             raise NotFoundError(f"任务 {task_id} 不存在")
         
+        owner_id = str(task_status.metadata.get("owner_id", "")).strip()
+        if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该任务")
+
         return TaskStatusResponse(
             task_id=task_status.task_id,
             status=task_status.status,
@@ -445,6 +458,8 @@ async def get_task_status(task_id: str):
         
     except NotFoundError:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"查询任务状态失败 {task_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"查询任务状态失败: {str(e)}")
@@ -454,6 +469,7 @@ async def get_task_status(task_id: str):
 async def list_tasks(
     status: Optional[str] = Query(None, description="按状态筛选 (pending/running/completed/failed)"),
     limit: int = Query(10, ge=1, le=100, description="返回数量限制"),
+    current_user: User = Depends(get_current_user),
 ):
     """
     获取文档处理任务列表
@@ -467,6 +483,12 @@ async def list_tasks(
         # 按状态筛选
         if status:
             tasks = [t for t in tasks if t.status == status]
+
+        if current_user.role != UserRole.superuser:
+            tasks = [
+                t for t in tasks
+                if str(t.metadata.get("owner_id", "")).strip() == str(current_user.id)
+            ]
         
         task_responses = [
             TaskStatusResponse(
@@ -488,13 +510,18 @@ async def list_tasks(
             total=len(task_responses),
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"获取任务列表失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取任务列表失败: {str(e)}")
 
 
 @router.post("/tasks/{task_id}/cancel", summary="取消任务")
-async def cancel_task_endpoint(task_id: str):
+async def cancel_task_endpoint(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+):
     """
     取消正在运行或等待中的任务
     
@@ -510,6 +537,10 @@ async def cancel_task_endpoint(task_id: str):
         if not task_status:
             raise NotFoundError(f"任务 {task_id} 不存在")
         
+        owner_id = str(task_status.metadata.get("owner_id", "")).strip()
+        if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权取消该任务")
+
         if task_status.status in ["completed", "failed"]:
             return {
                 "success": False,
@@ -537,6 +568,8 @@ async def cancel_task_endpoint(task_id: str):
         
     except NotFoundError:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"取消任务失败 {task_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"取消任务失败: {str(e)}")
@@ -546,6 +579,7 @@ async def cancel_task_endpoint(task_id: str):
 async def delete_task_endpoint(
     task_id: str,
     cancel_if_running: bool = Query(True, description="是否取消正在运行的任务"),
+    current_user: User = Depends(get_current_user),
 ):
     """
     取消或删除文档处理任务
@@ -565,6 +599,10 @@ async def delete_task_endpoint(
         if not task_status:
             raise NotFoundError(f"任务 {task_id} 不存在")
         
+        owner_id = str(task_status.metadata.get("owner_id", "")).strip()
+        if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除该任务")
+
         # 1. 如果任务正在运行且需要取消，先取消
         if cancel_if_running and task_status.status in ["pending", "running"]:
             logger.info(f"任务正在运行，先尝试取消: {task_id}")
@@ -582,6 +620,8 @@ async def delete_task_endpoint(
         }
         
     except NotFoundError:
+        raise
+    except HTTPException:
         raise
     except Exception as e:
         logger.error(f"删除任务失败 {task_id}: {e}", exc_info=True)

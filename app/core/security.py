@@ -94,6 +94,54 @@ def get_current_user(
     return user
 
 
+def _normalize_identifier(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def get_user_aliases(user: object) -> set[str]:
+    """返回当前用户可接受的身份别名（UUID / username / name）。"""
+    aliases = {
+        _normalize_identifier(getattr(user, "id", "")),
+        _normalize_identifier(getattr(user, "username", "")),
+        _normalize_identifier(getattr(user, "name", "")),
+    }
+    aliases.discard("")
+    return aliases
+
+
+def normalize_self_user_identifier(raw_identifier: str, current_user: object) -> str:
+    """
+    仅允许当前登录用户使用自己的 UUID / username / 中文姓名标识自己。
+    返回规范化后的 UUID 字符串。
+    """
+    normalized = _normalize_identifier(raw_identifier)
+    aliases = get_user_aliases(current_user)
+
+    if normalized in aliases:
+        return _normalize_identifier(getattr(current_user, "id", ""))
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="无权访问其他用户资源",
+    )
+
+
+def normalize_self_uploader(raw_uploader: str, current_user: object) -> str:
+    """
+    仅允许当前用户以自身别名上传，统一落库为 username（便于权限一致性）。
+    """
+    normalize_self_user_identifier(raw_uploader, current_user)
+    username = _normalize_identifier(getattr(current_user, "username", ""))
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="当前用户缺少 username，无法执行该操作",
+        )
+    return username
+
+
 def require_roles(*roles: "UserRole") -> Callable:
     """Return a FastAPI dependency that enforces one of the given roles."""
     from app.models.orm.platform.user import UserRole

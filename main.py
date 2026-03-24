@@ -54,6 +54,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.api.v1 import api_router
 from app.core.cache import redis_manager
 from app.core.config import settings
@@ -248,14 +249,18 @@ def create_app() -> FastAPI:
     app.state.settings = settings
     app.state.redis = redis_manager.redis_client
 
-    cors_origins = settings.BACKEND_CORS_ORIGINS or ["*"]
+    cors_origins = settings.BACKEND_CORS_ORIGINS or []
+    allow_credentials = "*" not in cors_origins
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_credentials=True,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    allowed_hosts = settings.ALLOWED_HOSTS or ["localhost", "127.0.0.1"]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
     app.add_middleware(MonitoringMiddleware)
     app.add_middleware(RequestSizeMiddleware)

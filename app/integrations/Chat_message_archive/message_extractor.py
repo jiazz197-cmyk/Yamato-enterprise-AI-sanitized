@@ -35,7 +35,7 @@ class UserProfileDB:
     """
     Manage user chat profile database operations
     """
-    
+
     def __init__(
         self,
         host: Optional[str] = None,
@@ -65,7 +65,7 @@ class UserProfileDB:
     def get_connection(self):
         """
         Get a new database connection
-        
+
         Returns:
             psycopg2 connection object
         """
@@ -75,7 +75,21 @@ class UserProfileDB:
         except psycopg2.Error as e:
             logger.error(f"Failed to connect to database: {str(e)}")
             raise
-    
+
+    def ensure_profile_table(self, conn) -> None:
+        """确保 user_chat_profile 表存在，避免开发环境首次启动时报错。"""
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_chat_profile (
+                    user_id VARCHAR(128) PRIMARY KEY,
+                    latest_summary TEXT,
+                    update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        conn.commit()
+
     def get_latest_summary(self, user_id: str) -> Optional[str]:
         """
         Get the latest summary for a user
@@ -89,6 +103,7 @@ class UserProfileDB:
         conn = None
         try:
             conn = self.get_connection()
+            self.ensure_profile_table(conn)
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(
                     "SELECT latest_summary FROM user_chat_profile WHERE user_id = %s",
@@ -124,16 +139,17 @@ class UserProfileDB:
         conn = None
         try:
             conn = self.get_connection()
+            self.ensure_profile_table(conn)
             with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO user_chat_profile (user_id, latest_summary, update_time)
                     VALUES (%s, %s, %s)
-                    ON CONFLICT (user_id) 
-                    DO UPDATE SET 
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET
                         latest_summary = EXCLUDED.latest_summary,
                         update_time = EXCLUDED.update_time
                 """, (user_id, latest_summary, datetime.now()))
-                
+
                 conn.commit()
                 logger.info(f"Successfully updated summary for user {user_id}")
                 return True
@@ -154,9 +170,9 @@ class MessageExtractor:
     """
     
     def __init__(
-        self, 
-        api_key: str, 
-        base_url: str = "http://localhost:80/v1",
+        self,
+        api_key: str,
+        base_url: Optional[str] = None,
         timeout: int = 30
     ):
         """
@@ -168,7 +184,12 @@ class MessageExtractor:
             timeout: Request timeout in seconds (default: 30)
         """
         self.api_key = api_key
-        self.base_url = base_url
+        resolved_base_url = base_url or settings.DIFY_BASE_URL
+        resolved_base_url = resolved_base_url.rstrip("/")
+        if not resolved_base_url.endswith("/v1"):
+            resolved_base_url = f"{resolved_base_url}/v1"
+
+        self.base_url = resolved_base_url
         self.timeout = timeout
         self.headers = {
             'Authorization': f'Bearer {api_key}'
@@ -357,7 +378,7 @@ def summarize_user_queries(
     user_id: str,
     conversation_id: str,
     limit: int = 20,
-    base_url: str = "http://localhost:80/v1",
+    base_url: Optional[str] = None,
     llm_base_url: str = "http://localhost:80/llm/qwen8b/v1",
     timeout: int = 30
 ) -> Dict[str, Any]:
@@ -406,7 +427,7 @@ def update_user_profile_with_new_queries(
     conversation_id: str,
     db_config: Optional[Dict[str, Any]] = None,
     limit: int = 20,
-    base_url: str = "http://localhost:80/v1",
+    base_url: Optional[str] = None,
     llm_base_url: str = "http://localhost:80/llm/qwen8b/v1",
     timeout: int = 30
 ) -> Dict[str, Any]:

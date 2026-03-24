@@ -1,5 +1,5 @@
 import { config } from '../config'
-import { apiRequest } from './api'
+import { apiRequest, handleApiError } from './api'
 
 const AUTH_BASE = '/auth'
 
@@ -51,21 +51,39 @@ export interface UpdateRoleRequest {
 }
 
 export const login = async (payload: LoginRequest): Promise<LoginResponse> => {
-  return apiRequest<LoginResponse>(config.loginEndpoint, {
+  const response = await fetch(`${config.apiBaseUrl}${config.loginEndpoint}`, {
     method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify(payload),
   })
+
+  if (!response.ok) {
+    await handleApiError(response)
+  }
+
+  return response.json()
 }
 
 export const getMe = (): Promise<MeResponse> => {
   return apiRequest<MeResponse>(config.meEndpoint)
 }
 
-export const register = (payload: RegisterRequest): Promise<UserResponse> => {
-  return apiRequest<UserResponse>(`${AUTH_BASE}/register`, {
+export const register = async (payload: RegisterRequest): Promise<UserResponse> => {
+  const response = await fetch(`${config.apiBaseUrl}${AUTH_BASE}/register`, {
     method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify(payload),
   })
+
+  if (!response.ok) {
+    await handleApiError(response)
+  }
+
+  return response.json()
 }
 
 export const listUsers = (): Promise<UserResponse[]> => {
