@@ -1,6 +1,19 @@
 import { config } from '../config'
 import type { ApiError } from '../types/chat'
 
+const handleUnauthorized = (): void => {
+  try {
+    localStorage.removeItem(config.authTokenStorageKey)
+    localStorage.removeItem(config.settingsStorageKey)
+  } catch {
+    // ignore storage errors
+  }
+
+  if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+    window.location.href = '/login'
+  }
+}
+
 const getAuthToken = (): string | null => {
   try {
     const token = localStorage.getItem(config.authTokenStorageKey)
@@ -42,9 +55,14 @@ export const createHeaders = (): HeadersInit => {
  */
 export const handleApiError = async (response: Response): Promise<never> => {
   let error: ApiError
-  
+
   try {
-    error = await response.json()
+    const payload = await response.json()
+    error = {
+      code: String((payload as { code?: unknown })?.code ?? 'api_error'),
+      message: String((payload as { message?: unknown; detail?: unknown })?.message ?? (payload as { detail?: unknown })?.detail ?? '请求失败'),
+      status: response.status,
+    }
   } catch {
     error = {
       code: 'unknown_error',
@@ -52,7 +70,15 @@ export const handleApiError = async (response: Response): Promise<never> => {
       status: response.status,
     }
   }
-  
+
+  if (response.status === 401) {
+    handleUnauthorized()
+    throw {
+      ...error,
+      message: '登录已过期，请重新登录',
+    } as ApiError
+  }
+
   throw error
 }
 

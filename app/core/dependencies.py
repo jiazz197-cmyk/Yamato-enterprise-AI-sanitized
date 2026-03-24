@@ -3,7 +3,7 @@ FastAPI 依赖定义
 """
 from collections.abc import Generator
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
@@ -46,6 +46,11 @@ def get_db() -> Generator[Session, None, None]:
         yield db
         # ✅ 请求成功时自动提交事务
         db.commit()
+    except HTTPException as e:
+        # 鉴权失败(401/403)等业务异常不应按系统错误打印堆栈
+        db.rollback()
+        logger.warning(f"数据库操作触发HTTP异常,已回滚事务: {e.status_code}: {e.detail}")
+        raise
     except Exception as e:
         # ❌ 发生异常时回滚事务
         db.rollback()
