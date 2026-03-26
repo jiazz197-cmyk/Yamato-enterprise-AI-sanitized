@@ -94,14 +94,26 @@
                   <div class="token-indicator" v-if="tokenUsage > 0" title="当前会话 Token 消耗">
                     <div class="token-indicator-label">{{ tokenUsage }} / 32k</div>
                     <div class="token-indicator-progress">
-                      <div 
-                        class="token-indicator-bar" 
-                        :style="{ 
+                      <div
+                        class="token-indicator-bar"
+                        :style="{
                           width: `${Math.min((tokenUsage / 32000) * 100, 100)}%`,
                           backgroundColor: tokenBarColor
                         }"
                       ></div>
                     </div>
+                    <button
+                      class="compress-context-btn"
+                      type="button"
+                      title="压缩当前对话以节省 Token"
+                      :disabled="isCompressing"
+                      @click.stop="handleCompressContext"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                      {{ isCompressing ? '压缩中...' : '压缩' }}
+                    </button>
                   </div>
 
                   <input
@@ -209,7 +221,7 @@ import {
   useChatSummary,
 } from '@yamato/components'
 import { config } from '../config'
-import { sendChatMessage, getConversations, getMessages, stopChatMessage } from '../services/chat'
+import { sendChatMessage, getConversations, getMessages, stopChatMessage, compressContext } from '../services/chat'
 import type { Conversation, SearchMode } from '../types/chat'
 
 interface Message {
@@ -257,6 +269,43 @@ const chatHistory = ref<ChatHistoryItem[]>([
 const currentConversationId = ref<string | undefined>(undefined)
 const currentTaskId = ref<string | undefined>(undefined)
 const tokenUsage = ref<number>(0)
+const isCompressing = ref(false)
+const chatBackgrounds = ref<Record<string, string>>({})
+
+const BACKGROUND_STORAGE_KEY_PREFIX = 'yamato_chat_background_'
+
+const getConversationBackgroundKey = (conversationId: string, userId: string): string => {
+  return `${BACKGROUND_STORAGE_KEY_PREFIX}${userId}_${conversationId}`
+}
+
+const loadBackground = (conversationId: string): string => {
+  if (!conversationId || conversationId.startsWith('new-') || conversationId.startsWith('temp-')) {
+    return ''
+  }
+  const normalizedUser = String(chatSettings.value.userId || chatSettings.value.user || 'user').trim()
+  const key = getConversationBackgroundKey(conversationId, normalizedUser)
+  try {
+    return localStorage.getItem(key) || ''
+  } catch {
+    return ''
+  }
+}
+
+const saveBackground = (conversationId: string, background: string) => {
+  if (!conversationId || conversationId.startsWith('new-') || conversationId.startsWith('temp-')) {
+    return
+  }
+  const normalizedUser = String(chatSettings.value.userId || chatSettings.value.user || 'user').trim()
+  const key = getConversationBackgroundKey(conversationId, normalizedUser)
+  try {
+    localStorage.setItem(key, background)
+    chatBackgrounds.value[conversationId] = background
+  } catch (error) {
+    if (import.meta.env.DEV) {
+      console.error('保存 Background 失败:', error)
+    }
+  }
+}
 
 const TOKEN_USAGE_STORAGE_KEY_PREFIX = 'yamato_chat_token_usage_'
 
@@ -758,12 +807,14 @@ const sendMessage = async () => {
     const normalizedUser = String(chatSettings.value.user ?? '').trim()
 
     // 调用 API
+    const currentBg = currentConversationId.value ? (chatBackgrounds.value[currentConversationId.value] || loadBackground(currentConversationId.value)) : ''
     const result = await sendChatMessage(
       currentInput,
       currentConversationId.value,
       {
         user: normalizedUser,
         search: chatSettings.value.search,
+        background: currentBg,
       },
       {
         onMessage: (content: string) => {
@@ -815,9 +866,13 @@ const sendMessage = async () => {
     if (result.conversationId) {
       const oldId = currentConversationId.value
       currentConversationId.value = result.conversationId
-      // 如果分配了新会话ID，且当前有token缓存，需要转移到新ID下
-      if (tokenUsage.value > 0 && oldId && (oldId.startsWith('temp-') || oldId.startsWith('new-'))) {
-         saveTokenUsage(result.conversationId, tokenUsage.value)
+      // 如果分配了新会话ID，且当前有token或bg缓存，需要转移到新ID下
+      if (oldId && (oldId.startsWith('temp-') || oldId.startsWith('new-'))) {
+         if (tokenUsage.value > 0) saveTokenUsage(result.conversationId, tokenUsage.value)
+         if (chatBackgrounds.value[oldId]) {
+           saveBackground(result.conversationId, chatBackgrounds.value[oldId])
+           delete chatBackgrounds.value[oldId]
+         }
       }
     }
 
@@ -947,8 +1002,9 @@ const loadChat = async (chatId: string) => {
     currentConversationId.value = chatId
     currentTaskId.value = undefined
     
-    // 恢复该会话的 Token 计数
+    // 恢复该会话的 Token 计数和 Background
     tokenUsage.value = loadTokenUsage(chatId)
+    chatBackgrounds.value[chatId] = loadBackground(chatId)
     
     await scrollToBottom()
   } catch (error: unknown) {
@@ -985,6 +1041,38 @@ const cancelRename = () => {
 const handleRenameError = (_chatId: string, errorMessage: string) => {
   if (import.meta.env.DEV) {
     console.error('重命名失败:', errorMessage)
+  }
+}
+
+const handleCompressContext = async () => {
+  if (!currentConversationId.value || isCompressing.value) return
+  
+  const conversationId = currentConversationId.value
+  if (conversationId.startsWith('new-') || conversationId.startsWith('temp-')) {
+    showError('新对话暂不支持压缩，请先发送至少一条消息')
+    return
+  }
+
+  isCompressing.value = true
+  try {
+    const userId = summaryUserId.value
+    const response = await compressContext(userId, conversationId)
+    const compressedText = response.data.compressed_context
+    
+    // 将压缩后的上下文保存为 background
+    saveBackground(conversationId, compressedText)
+    
+    // 清除 Token 计数并根据回传信息估算初始 Token
+    // 简单估算：中文字符数 + 英文单词数 * 1.3 (这是一个非常粗略的估算)
+    const estimatedTokens = Math.ceil(compressedText.length * 1.5)
+    tokenUsage.value = estimatedTokens
+    saveTokenUsage(conversationId, estimatedTokens)
+    
+    showSuccess('上下文已压缩并更新到背景记忆中')
+  } catch (error: unknown) {
+    showError(getErrorMessage(error, '压缩上下文失败'))
+  } finally {
+    isCompressing.value = false
   }
 }
 
@@ -1147,31 +1235,66 @@ onBeforeUnmount(() => {
   width: 100%;
 
   :deep(.input) {
-    border: 1px solid transparent;
-    background:
-      linear-gradient(#ffffff, #ffffff) padding-box,
-      linear-gradient(135deg, rgba(66, 133, 244, 0.6), rgba(139, 92, 246, 0.55), rgba(56, 189, 248, 0.55)) border-box;
-    box-shadow: 0 0 10px rgba(66, 133, 244, 0.12);
-    padding: 12px 54px 60px 16px;
-    min-height: 90px;
+    border: 1px solid #b8cff8;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(66, 133, 244, 0.05);
+    border-radius: 22px;
+    padding: 14px 54px 58px 18px;
+    min-height: 96px;
   }
 
   :deep(.input:focus) {
-    border: 1px solid transparent;
-    box-shadow: 0 0 12px rgba(99, 102, 241, 0.18);
+    border-color: #8ab4f8;
+    box-shadow: 0 0 0 3px rgba(138, 180, 248, 0.2);
   }
 }
 
 .chat-input-overlay {
   position: absolute;
-  bottom: 8px;
+  bottom: 10px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .chat-input-overlay--left {
-  left: 12px;
+  left: 10px;
+}
+
+.token-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.compress-context-btn {
+  position: static;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  background: #f7f9fc;
+  border: 1px solid #d7e3f8;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #2b5fb8;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 1;
+  pointer-events: auto;
+  transition: all 0.2s ease;
+
+  &:hover:not(:disabled) {
+    background: #eef3fb;
+    border-color: #8ab4f8;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    color: #9aa0a6;
+    opacity: 0.7;
+  }
 }
 
 .chat-input-overlay--right {
@@ -1290,9 +1413,9 @@ onBeforeUnmount(() => {
 .search-mode-btn {
   height: 30px;
   padding: 0 10px;
-  border: 1px solid #dadce0;
-  border-radius: 15px;
-  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #d7e3f8;
+  border-radius: 14px;
+  background: rgba(247, 249, 252, 0.95);
   color: #202124;
   cursor: pointer;
   display: flex;
@@ -1304,8 +1427,8 @@ onBeforeUnmount(() => {
   transition: all 0.2s ease;
 
   &:hover {
-    background: #f1f3f4;
-    border-color: #bdc1c6;
+    background: #eef3fb;
+    border-color: #8ab4f8;
     color: #202124;
   }
 }
@@ -1317,9 +1440,9 @@ onBeforeUnmount(() => {
 .knowledge-upload-btn {
   height: 30px;
   padding: 0 12px;
-  border: 1px solid #dadce0;
-  border-radius: 15px;
-  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #d7e3f8;
+  border-radius: 14px;
+  background: rgba(247, 249, 252, 0.95);
   color: #202124;
   cursor: pointer;
   display: inline-flex;
@@ -1331,8 +1454,8 @@ onBeforeUnmount(() => {
   transition: all 0.2s ease;
 
   &:hover:not(:disabled) {
-    background: #f1f3f4;
-    border-color: #bdc1c6;
+    background: #eef3fb;
+    border-color: #8ab4f8;
     color: #202124;
   }
 
@@ -1344,13 +1467,13 @@ onBeforeUnmount(() => {
 
 .token-indicator {
   height: 30px;
-  padding: 0 12px;
-  border: 1px solid #dadce0;
-  border-radius: 15px;
-  background: rgba(255, 255, 255, 0.92);
+  padding: 0 10px;
+  border: 1px solid #d7e3f8;
+  border-radius: 14px;
+  background: rgba(247, 249, 252, 0.95);
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   cursor: default;
 
   .token-indicator-label {
@@ -1361,7 +1484,7 @@ onBeforeUnmount(() => {
   }
 
   .token-indicator-progress {
-    width: 40px;
+    width: 34px;
     height: 4px;
     background-color: #e8eaed;
     border-radius: 2px;

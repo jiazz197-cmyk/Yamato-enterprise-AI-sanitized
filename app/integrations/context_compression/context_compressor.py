@@ -33,48 +33,71 @@ class ContextCompressor:
         self.base_url = base_url or settings.QWEN3_8B_API_URL
         self.model_name = model_name
         self.dify_api_key = dify_api_key or settings.CHAT_API_KEY
+        self.temperature = temperature
+        self.max_tokens = max_tokens
         
         self.llm = ChatOpenAI(
             base_url=self.base_url,
             api_key="not-needed",
             model=self.model_name,
-            temperature=temperature,
-            max_tokens=max_tokens
+            temperature=self.temperature,
+            max_tokens=self.max_tokens
         )
         
         self.extractor = MessageExtractor(api_key=self.dify_api_key)
         
     def _fetch_and_split_dialogues(self, user_id: str, conversation_id: str, n: int = 5) -> Dict[str, List[str]]:
         """
-        Fetch dialogues from Dify and split into recent N and older ones.
+        Fetch dialogues from Dify via variables endpoint and extract long_memory and recent_dialogs.
         """
-        # Fetch more to have enough for "older"
-        messages_data = self.extractor.get_messages(user_id=user_id, conversation_id=conversation_id, limit=50)
-        if not messages_data or 'data' not in messages_data:
+        import requests
+        import ast
+
+        url = f"{self.extractor.base_url}/conversations/{conversation_id}/variables"
+        params = {'user': user_id}
+        
+        try:
+            logger.info(f"Fetching conversation variables from {url} with params: {params}")
+            response = requests.get(
+                url,
+                headers=self.extractor.headers,
+                params=params,
+                timeout=self.extractor.timeout
+            )
+            response.raise_for_status()
+            vars_data = response.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch conversation variables: {str(e)}")
+            return {"recent": [], "older": []}
+
+        if not vars_data or 'data' not in vars_data:
             return {"recent": [], "older": []}
             
-        data = messages_data['data']
-        # Dify usually returns messages in reverse chronological order (newest first)
-        # But we need to check or ensure the order. 
-        # For compression, we extract query/answer pairs.
+        long_memory_str = ""
+        recent_dialogs_str = ""
         
-        formatted_dialogues = []
-        for msg in data:
-            query = msg.get('query', '')
-            answer = msg.get('answer', '')
-            if query:
-                formatted_dialogues.append(f"User: {query}")
-            if answer:
-                formatted_dialogues.append(f"AI: {answer}")
-        
-        # Split: recent N turns (1 turn = 1 user + 1 ai) -> approx 2*n messages
-        recent_count = 2 * n
-        recent = formatted_dialogues[:recent_count]
-        older = formatted_dialogues[recent_count:]
+        for item in vars_data['data']:
+            if item.get('name') == 'long_memory':
+                long_memory_str = item.get('value', '[]')
+            elif item.get('name') == 'recent_dialogs':
+                recent_dialogs_str = item.get('value', '[]')
+
+        def safe_eval_list(val_str: str) -> List[str]:
+            if not val_str or val_str == '[]':
+                return []
+            try:
+                # Dify returns list as string representation like "['msg1', 'msg2']"
+                return ast.literal_eval(val_str)
+            except Exception as e:
+                logger.warning(f"Failed to parse variable value '{val_str}': {str(e)}")
+                return [val_str] if val_str else []
+
+        older = safe_eval_list(long_memory_str)
+        recent = safe_eval_list(recent_dialogs_str)
         
         return {
-            "recent": recent[::-1], # Back to chronological for prompt
-            "older": older[::-1]
+            "recent": recent,
+            "older": older
         }
 
     def compress(self, context_data: Dict[str, Any]) -> str:
@@ -147,30 +170,62 @@ class ContextCompressor:
                 return "\n".join(f"- {d}" for d in dialogues)
             return str(dialogues)
             
+        payload = {
+            "system_prompt": context_data.get("system_prompt", "无"),
+            "current_task": context_data.get("current_task", "无"),
+            "recent_dialogues": join_dialogues(recent_dialogues),
+            "older_dialogues": join_dialogues(older_dialogues),
+            "user_preferences": context_data.get("user_preferences", "无"),
+            "project_background": context_data.get("project_background", "无"),
+            "confirmed_decisions": context_data.get("confirmed_decisions", "无")
+        }
+
         try:
             logger.info(f"Starting context compression for user {user_id}...")
-            raw_result = chain.invoke({
-                "system_prompt": context_data.get("system_prompt", "无"),
-                "current_task": context_data.get("current_task", "无"),
-                "recent_dialogues": join_dialogues(recent_dialogues),
-                "older_dialogues": join_dialogues(older_dialogues),
-                "user_preferences": context_data.get("user_preferences", "无"),
-                "project_background": context_data.get("project_background", "无"),
-                "confirmed_decisions": context_data.get("confirmed_decisions", "无")
-            })
-            
-            # 后处理：移除可能出现的 <think> 标签内容
-            import re
-            processed_result = re.sub(r'<think>.*?</think>', '', raw_result, flags=re.DOTALL).strip()
-            # 如果模型没有输出 </think> 导致匹配失败，尝试简单截断
-            if '<think>' in processed_result:
-                processed_result = processed_result.split('<think>')[-1].split('</think>')[-1].strip()
-            
-            logger.info("Context compression completed successfully.")
-            return processed_result
+            raw_result = chain.invoke(payload)
         except Exception as e:
-            logger.error(f"Error during context compression: {str(e)}")
-            raise e
+            # 兼容上下文接近上限时的 max_tokens 报错，自动收缩输出 token 后重试
+            import re
+            error_text = str(e)
+            match = re.search(r"\((\d+)\s*>\s*(\d+)\s*-\s*(\d+)\)", error_text)
+            if not match:
+                logger.error(f"Error during context compression: {error_text}")
+                raise e
+
+            requested_max = int(match.group(1))
+            max_context = int(match.group(2))
+            input_tokens = int(match.group(3))
+            available = max_context - input_tokens - 64  # 预留安全余量，防止边界抖动
+            retry_max_tokens = min(requested_max, self.max_tokens, max(64, available))
+
+            if retry_max_tokens <= 0:
+                logger.error(f"Error during context compression: {error_text}")
+                raise e
+
+            logger.warning(
+                "Context close to model limit, retrying with reduced max_tokens: "
+                f"requested={requested_max}, available={max_context - input_tokens}, retry={retry_max_tokens}"
+            )
+
+            retry_llm = ChatOpenAI(
+                base_url=self.base_url,
+                api_key="not-needed",
+                model=self.model_name,
+                temperature=self.temperature,
+                max_tokens=retry_max_tokens
+            )
+            retry_chain = prompt | retry_llm | StrOutputParser()
+            raw_result = retry_chain.invoke(payload)
+
+        # 后处理：移除可能出现的 <think> 标签内容
+        import re
+        processed_result = re.sub(r'<think>.*?</think>', '', raw_result, flags=re.DOTALL).strip()
+        # 如果模型没有输出 </think> 导致匹配失败，尝试简单截断
+        if '<think>' in processed_result:
+            processed_result = processed_result.split('<think>')[-1].split('</think>')[-1].strip()
+
+        logger.info("Context compression completed successfully.")
+        return processed_result
 
 def compress_context(context_data: Dict[str, Any]) -> str:
     """

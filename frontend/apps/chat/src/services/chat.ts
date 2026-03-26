@@ -18,6 +18,13 @@ export interface SSECallbacks {
   onError?: (error: Error) => void
 }
 
+export interface CompressContextResponse {
+  data: {
+    compressed_context: string
+  }
+  message: string
+}
+
 interface ParsedSSEBlock {
   event?: string
   data?: string
@@ -177,7 +184,7 @@ const getAuthToken = (): string => {
 export const sendChatMessage = async (
   query: string,
   conversationId: string | undefined,
-  settings: { user: string; search: SearchMode },
+  settings: { user: string; search: SearchMode; background?: string },
   callbacks: SSECallbacks
 ): Promise<{ taskId: string; conversationId: string }> => {
   const url = `${config.apiBaseUrl}/chat-messages`
@@ -201,6 +208,7 @@ export const sendChatMessage = async (
       search: settings.search,
       user_id: user,
       token,
+      background: settings.background || "",
     },
     ...(normalizedConversationId ? { conversation_id: normalizedConversationId } : {}),
     response_mode: 'streaming',
@@ -346,6 +354,38 @@ export const sendChatMessage = async (
     taskId,
     conversationId: responseConversationId || '',
   }
+}
+
+/**
+ * 压缩对话上下文
+ */
+export const compressContext = async (
+  userId: string,
+  conversationId: string,
+  nRecent: number = 5
+): Promise<CompressContextResponse> => {
+  const url = `${config.apiBaseUrl}/context-compression/compress`
+  const token = getAuthToken()
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      user_id: userId,
+      conversation_id: conversationId,
+      n_recent: nRecent,
+    }),
+  })
+
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.message || error.detail || '压缩上下文失败')
+  }
+
+  return response.json()
 }
 
 /**
