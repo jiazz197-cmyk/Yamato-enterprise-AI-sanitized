@@ -94,13 +94,14 @@ const toggle = () => {
 
 <style lang="scss" scoped>
 .sidebar {
-  height: 100vh;
+  height: calc(100vh - 24px);
   position: fixed;
-  top: 0;
-  left: 0;
+  top: 12px;
+  left: 12px;
   z-index: 10;
-  background: #f8f9fa;
-  border-right: 1px solid #e8eaed;
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
   transition: width 0.3s ease;
   display: flex;
   flex-direction: column;

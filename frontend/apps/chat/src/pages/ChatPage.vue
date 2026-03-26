@@ -1,12 +1,9 @@
 <template>
   <div class="chat-page">
-    <PageHeader title="AI" subtitle="与 AI 助手对话" />
-
-    <div class="chat-body">
+    <Teleport to="#sidebar-extra-slot" v-if="isMounted">
       <MessageList
         ref="historyMessageListRef"
         variant="history"
-        :class="{ 'chat-history-panel--collapsed': historyCollapsed }"
         :history-items="chatHistory"
         :active-item-id="currentConversationId"
         :editing-item-id="editingChatId"
@@ -31,28 +28,15 @@
           <ChatSummaryAction @click="openSummaryDialog" />
         </template>
       </MessageList>
+    </Teleport>
 
-      <button
-        class="chat-history-toggle"
-        :class="{ 'chat-history-toggle--collapsed': historyCollapsed }"
-        type="button"
-        :aria-expanded="!historyCollapsed"
-        @click="toggleHistory"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M15 18l-6-6 6-6"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-      </button>
-
+    <div class="chat-body">
       <div class="chat-main">
         <div ref="messageListRef" class="message-list-container">
-          <MessageList>
+          <div v-if="messages.length === 0" class="chat-welcome">
+            <h1 class="chat-welcome__text">{{ welcomeDisplayText }}</h1>
+          </div>
+          <MessageList v-else>
             <MessageItem
               v-for="(message, index) in messages"
               :key="index"
@@ -202,11 +186,10 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import {
-  PageHeader,
   MessageList,
+  ChatSummaryAction,
   MessageItem,
   ConfirmDialog,
-  ChatSummaryAction,
   ChatSummaryDialog,
   Input,
   useToast,
@@ -246,7 +229,7 @@ const messages = ref<Message[]>([])
 const isLoading = ref(false)
 const messageListRef = ref<HTMLElement | null>(null)
 const historyMessageListRef = ref<{ deleteConversation: (chatId: string) => Promise<boolean> } | null>(null)
-const historyCollapsed = ref(false)
+const isMounted = ref(false)
 const showDeleteDialog = ref(false)
 const chatToDelete = ref<string | null>(null)
 const editingChatId = ref<string | null>(null)
@@ -262,7 +245,7 @@ const currentConversationId = ref<string | undefined>(undefined)
 const currentTaskId = ref<string | undefined>(undefined)
 
 const SETTINGS_STORAGE_KEY = 'yamato_chat_settings'
-const chatSettings = ref<ChatSettings>({ user: '', search: '联网搜索' })
+const chatSettings = ref<ChatSettings>({ user: '', search: '本地&网络' })
 
 type CachedChatSettings = {
   user?: string | number
@@ -325,6 +308,32 @@ const knowledgeUploadInputRef = ref<HTMLInputElement | null>(null)
 const isUploadingKnowledge = ref(false)
 const activeKnowledgeTaskId = ref<string | null>(null)
 let knowledgeStatusPollTimer: number | null = null
+
+const WELCOME_TEXT = '有什么我能帮您的吗😊'
+const welcomeDisplayText = ref('')
+let welcomeTypingTimer: number | null = null
+
+const stopWelcomeTyping = () => {
+  if (welcomeTypingTimer !== null) {
+    window.clearInterval(welcomeTypingTimer)
+    welcomeTypingTimer = null
+  }
+}
+
+const startWelcomeTyping = () => {
+  stopWelcomeTyping()
+  welcomeDisplayText.value = ''
+
+  let cursor = 0
+  welcomeTypingTimer = window.setInterval(() => {
+    cursor += 1
+    welcomeDisplayText.value = WELCOME_TEXT.slice(0, cursor)
+
+    if (cursor >= WELCOME_TEXT.length) {
+      stopWelcomeTyping()
+    }
+  }, 45)
+}
 
 const saveCachedSettings = () => {
   try {
@@ -601,6 +610,8 @@ const sendMessage = async () => {
     return
   }
 
+  stopWelcomeTyping()
+
   const userMessage: Message = {
     role: 'user',
     content: inputMessage.value,
@@ -759,13 +770,8 @@ const createNewChat = () => {
   currentConversationId.value = undefined
   currentTaskId.value = undefined
 
-  // 添加欢迎消息
-  const welcomeMessage: Message = {
-    role: 'assistant',
-    content: '您好！我是 AI 助手，有什么可以帮助您的吗？',
-    timestamp: formatTime(),
-  }
-  messages.value.push(welcomeMessage)
+  // 显示新对话引导语打字效果
+  startWelcomeTyping()
 }
 
 const loadChat = async (chatId: string) => {
@@ -932,16 +938,13 @@ const handleDocumentClick = () => {
 }
 
 onMounted(async () => {
+  isMounted.value = true
+
   // 加载缓存设置
   loadCachedSettings()
 
-  // 初始化欢迎消息
-  const welcomeMessage: Message = {
-    role: 'assistant',
-    content: '您好！我是 AI 助手，有什么可以帮助您的吗？',
-    timestamp: formatTime(),
-  }
-  messages.value.push(welcomeMessage)
+  // 初始化新对话引导语打字效果
+  startWelcomeTyping()
 
   // 加载会话历史
   try {
@@ -966,6 +969,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleDocumentClick)
   clearKnowledgeTaskPolling()
+  stopWelcomeTyping()
 })
 </script>
 
@@ -1112,6 +1116,26 @@ onBeforeUnmount(() => {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+.chat-welcome {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  transform: translateY(-48px);
+}
+
+.chat-welcome__text {
+  margin: 0;
+  font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #202124;
+  letter-spacing: 1px;
+  text-align: center;
 }
 
 .loading-indicator {

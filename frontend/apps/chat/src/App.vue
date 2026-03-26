@@ -27,6 +27,8 @@
         </RouterLink>
       </nav>
 
+      <div id="sidebar-extra-slot" class="sidebar-extra"></div>
+
       <template #user-actions>
         <button class="logout-btn" type="button" @click="openLogoutDialog">
           退出
@@ -147,6 +149,7 @@ watch(isShellFreePage, (onShellFreePage) => {
   width: 100%;
   height: 100vh;
   overflow: hidden;
+  background: #f8f9fa;
 }
 
 .login-shell {
@@ -157,9 +160,17 @@ watch(isShellFreePage, (onShellFreePage) => {
 
 .app-main {
   height: 100%;
-  padding-left: 200px;
+  padding-left: 212px;
   overflow: hidden;
-  background: #ffffff;
+  background: #f8f9fa;
+}
+
+.sidebar-extra {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0 8px;
 }
 
 .sidebar-nav {

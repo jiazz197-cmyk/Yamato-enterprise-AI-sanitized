@@ -1,8 +1,9 @@
 <template>
   <div class="page">
-    <PageHeader title="报单填写" subtitle="填写信息并生成表单文档" />
-
-    <div class="page__tabs">
+    <div class="page-header">
+      <div class="page-header__left">
+        <h1 class="page-header__title">报单填写</h1>
+        <div class="page__tabs">
       <button
         class="page__tab"
         :class="{ 'page__tab--active': activeTab === 'form' }"
@@ -10,16 +11,18 @@
         @click="activeTab = 'form'"
       >
         填写表单
-      </button>
-      <button
-        class="page__tab"
-        :class="{ 'page__tab--active': activeTab === 'records' }"
-        type="button"
-        @click="switchToRecords"
-      >
-        {{ isAdmin ? '全部表单' : '我的表单' }}
-      </button>
+        </button>
+        <button
+          class="page__tab"
+          :class="{ 'page__tab--active': activeTab === 'records' }"
+          type="button"
+          @click="switchToRecords"
+        >
+          {{ isAdmin ? '全部表单' : '我的表单' }}
+        </button>
+      </div>
     </div>
+  </div>
 
     <div class="page__content">
 
@@ -383,7 +386,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { PageHeader, useToast } from '@yamato/components'
+import { useToast } from '@yamato/components'
 import { apiRequest } from '../services/api'
 import { readUserRole } from '../services/auth'
 import { config } from '../config'
@@ -559,31 +562,50 @@ const getSummary = (text: string): string => {
 
 <style scoped lang="scss">
 .page {
-  height: 100%;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  height: 100%;
+  padding: 32px 32px 24px;
+  box-sizing: border-box;
+  overflow: auto;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  flex-shrink: 0;
+}
+
+.page-header__left {
+  display: flex;
+  align-items: baseline;
+  gap: 32px;
+}
+
+.page-header__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #202124;
 }
 
 .page__tabs {
   display: flex;
-  gap: 0;
-  padding: 0 32px;
-  border-bottom: 1px solid #e8eaed;
-  background: #ffffff;
-  flex-shrink: 0;
+  gap: 16px;
+  align-items: center;
 }
 
 .page__tab {
-  padding: 10px 20px;
+  padding: 8px 12px;
   border: none;
   background: transparent;
   font-size: 14px;
   color: #5f6368;
   cursor: pointer;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  transition: color 0.2s ease, border-color 0.2s ease;
+  border-radius: 6px;
+  transition: all 0.2s ease;
 
   &:hover {
     color: #1a73e8;
@@ -592,20 +614,24 @@ const getSummary = (text: string): string => {
   &--active {
     color: #1a73e8;
     font-weight: 600;
-    border-bottom-color: #1a73e8;
+    background: #e8f0fe;
   }
 }
 
 .page__content {
-  flex: 1;
-  overflow: auto;
-  padding: 24px 32px;
   background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+  padding: 32px;
+  flex: 1;
+  display: flex;
+  justify-content: center;
 }
 
 /* ===== 填写表单 ===== */
 
 .form {
+  width: 100%;
   max-width: 960px;
   display: flex;
   flex-direction: column;

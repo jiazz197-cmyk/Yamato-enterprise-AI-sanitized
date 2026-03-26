@@ -71,12 +71,17 @@ export const handleApiError = async (response: Response): Promise<never> => {
     }
   }
 
+  const isLoginRequest = response.url.includes(config.loginEndpoint)
+
   if (response.status === 401) {
-    handleUnauthorized()
-    throw {
-      ...error,
-      message: '登录已过期，请重新登录',
-    } as ApiError
+    // 登录接口返回 401 通常是账号/密码错误，不应当触发“登录过期”逻辑
+    if (!isLoginRequest) {
+      handleUnauthorized()
+      throw {
+        ...error,
+        message: '登录已过期，请重新登录',
+      } as ApiError
+    }
   }
 
   throw error
@@ -101,6 +106,21 @@ export const apiRequest = async <T>(
   
   if (!response.ok) {
     await handleApiError(response)
+  }
+
+  // 204/205 或空响应体时不应执行 JSON 解析（如 DELETE /users 返回 204）
+  if (response.status === 204 || response.status === 205) {
+    return undefined as T
+  }
+
+  const contentLength = response.headers.get('content-length')
+  if (contentLength === '0') {
+    return undefined as T
+  }
+
+  const contentType = response.headers.get('content-type') || ''
+  if (!contentType.includes('application/json')) {
+    return undefined as T
   }
   
   return response.json()
