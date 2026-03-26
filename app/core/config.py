@@ -210,6 +210,9 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     LOCAL_MODEL_GPU_DEVICE: int = Field(3, env="LOCAL_MODEL_GPU_DEVICE")
 
     # ==================== 外部服务（暂未启用） ====================
+    # Qwen3-8B API
+    QWEN3_8B_API_URL: str = Field("http://localhost:80/llm/qwen8b/v1", env="QWEN3_8B_API_URL")
+
     # N8N 工作流引擎
     N8N_BASE_URL: str = Field("http://localhost:5678", env="N8N_BASE_URL")
     N8N_API_KEY: Optional[str] = Field(default=None, env="N8N_API_KEY")

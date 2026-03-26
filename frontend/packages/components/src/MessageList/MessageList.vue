@@ -28,7 +28,7 @@
             'chat-history-item--editing': editingItemId === chat.id,
           }"
         >
-          <div class="chat-history-item__content" @click="emit('select', chat.id)">
+          <div class="chat-history-item__content" @click="activeItemId = chat.id; emit('select', chat.id)">
             <input
               v-if="editingItemId === chat.id"
               class="chat-history-item__title-input"
@@ -107,7 +107,6 @@ interface HistoryItem {
 interface Props {
   variant?: 'messages' | 'history'
   historyItems?: HistoryItem[]
-  activeItemId?: string
   editingItemId?: string | null
   editingTitle?: string
   renameApiBaseUrl?: string
@@ -119,10 +118,11 @@ interface Props {
   deleteUser?: string
 }
 
+const activeItemId = defineModel<string>('activeItemId')
+
 const props = withDefaults(defineProps<Props>(), {
   variant: 'messages',
   historyItems: () => [],
-  activeItemId: undefined,
   editingItemId: null,
   editingTitle: '',
   renameApiBaseUrl: '',
@@ -246,6 +246,7 @@ const onInputChange = (event: Event) => {
 
 const onCreateClick = () => {
   const tempId = beginNewConversation()
+  activeItemId.value = tempId
   emit('create', tempId)
 }
 

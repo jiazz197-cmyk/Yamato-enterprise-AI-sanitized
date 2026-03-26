@@ -280,7 +280,7 @@ class MessageExtractor:
         llm_base_url: str = "http://localhost:80/llm/qwen8b/v1",
         model_name: str = "Qwen/Qwen3-8B-FP8",
         temperature: float = 0.7,
-        max_tokens: int = 500
+        max_tokens: int = 1024
     ) -> str:
         """
         Summarize user query patterns using LLM, optionally incorporating previous summary

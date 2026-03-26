@@ -5,7 +5,7 @@
         ref="historyMessageListRef"
         variant="history"
         :history-items="chatHistory"
-        :active-item-id="currentConversationId"
+        v-model:active-item-id="currentConversationId"
         :editing-item-id="editingChatId"
         :editing-title="editingChatTitle"
         :rename-api-base-url="config.apiBaseUrl"
@@ -90,6 +90,19 @@
                   >
                     {{ isUploadingKnowledge ? '上传中...' : '知识上传' }}
                   </button>
+
+                  <div class="token-indicator" v-if="tokenUsage > 0" title="当前会话 Token 消耗">
+                    <div class="token-indicator-label">{{ tokenUsage }} / 32k</div>
+                    <div class="token-indicator-progress">
+                      <div 
+                        class="token-indicator-bar" 
+                        :style="{ 
+                          width: `${Math.min((tokenUsage / 32000) * 100, 100)}%`,
+                          backgroundColor: tokenBarColor
+                        }"
+                      ></div>
+                    </div>
+                  </div>
 
                   <input
                     ref="knowledgeUploadInputRef"
@@ -243,6 +256,49 @@ const chatHistory = ref<ChatHistoryItem[]>([
 ])
 const currentConversationId = ref<string | undefined>(undefined)
 const currentTaskId = ref<string | undefined>(undefined)
+const tokenUsage = ref<number>(0)
+
+const TOKEN_USAGE_STORAGE_KEY_PREFIX = 'yamato_chat_token_usage_'
+
+const getConversationTokenKey = (conversationId: string, userId: string): string => {
+  return `${TOKEN_USAGE_STORAGE_KEY_PREFIX}${userId}_${conversationId}`
+}
+
+const saveTokenUsage = (conversationId: string, usage: number) => {
+  if (!conversationId || conversationId.startsWith('new-') || conversationId.startsWith('temp-')) {
+    return
+  }
+  const normalizedUser = String(chatSettings.value.userId || chatSettings.value.user || 'user').trim()
+  const key = getConversationTokenKey(conversationId, normalizedUser)
+  try {
+    localStorage.setItem(key, usage.toString())
+  } catch (error) {
+    if (import.meta.env.DEV) {
+      console.error('保存 Token 消耗失败:', error)
+    }
+  }
+}
+
+const loadTokenUsage = (conversationId: string): number => {
+  if (!conversationId || conversationId.startsWith('new-') || conversationId.startsWith('temp-')) {
+    return 0
+  }
+  const normalizedUser = String(chatSettings.value.userId || chatSettings.value.user || 'user').trim()
+  const key = getConversationTokenKey(conversationId, normalizedUser)
+  try {
+    const cached = localStorage.getItem(key)
+    return cached ? parseInt(cached, 10) : 0
+  } catch {
+    return 0
+  }
+}
+
+const tokenBarColor = computed(() => {
+  const percentage = tokenUsage.value / 32000
+  if (percentage < 0.5) return '#10b981' // 绿
+  if (percentage < 0.8) return '#f59e0b' // 橙
+  return '#ef4444' // 红
+})
 
 const SETTINGS_STORAGE_KEY = 'yamato_chat_settings'
 const chatSettings = ref<ChatSettings>({ user: '', search: '本地&网络' })
@@ -626,9 +682,19 @@ const sendMessage = async () => {
 
   if (existingConversationId) {
     upsertChatHistoryToTop(existingConversationId)
+    // 确保列表引用更新，这样侧边栏能反映位置变化（置顶）
+    chatHistory.value = [...chatHistory.value]
   } else {
     tempConversationId = `temp-${Date.now()}`
+    // 如果当前已经是 new-xxx (手动点新建)，则直接重用或替换它
+    const currentId = currentConversationId.value
+    if (currentId?.startsWith('new-')) {
+      removeChatHistoryItem(currentId)
+    }
+    
     upsertChatHistoryToTop(tempConversationId, optimisticTitle)
+    chatHistory.value = [...chatHistory.value]
+    currentConversationId.value = tempConversationId
   }
 
   inputMessage.value = ''
@@ -712,6 +778,16 @@ const sendMessage = async () => {
           if (streamRenderTimer === undefined) {
             flushRenderImmediately()
           }
+          
+          // 更新 Token 消耗 (累加)
+          const usage = (data as any)?.metadata?.usage
+          if (usage && usage.total_tokens) {
+            tokenUsage.value += usage.total_tokens
+            if (currentConversationId.value) {
+              saveTokenUsage(currentConversationId.value, tokenUsage.value)
+            }
+          }
+
           const conversationId =
             typeof (data as { conversation_id?: unknown }).conversation_id === 'string'
               ? (data as { conversation_id: string }).conversation_id
@@ -737,7 +813,12 @@ const sendMessage = async () => {
     // 保存 task_id 和 conversation_id
     currentTaskId.value = result.taskId
     if (result.conversationId) {
+      const oldId = currentConversationId.value
       currentConversationId.value = result.conversationId
+      // 如果分配了新会话ID，且当前有token缓存，需要转移到新ID下
+      if (tokenUsage.value > 0 && oldId && (oldId.startsWith('temp-') || oldId.startsWith('new-'))) {
+         saveTokenUsage(result.conversationId, tokenUsage.value)
+      }
     }
 
     const resolvedConversationId = result.conversationId || currentConversationId.value
@@ -746,6 +827,10 @@ const sendMessage = async () => {
         removeChatHistoryItem(tempConversationId)
       }
       upsertChatHistoryToTop(resolvedConversationId, optimisticTitle)
+      // 最终确认一次激活 ID 稳定在真实 ID 上
+      currentConversationId.value = resolvedConversationId
+      // 再次同步列表引用，确保 temp 被替换为真实 ID 后 UI 刷新
+      chatHistory.value = [...chatHistory.value]
     }
   } catch (error: unknown) {
     if (tempConversationId) {
@@ -767,21 +852,42 @@ const sendMessage = async () => {
 const createNewChat = () => {
   // 清空当前消息和会话 ID
   messages.value = []
-  currentConversationId.value = undefined
-  currentTaskId.value = undefined
+  
+  // 关键：为新空对话提供一个默认识别 ID，而不是 undefined
+  // 否则 MessageList 在判断 activeItemId 变化时不会跟踪新节点
+  const newId = `new-${Date.now()}`
+  currentConversationId.value = newId
+  
+  // 往历史列表的头部占位一个"新对话"
+  upsertChatHistoryToTop(newId, '新对话')
+  // 强制同步一次历史列表引用，确保 UI 能够正确反映新添加的项
+  chatHistory.value = [...chatHistory.value]
 
+  currentTaskId.value = undefined
+  tokenUsage.value = 0 // 重置 Token 消耗
+  
   // 显示新对话引导语打字效果
   startWelcomeTyping()
 }
 
 const loadChat = async (chatId: string) => {
+  // 临时生成的 ID 不应请求后端
+  if (chatId.startsWith('new-') || chatId.startsWith('temp-')) {
+    messages.value = []
+    tokenUsage.value = 0
+    currentConversationId.value = chatId
+    currentTaskId.value = undefined
+    return
+  }
+
   try {
     const normalizedUser = String(chatSettings.value.user ?? '').trim() || 'user'
     // 加载会话消息
     const response = await getMessages(normalizedUser, chatId)
     
-    // 清空当前消息
+    // 清空当前消息并重置 Token
     messages.value = []
+    tokenUsage.value = 0
     
     // 转换并加载消息
     if (response.data && response.data.length > 0) {
@@ -841,6 +947,9 @@ const loadChat = async (chatId: string) => {
     currentConversationId.value = chatId
     currentTaskId.value = undefined
     
+    // 恢复该会话的 Token 计数
+    tokenUsage.value = loadTokenUsage(chatId)
+    
     await scrollToBottom()
   } catch (error: unknown) {
     if (import.meta.env.DEV) {
@@ -850,9 +959,6 @@ const loadChat = async (chatId: string) => {
   }
 }
 
-const toggleHistory = () => {
-  historyCollapsed.value = !historyCollapsed.value
-}
 
 const renameChat = (chatId: string) => {
   const chat = chatHistory.value.find((c) => c.id === chatId)
@@ -1233,6 +1339,39 @@ onBeforeUnmount(() => {
   &:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+}
+
+.token-indicator {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #dadce0;
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.92);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+
+  .token-indicator-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #5f6368;
+    white-space: nowrap;
+  }
+
+  .token-indicator-progress {
+    width: 40px;
+    height: 4px;
+    background-color: #e8eaed;
+    border-radius: 2px;
+    overflow: hidden;
+
+    .token-indicator-bar {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.3s ease, background-color 0.3s ease;
+    }
   }
 }
 
