@@ -729,16 +729,15 @@ const sendMessage = async () => {
   const existingConversationId = currentConversationId.value
   let tempConversationId: string | null = null
 
-  if (existingConversationId) {
+  if (existingConversationId && !existingConversationId.startsWith('new-') && !existingConversationId.startsWith('temp-')) {
     upsertChatHistoryToTop(existingConversationId)
     // 确保列表引用更新，这样侧边栏能反映位置变化（置顶）
     chatHistory.value = [...chatHistory.value]
   } else {
-    tempConversationId = `temp-${Date.now()}`
-    // 如果当前已经是 new-xxx (手动点新建)，则直接重用或替换它
-    const currentId = currentConversationId.value
-    if (currentId?.startsWith('new-')) {
-      removeChatHistoryItem(currentId)
+    if (existingConversationId && (existingConversationId.startsWith('new-') || existingConversationId.startsWith('temp-'))) {
+      tempConversationId = existingConversationId
+    } else {
+      tempConversationId = `temp-${Date.now()}`
     }
     
     upsertChatHistoryToTop(tempConversationId, optimisticTitle)
@@ -830,10 +829,19 @@ const sendMessage = async () => {
             flushRenderImmediately()
           }
           
-          // 更新 Token 消耗 (累加)
+          // 更新 Token 消耗 (累加)，并扣除 <think>...</think> 标签内的内容
           const usage = (data as any)?.metadata?.usage
           if (usage && usage.total_tokens) {
-            tokenUsage.value += usage.total_tokens
+            let thinkTokens = 0
+            const thinkMatches = targetContent.match(/<think>[\s\S]*?<\/think>/gi)
+            if (thinkMatches) {
+              const thinkText = thinkMatches.join('')
+              // 简单估算：中文字符数 + 英文单词数 * 1.3 的近似替代（按之前 1.5 比例计算）
+              thinkTokens = Math.ceil(thinkText.length * 1.5)
+            }
+            const effectiveTokens = Math.max(0, usage.total_tokens - thinkTokens)
+            
+            tokenUsage.value += effectiveTokens
             if (currentConversationId.value) {
               saveTokenUsage(currentConversationId.value, tokenUsage.value)
             }
@@ -904,13 +912,13 @@ const sendMessage = async () => {
   }
 }
 
-const createNewChat = () => {
+const createNewChat = (tempId?: string) => {
   // 清空当前消息和会话 ID
   messages.value = []
   
   // 关键：为新空对话提供一个默认识别 ID，而不是 undefined
   // 否则 MessageList 在判断 activeItemId 变化时不会跟踪新节点
-  const newId = `new-${Date.now()}`
+  const newId = tempId && typeof tempId === 'string' ? tempId : `new-${Date.now()}`
   currentConversationId.value = newId
   
   // 往历史列表的头部占位一个"新对话"
