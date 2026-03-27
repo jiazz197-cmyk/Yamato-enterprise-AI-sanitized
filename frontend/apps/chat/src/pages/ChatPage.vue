@@ -63,6 +63,7 @@
                   placeholder="输入消息..."
                   multiline
                   :rows="1"
+                  :disabled="isCompressing"
                   @enter="sendMessage"
                 />
 
@@ -129,7 +130,7 @@
                   <button
                     class="chat-send-btn"
                     :class="{ 'chat-send-btn--stop': isLoading }"
-                    :disabled="!isLoading && !inputMessage.trim()"
+                    :disabled="(!isLoading && !inputMessage.trim()) || isCompressing"
                     type="button"
                     @click="isLoading ? stopGeneration() : sendMessage()"
                   >
@@ -711,7 +712,7 @@ const stopGeneration = async () => {
 }
 
 const sendMessage = async () => {
-  if (!inputMessage.value.trim() || isLoading.value) {
+  if (!inputMessage.value.trim() || isLoading.value || isCompressing.value) {
     return
   }
 
@@ -745,8 +746,48 @@ const sendMessage = async () => {
     currentConversationId.value = tempConversationId
   }
 
-  inputMessage.value = ''
+  const currentMsg = inputMessage.value
 
+  if (tokenUsage.value > 28000) {
+    inputMessage.value = ''
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '正在压缩上下文，请等候',
+      timestamp: formatTime(),
+    }
+    messages.value.push(assistantMessage)
+    const reactiveAssistantMessage = messages.value[messages.value.length - 1]
+
+    isCompressing.value = true
+    await scrollToBottom()
+
+    try {
+      const userId = summaryUserId.value
+      const convId = currentConversationId.value
+      if (!convId) throw new Error('No conversation ID')
+
+      const response = await compressContext(userId, convId)
+      const compressedText = response.data.compressed_context
+
+      saveBackground(convId, compressedText)
+      const estimatedTokens = Math.ceil(compressedText.length * 1.2)
+      tokenUsage.value = estimatedTokens
+      saveTokenUsage(convId, estimatedTokens)
+
+      reactiveAssistantMessage.content = '压缩完成，请继续对话'
+    } catch (error: unknown) {
+      showError(getErrorMessage(error, '压缩上下文失败'))
+      reactiveAssistantMessage.content = '压缩上下文失败，请重试'
+    } finally {
+      isCompressing.value = false
+      await scrollToBottom()
+      // Restore input text after compression ends
+      inputMessage.value = currentMsg
+    }
+    return
+  }
+
+  inputMessage.value = ''
   isLoading.value = true
   streamingAbortController = new AbortController()
 
@@ -807,6 +848,12 @@ const sendMessage = async () => {
 
     // 调用 API
     const currentBg = currentConversationId.value ? (chatBackgrounds.value[currentConversationId.value] || loadBackground(currentConversationId.value)) : ''
+    
+    // 如果存在背景信息，使用后立即清空，确保只发送一次
+    if (currentConversationId.value && currentBg) {
+      saveBackground(currentConversationId.value, '')
+    }
+
     const result = await sendChatMessage(
       currentInput,
       currentConversationId.value,
@@ -829,22 +876,71 @@ const sendMessage = async () => {
             flushRenderImmediately()
           }
           
-          // 更新 Token 消耗 (累加)，并扣除 <think>...</think> 标签内的内容
+          // 更新 Token 消耗，并扣除 <think>...</think> 标签内的内容
+          // 由于发现如果不用累加会导致多轮对话后token计数卡在固定值（不累积之前的增量），
+          // 所以我们恢复累加逻辑，将本次产生（包含 prompt 和 completion）扣除思考 token 后，
+          // 减去上一轮的数值得到的“增量”加到全局 tokenUsage 中，或者直接累加本次纯增加的量。
+          // 最简单的近似做法：将用户输入字数与 AI 本次去除 think 后的生成字数合算成 token 增量。
           const usage = (data as any)?.metadata?.usage
-          if (usage && usage.total_tokens) {
-            let thinkTokens = 0
-            const thinkMatches = targetContent.match(/<think>[\s\S]*?<\/think>/gi)
-            if (thinkMatches) {
-              const thinkText = thinkMatches.join('')
-              // 简单估算：中文字符数 + 英文单词数 * 1.3 的近似替代（按之前 1.5 比例计算）
-              thinkTokens = Math.ceil(thinkText.length * 1.5)
+          console.debug('[TokenDebug] onEnd data:', data)
+
+          let thinkTokens = 0
+          let thinkText = ''
+          let searchIdx = 0
+
+          // 鲁棒的提取：处理多个闭合、未闭合的 <think> 标签
+          while (true) {
+            const startIdx = targetContent.indexOf('<think>', searchIdx)
+            if (startIdx === -1) break
+            const endIdx = targetContent.indexOf('</think>', startIdx)
+            if (endIdx === -1) {
+              thinkText += targetContent.slice(startIdx)
+              break
+            } else {
+              thinkText += targetContent.slice(startIdx, endIdx + 8)
+              searchIdx = endIdx + 8
             }
-            const effectiveTokens = Math.max(0, usage.total_tokens - thinkTokens)
-            
-            tokenUsage.value += effectiveTokens
-            if (currentConversationId.value) {
-              saveTokenUsage(currentConversationId.value, tokenUsage.value)
+          }
+
+          if (thinkText) {
+            thinkTokens = Math.ceil(thinkText.length * 1.0)
+          }
+
+          // 默认使用本地估算，确保 usage 缺失时也持续累计
+          const cleanAiText = targetContent.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<think>[\s\S]*/gi, '')
+          const aiTokens = Math.ceil(cleanAiText.length * 1.2)
+          const userTokens = Math.ceil(currentInput.length * 1.2)
+          let increment = aiTokens + userTokens
+
+          // usage 可用时优先使用后端统计值，并扣除 think 区段估算
+          const promptTokens = Number((usage as any)?.prompt_tokens ?? NaN)
+          const completionTokens = Number((usage as any)?.completion_tokens ?? NaN)
+          if (Number.isFinite(promptTokens) && Number.isFinite(completionTokens)) {
+            const usageIncrement = Math.max(0, Math.ceil(promptTokens + completionTokens - thinkTokens))
+            if (usageIncrement > 0) {
+              increment = usageIncrement
             }
+          } else {
+            console.warn('[TokenDebug] usage not found in metadata, fallback to local estimation')
+          }
+
+          console.debug('[TokenDebug] increment calculation:', {
+            promptTokens,
+            completionTokens,
+            thinkTokens,
+            aiTokens,
+            userTokens,
+            increment,
+            oldTokenUsage: tokenUsage.value,
+            newTokenUsage: tokenUsage.value + increment,
+            targetContentLength: targetContent.length,
+            currentInputLength: currentInput.length
+          })
+
+          tokenUsage.value += increment
+
+          if (currentConversationId.value) {
+            saveTokenUsage(currentConversationId.value, tokenUsage.value)
           }
 
           const conversationId =
@@ -864,6 +960,10 @@ const sendMessage = async () => {
           currentTaskId.value = undefined
           if (import.meta.env.DEV) {
             console.error('发送消息失败:', error)
+          }
+          // 如果发送失败，恢复背景信息以便下次重试
+          if (currentConversationId.value && currentBg) {
+            saveBackground(currentConversationId.value, currentBg)
           }
         },
       }
@@ -1071,8 +1171,8 @@ const handleCompressContext = async () => {
     saveBackground(conversationId, compressedText)
     
     // 清除 Token 计数并根据回传信息估算初始 Token
-    // 简单估算：中文字符数 + 英文单词数 * 1.3 (这是一个非常粗略的估算)
-    const estimatedTokens = Math.ceil(compressedText.length * 1.5)
+    // 简单估算：中文字符数 + 英文单词数 * 1.2 (这是一个粗略的估算)
+    const estimatedTokens = Math.ceil(compressedText.length * 1.2)
     tokenUsage.value = estimatedTokens
     saveTokenUsage(conversationId, estimatedTokens)
     

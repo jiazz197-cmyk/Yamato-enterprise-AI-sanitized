@@ -22,7 +22,7 @@ class ContextCompressor:
     def __init__(
         self,
         base_url: Optional[str] = None,
-        model_name: str = "Qwen/Qwen3-8B-FP8",
+        model_name: str = "Qwen/Qwen3.5-35B-A3B-FP8",
         temperature: float = 0.3,
         max_tokens: int = 1024,
         dify_api_key: Optional[str] = None
@@ -30,7 +30,7 @@ class ContextCompressor:
         """
         Initialize the context compressor
         """
-        self.base_url = base_url or settings.QWEN3_8B_API_URL
+        self.base_url = base_url or settings.QWEN3_5_27B_API_URL
         self.model_name = model_name
         self.dify_api_key = dify_api_key or settings.CHAT_API_KEY
         self.temperature = temperature
@@ -219,11 +219,17 @@ class ContextCompressor:
 
         # 后处理：移除可能出现的 <think> 标签内容
         import re
-        processed_result = re.sub(r'<think>.*?</think>', '', raw_result, flags=re.DOTALL).strip()
+        processed_result = re.sub(r'<think>.*?</think>', '', raw_result, flags=re.DOTALL | re.IGNORECASE).strip()
         # 如果模型没有输出 </think> 导致匹配失败，尝试简单截断
-        if '<think>' in processed_result:
-            processed_result = processed_result.split('<think>')[-1].split('</think>')[-1].strip()
+        if '<think>' in processed_result.lower():
+            # 大小写不敏感地截断
+            processed_result = re.split(r'<think>', processed_result, flags=re.IGNORECASE)[0].strip()
 
+        logger.info(f"[Debug] Raw Compression Result length: {len(raw_result)}")
+        logger.info(f"[Debug] Raw Compression Result snippet: {raw_result[:200]} ... {raw_result[-200:] if len(raw_result) > 400 else ''}")
+        logger.info(f"[Debug] Processed Compression Result length: {len(processed_result)}")
+        logger.info(f"[Debug] Processed Compression Result snippet: {processed_result[:200]}")
+        
         logger.info("Context compression completed successfully.")
         return processed_result
 
