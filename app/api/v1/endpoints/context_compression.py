@@ -5,8 +5,9 @@ import logging
 
 from app.integrations.context_compression import compress_context
 from app.schemas.base import FormatJSONResponse
-from app.core.security import get_current_user
+from app.core.security import get_current_user, normalize_self_user_identifier
 from app.models.orm.platform.user import User
+from app.models.orm.platform.user import UserRole
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,12 +31,22 @@ def compress_chat_context(
     Total length will be between 500-700 words.
     """
     try:
-        logger.info(f"Received context compression request for conversation {request.conversation_id} from user {request.user_id}")
-        
-        # Ensure user can only access their own data or is a superuser (optional, but good practice)
-        # normalize_self_user_identifier(request.user_id, current_user)
-        
+        logger.info(
+            "Received context compression request for conversation %s from user %s",
+            request.conversation_id,
+            request.user_id,
+        )
+
         context_data = request.model_dump()
+        if current_user.role == UserRole.superuser:
+            # superuser can run compression for any target user
+            effective_user_id = request.user_id.strip()
+        else:
+            # normal users can only access their own identity aliases
+            effective_user_id = normalize_self_user_identifier(request.user_id, current_user)
+
+        # Always overwrite user_id on server side to prevent client-side spoofing.
+        context_data["user_id"] = effective_user_id
         compressed_result = compress_context(context_data)
         
         return FormatJSONResponse(
@@ -43,7 +54,7 @@ def compress_chat_context(
             message="Context compressed successfully"
         )
     except Exception as e:
-        logger.error(f"Failed to compress context for conversation {request.conversation_id}: {str(e)}")
+        logger.error("Failed to compress context for conversation %s: %s", request.conversation_id, str(e))
         raise HTTPException(
             status_code=500,
             detail=f"Failed to compress context: {str(e)}"

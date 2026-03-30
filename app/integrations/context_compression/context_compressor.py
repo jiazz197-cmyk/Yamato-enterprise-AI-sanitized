@@ -225,10 +225,8 @@ class ContextCompressor:
             # 大小写不敏感地截断
             processed_result = re.split(r'<think>', processed_result, flags=re.IGNORECASE)[0].strip()
 
-        logger.info(f"[Debug] Raw Compression Result length: {len(raw_result)}")
-        logger.info(f"[Debug] Raw Compression Result snippet: {raw_result[:200]} ... {raw_result[-200:] if len(raw_result) > 400 else ''}")
-        logger.info(f"[Debug] Processed Compression Result length: {len(processed_result)}")
-        logger.info(f"[Debug] Processed Compression Result snippet: {processed_result[:200]}")
+        logger.info("[Debug] Raw Compression Result length: %s", len(raw_result))
+        logger.info("[Debug] Processed Compression Result length: %s", len(processed_result))
         
         logger.info("Context compression completed successfully.")
         return processed_result

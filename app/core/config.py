@@ -108,6 +108,14 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     def split_allowed_hosts(cls, v: Union[str, List[str]]) -> List[str]:
         return _split_comma_separated(v)
 
+    @validator("RETRIEVER_ALLOWED_COLLECTIONS", pre=True)
+    def split_retriever_allowed_collections(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str):
+            if not v.strip():
+                return []
+            return [item.strip() for item in v.split(",") if item.strip()]
+        return v
+
     # 数据库
     POSTGRES_SERVER: str = Field("127.0.0.1", env="POSTGRES_SERVER")
     POSTGRES_USER: str = Field("pguser", env="POSTGRES_USER")
@@ -151,6 +159,7 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(60, env="ACCESS_TOKEN_EXPIRE_MINUTES")
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(7, env="REFRESH_TOKEN_EXPIRE_DAYS")
     INTERNAL_API_KEY: str = Field("change_me_internal_api_key", env="INTERNAL_API_KEY")
+    RETRIEVER_ALLOWED_COLLECTIONS: List[str] = Field(default_factory=list, env="RETRIEVER_ALLOWED_COLLECTIONS")
 
     # 启动引导账号（仅建议开发环境使用）
     BOOTSTRAP_SUPERUSER_USERNAME: Optional[str] = Field(default=None, env="BOOTSTRAP_SUPERUSER_USERNAME")
@@ -162,6 +171,8 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     RATE_LIMIT_REQUESTS_PER_HOUR: int = Field(1000, env="RATE_LIMIT_REQUESTS_PER_HOUR")
     RATE_LIMIT_AUTH: int = Field(100, env="RATE_LIMIT_AUTH")
     RATE_LIMIT_ANON: int = Field(20, env="RATE_LIMIT_ANON")
+    RATE_LIMIT_EXPENSIVE_AUTH: int = Field(20, env="RATE_LIMIT_EXPENSIVE_AUTH")
+    RATE_LIMIT_EXPENSIVE_ANON: int = Field(5, env="RATE_LIMIT_EXPENSIVE_ANON")
     RATE_LIMIT_WINDOW: int = Field(60, env="RATE_LIMIT_WINDOW")
 
     # 中间件开关

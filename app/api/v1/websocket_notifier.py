@@ -2,7 +2,7 @@
 WebSocket Task Notifier
 Real-time task progress and status updates for clients
 """
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, WebSocketException, status
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, WebSocketException, status, Depends
 from typing import Dict, Set
 import json
 import jwt
@@ -11,6 +11,8 @@ from app.core.logging import get_logger
 from app.core.config import settings
 from app.core.executor import executor_manager
 from app.api.taskmanager import task_manager
+from app.core.security import require_roles
+from app.models.orm.platform.user import User, UserRole
 
 logger = get_logger("websocket_notifier")
 
@@ -212,7 +214,9 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str):
 
 
 @router.get("/ws/stats")
-async def get_websocket_stats():
+async def get_websocket_stats(
+    _: User = Depends(require_roles(UserRole.superuser)),
+):
     """Get WebSocket connection statistics"""
     return {
         "total_connections": ws_manager.get_connection_count(),
