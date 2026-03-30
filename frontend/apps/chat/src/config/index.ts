@@ -48,6 +48,9 @@ const getConfig = (): AppConfig => {
   if (!chatApiKey) {
     throw new Error('VITE_CHAT_API_KEY is required in .env file')
   }
+  if (chatApiKey.includes('change_me')) {
+    throw new Error('VITE_CHAT_API_KEY must not use placeholder value')
+  }
 
   const loginEndpoint = import.meta.env.VITE_LOGIN_ENDPOINT
   if (!loginEndpoint) {

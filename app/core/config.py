@@ -55,6 +55,18 @@ def _is_insecure_value(value: Any) -> bool:
     return any(keyword in normalized for keyword in insecure_keywords)
 
 
+def _is_production_env(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"production", "prod"}
+
+
+def _contains_wildcard(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip() == "*"
+    if isinstance(value, list):
+        return "*" in [str(item).strip() for item in value]
+    return False
+
+
 class SingletonModelMeta(ModelMetaclass):
     """
     线程安全的单例元类，继承自 pydantic 的 ModelMetaclass
@@ -86,12 +98,27 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     DESCRIPTION: str = Field("AI数据工具后端API服务", env="DESCRIPTION")
     ENVIRONMENT: str = Field("development", env="ENVIRONMENT")
     DEBUG: bool = Field(True, env="DEBUG")
+    @validator("DEBUG", pre=True)
+    def parse_debug_flag(cls, v: Any):
+        """Allow common string aliases like release/prod/debug/dev."""
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            normalized = v.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "debug", "dev", "development"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "release", "prod", "production"}:
+                return False
+        return v
+
     API_V1_STR: str = Field("/api/v1", env="API_V1_STR")
 
     # 服务端网络
     HOST: str = Field("0.0.0.0", env="HOST")
     PORT: int = Field(8000, env="PORT")
     ALLOWED_HOSTS: List[str] = Field(default_factory=lambda: ["*"], env="ALLOWED_HOSTS")
+    TRUST_PROXY_HEADERS: bool = Field(False, env="TRUST_PROXY_HEADERS")
+    TRUSTED_PROXIES: List[str] = Field(default_factory=list, env="TRUSTED_PROXIES")
 
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = Field(default_factory=lambda: ["*"], env="BACKEND_CORS_ORIGINS")
@@ -107,6 +134,26 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     @validator("ALLOWED_HOSTS", pre=True)
     def split_allowed_hosts(cls, v: Union[str, List[str]]) -> List[str]:
         return _split_comma_separated(v)
+
+    @validator("TRUSTED_PROXIES", pre=True)
+    def split_trusted_proxies(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str):
+            if not v.strip():
+                return []
+            return [item.strip() for item in v.split(",") if item.strip()]
+        return v
+
+    @validator("ALLOWED_HOSTS")
+    def validate_allowed_hosts_for_production(cls, v: List[str], values):
+        if _is_production_env(values.get("ENVIRONMENT")) and _contains_wildcard(v):
+            raise ValueError("生产环境禁止使用 ALLOWED_HOSTS=[\"*\"]，请配置明确域名")
+        return v
+
+    @validator("BACKEND_CORS_ORIGINS")
+    def validate_cors_origins_for_production(cls, v: List[str], values):
+        if _is_production_env(values.get("ENVIRONMENT")) and _contains_wildcard(v):
+            raise ValueError("生产环境禁止使用 BACKEND_CORS_ORIGINS=[\"*\"]，请配置明确来源")
+        return v
 
     @validator("RETRIEVER_ALLOWED_COLLECTIONS", pre=True)
     def split_retriever_allowed_collections(cls, v: Union[str, List[str]]) -> List[str]:
@@ -174,6 +221,8 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     RATE_LIMIT_EXPENSIVE_AUTH: int = Field(20, env="RATE_LIMIT_EXPENSIVE_AUTH")
     RATE_LIMIT_EXPENSIVE_ANON: int = Field(5, env="RATE_LIMIT_EXPENSIVE_ANON")
     RATE_LIMIT_WINDOW: int = Field(60, env="RATE_LIMIT_WINDOW")
+    RATE_LIMIT_FAIL_OPEN: bool = Field(True, env="RATE_LIMIT_FAIL_OPEN")
+    RATE_LIMIT_REDIS_ERROR_STATUS: int = Field(503, env="RATE_LIMIT_REDIS_ERROR_STATUS")
 
     # 中间件开关
     ENABLE_RATE_LIMIT: bool = Field(False, env="ENABLE_RATE_LIMIT")
@@ -263,6 +312,10 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     MONITORING_INTERVAL: int = Field(60, env="MONITORING_INTERVAL")
     ENABLE_PROMETHEUS: bool = Field(True, env="ENABLE_PROMETHEUS")
     ENABLE_HEALTH_CHECK: bool = Field(True, env="ENABLE_HEALTH_CHECK")
+    METRICS_REQUIRE_API_KEY: bool = Field(True, env="METRICS_REQUIRE_API_KEY")
+    ENABLE_SECURITY_HEADERS: bool = Field(True, env="ENABLE_SECURITY_HEADERS")
+    ENABLE_HSTS: bool = Field(True, env="ENABLE_HSTS")
+    HSTS_MAX_AGE: int = Field(31536000, env="HSTS_MAX_AGE")
 
     CHAT_API_KEY: str = Field("change_me_chat_api_key", env="CHAT_API_KEY")
 
@@ -297,6 +350,18 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
         env = str(values.get("ENVIRONMENT", "development")).lower()
         if env in {"production", "prod"} and _is_insecure_value(v):
             raise ValueError("BOOTSTRAP_SUPERUSER_PASSWORD 使用了不安全默认值")
+        return v
+
+    @validator("ENABLE_RATE_LIMIT")
+    def validate_rate_limit_required_in_production(cls, v: bool, values):
+        if _is_production_env(values.get("ENVIRONMENT")) and not v:
+            raise ValueError("生产环境必须启用 ENABLE_RATE_LIMIT")
+        return v
+
+    @validator("RATE_LIMIT_REDIS_ERROR_STATUS")
+    def validate_rate_limit_redis_error_status(cls, v: int):
+        if v not in {429, 503}:
+            raise ValueError("RATE_LIMIT_REDIS_ERROR_STATUS 仅支持 429 或 503")
         return v
 
     # 开发模式

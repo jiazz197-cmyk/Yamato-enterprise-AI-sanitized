@@ -1,8 +1,10 @@
 """
 基于 Redis 的限流中间件
 """
+from dataclasses import dataclass
+import ipaddress
 import time
-from typing import Callable, Tuple
+from typing import Callable, Tuple, Any
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -12,6 +14,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.cache import redis_manager
 from app.core.config import settings
 from app.core.logging import request_logger
+
+
+@dataclass
+class RateLimitDecision:
+    allowed: bool
+    retry_after: int | None = None
+    redis_error: bool = False
 
 
 class RateLimiter:
@@ -28,6 +37,54 @@ class RateLimiter:
             f"{settings.API_V1_STR}/chat-summary",
             f"{settings.API_V1_STR}/context-compression",
         )
+        self.trust_proxy_headers = settings.TRUST_PROXY_HEADERS
+        self.trusted_proxy_networks = self._build_trusted_proxy_networks(settings.TRUSTED_PROXIES)
+
+    @staticmethod
+    def _build_trusted_proxy_networks(proxies: list[str]) -> list[Any]:
+        networks: list[Any] = []
+        for raw in proxies:
+            value = str(raw).strip()
+            if not value:
+                continue
+            try:
+                if "/" in value:
+                    networks.append(ipaddress.ip_network(value, strict=False))
+                else:
+                    ip = ipaddress.ip_address(value)
+                    prefix = 32 if ip.version == 4 else 128
+                    networks.append(ipaddress.ip_network(f"{ip}/{prefix}", strict=False))
+            except ValueError:
+                request_logger.warning("Ignored invalid trusted proxy config: %s", value)
+        return networks
+
+    def _is_trusted_proxy(self, client_ip: str) -> bool:
+        if not self.trusted_proxy_networks:
+            return False
+        try:
+            ip_obj = ipaddress.ip_address(client_ip)
+        except ValueError:
+            return False
+        return any(ip_obj in network for network in self.trusted_proxy_networks)
+
+    def _get_effective_client_ip(self, request: Request) -> str:
+        direct_ip = (request.client.host if request.client else "") or "unknown"
+        if not self.trust_proxy_headers:
+            return direct_ip
+        if not self._is_trusted_proxy(direct_ip):
+            return direct_ip
+
+        x_forwarded_for = request.headers.get("x-forwarded-for", "")
+        if not x_forwarded_for:
+            return direct_ip
+
+        first_hop = x_forwarded_for.split(",", 1)[0].strip()
+        try:
+            ipaddress.ip_address(first_hop)
+        except ValueError:
+            request_logger.warning("Invalid X-Forwarded-For value: %s", x_forwarded_for)
+            return direct_ip
+        return first_hop
 
     async def _get_client_identifier(self, request: Request) -> Tuple[str, bool]:
         auth_header = request.headers.get("Authorization", "")
@@ -42,7 +99,7 @@ class RateLimiter:
                 except jwt.PyJWTError:
                     # fallback to IP bucket when token is invalid
                     pass
-        client_ip = request.client.host
+        client_ip = self._get_effective_client_ip(request)
         return f"anon:{client_ip}", False
 
     def _get_limit_for_request(self, request: Request, is_authenticated: bool) -> int:
@@ -50,7 +107,7 @@ class RateLimiter:
             return self.expensive_auth_limit if is_authenticated else self.expensive_anon_limit
         return self.auth_limit if is_authenticated else self.anon_limit
 
-    async def check_rate_limit(self, request: Request) -> bool:
+    async def check_rate_limit(self, request: Request) -> RateLimitDecision:
         identifier, is_authenticated = await self._get_client_identifier(request)
         limit = self._get_limit_for_request(request, is_authenticated)
         current_time = int(time.time())
@@ -62,12 +119,20 @@ class RateLimiter:
                 await redis_manager.redis_client.expire(window_key, self.window_size)
         except Exception as exc:
             request_logger.warning("Rate limiter fallback due to Redis error: %s", exc)
-            return True
+            if settings.RATE_LIMIT_FAIL_OPEN:
+                return RateLimitDecision(allowed=True, redis_error=True)
+            return RateLimitDecision(
+                allowed=False,
+                retry_after=1,
+                redis_error=True,
+            )
 
         if count > limit:
+            retry_after = self.window_size - (current_time % self.window_size)
+            retry_after = max(retry_after, 1)
             request_logger.warning("Rate limit exceeded for %s", identifier)
-            return False
-        return True
+            return RateLimitDecision(allowed=False, retry_after=retry_after)
+        return RateLimitDecision(allowed=True)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -81,10 +146,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not settings.ENABLE_RATE_LIMIT:
             return await call_next(request)
 
-        if not await self.limiter.check_rate_limit(request):
+        decision = await self.limiter.check_rate_limit(request)
+        if not decision.allowed:
+            headers = {}
+            if decision.retry_after is not None:
+                headers["Retry-After"] = str(decision.retry_after)
+
+            if decision.redis_error:
+                status_code = settings.RATE_LIMIT_REDIS_ERROR_STATUS
+                message = "服务繁忙，请稍后重试"
+            else:
+                status_code = 429
+                message = "请求过于频繁，请稍后再试"
+
             return JSONResponse(
-                status_code=429,
-                content={"code": 429, "message": "请求过于频繁，请稍后再试", "data": None},
+                status_code=status_code,
+                headers=headers,
+                content={"code": status_code, "message": message, "data": None},
             )
 
         return await call_next(request)

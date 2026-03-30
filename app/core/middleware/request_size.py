@@ -21,12 +21,24 @@ class RequestSizeLimit:
     async def check_request_size(self, request: Request) -> bool:
         """返回 True 表示符合限制。"""
         try:
+            content_type = request.headers.get("content-type", "")
             content_length = request.headers.get("content-length")
+            size_limit = self.file_limit if "multipart/form-data" in content_type else self.json_limit
+
             if not content_length:
+                # Fallback for chunked or missing Content-Length requests.
+                body = await request.body()
+                body_size = len(body)
+                if body_size > size_limit:
+                    request_logger.warning(
+                        "Request body size %s exceeds limit %s without Content-Length",
+                        body_size,
+                        size_limit,
+                    )
+                    return False
                 return True
 
             content_length = int(content_length)
-            content_type = request.headers.get("content-type", "")
 
             if "multipart/form-data" in content_type:
                 if content_length > self.file_limit:
