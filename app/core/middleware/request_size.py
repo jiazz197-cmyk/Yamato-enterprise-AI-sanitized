@@ -17,6 +17,22 @@ class RequestSizeLimit:
     def __init__(self):
         self.json_limit = settings.MAX_JSON_SIZE
         self.file_limit = settings.MAX_FILE_SIZE
+        self._body_methods = {"POST", "PUT", "PATCH"}
+
+    @staticmethod
+    async def _read_body_with_limit(request: Request, size_limit: int) -> tuple[bool, bytes]:
+        """
+        Read request body in chunks with an upper bound.
+        Returns (is_within_limit, body_bytes).
+        """
+        total_size = 0
+        chunks: list[bytes] = []
+        async for chunk in request.stream():
+            total_size += len(chunk)
+            if total_size > size_limit:
+                return False, b""
+            chunks.append(chunk)
+        return True, b"".join(chunks)
 
     async def check_request_size(self, request: Request) -> bool:
         """返回 True 表示符合限制。"""
@@ -26,16 +42,18 @@ class RequestSizeLimit:
             size_limit = self.file_limit if "multipart/form-data" in content_type else self.json_limit
 
             if not content_length:
-                # Fallback for chunked or missing Content-Length requests.
-                body = await request.body()
-                body_size = len(body)
-                if body_size > size_limit:
+                if request.method.upper() not in self._body_methods:
+                    return True
+                # Bounded fallback for chunked or missing Content-Length requests.
+                within_limit, body = await self._read_body_with_limit(request, size_limit)
+                if not within_limit:
                     request_logger.warning(
-                        "Request body size %s exceeds limit %s without Content-Length",
-                        body_size,
+                        "Chunked/missing-length request body exceeds limit %s",
                         size_limit,
                     )
                     return False
+                # Preserve body for downstream consumers that call request.body().
+                request._body = body  # type: ignore[attr-defined]
                 return True
 
             content_length = int(content_length)
@@ -56,7 +74,7 @@ class RequestSizeLimit:
             return True
         except Exception as exc:
             request_logger.error("Request size check failed: %s", exc)
-            return True
+            return False
 
 
 class RequestSizeMiddleware(BaseHTTPMiddleware):

@@ -223,6 +223,8 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     RATE_LIMIT_WINDOW: int = Field(60, env="RATE_LIMIT_WINDOW")
     RATE_LIMIT_FAIL_OPEN: bool = Field(True, env="RATE_LIMIT_FAIL_OPEN")
     RATE_LIMIT_REDIS_ERROR_STATUS: int = Field(503, env="RATE_LIMIT_REDIS_ERROR_STATUS")
+    WS_MAX_CONNECTIONS_PER_IP: int = Field(20, env="WS_MAX_CONNECTIONS_PER_IP")
+    WS_MAX_MESSAGES_PER_MINUTE: int = Field(120, env="WS_MAX_MESSAGES_PER_MINUTE")
 
     # 中间件开关
     ENABLE_RATE_LIMIT: bool = Field(False, env="ENABLE_RATE_LIMIT")

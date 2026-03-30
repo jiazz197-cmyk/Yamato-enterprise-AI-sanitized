@@ -25,8 +25,11 @@ from app.integrations.doc_processing.pipeline import clean_text_for_postgres
 from app.models.orm.platform.user import User, UserRole
 from app.schemas.endpoints.closing_form import (
     ClosingFormApproveResponse,
+    ClosingFormDeleteResponse,
     ClosingFormRejectResponse,
     ClosingFormListResponse,
+    Collection2ListResponse,
+    Collection2Record,
     ClosingFormRecord,
     ClosingFormSubmit,
     ClosingFormSubmitResponse,
@@ -39,6 +42,7 @@ logger = get_logger("closing_form")
 CLOSING_FORM_TABLE_PREFIX = "doc_collection"
 CLOSING_FORM_INSTANCE_ID = 1
 _CLOSING_FORM_TABLE = f"data_{CLOSING_FORM_TABLE_PREFIX}_{CLOSING_FORM_INSTANCE_ID}"
+_COLLECTION2_TABLE = "data_doc_collection_2"
 _PENDING_TABLE = "data_pending"
 
 
@@ -313,3 +317,127 @@ def reject_closing_form(
         current_user.username,
     )
     return ClosingFormRejectResponse(success=True, message="审批已拒绝")
+
+
+@router.get(
+    "/collection2/list",
+    response_model=Collection2ListResponse,
+    summary="获取 data_doc_collection_2 列表（admin / superuser）",
+)
+def list_collection2_records(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.superuser)),
+):
+    """
+    列出 data_doc_collection_2 记录（仅 admin / superuser）。
+    """
+    _ = current_user
+    try:
+        rows = db.execute(
+            text(
+                f"SELECT id, text,"
+                f" COALESCE(metadata_->>'file_name', metadata_->>'source', metadata_->>'title') AS file_name,"
+                f" metadata_->>'upload_time' AS upload_time,"
+                f" metadata_->>'uploader'   AS uploader"
+                f" FROM {_COLLECTION2_TABLE}"
+                f" ORDER BY metadata_->>'upload_time' DESC NULLS LAST, id DESC"
+            )
+        ).fetchall()
+
+        records = [
+            Collection2Record(
+                id=str(row.id),
+                text=row.text or "",
+                file_name=getattr(row, "file_name", None),
+                upload_time=row.upload_time,
+                uploader=row.uploader or "",
+                status="approved",
+            )
+            for row in rows
+        ]
+        return Collection2ListResponse(success=True, total=len(records), records=records)
+    except Exception:
+        logger.exception("查询 data_doc_collection_2 列表失败")
+        raise HTTPException(status_code=500, detail="查询失败，请稍后重试")
+
+
+@router.delete(
+    "/collection2/{record_id}",
+    response_model=ClosingFormDeleteResponse,
+    summary="删除 data_doc_collection_2 记录（admin / superuser）",
+)
+def delete_collection2_record(
+    record_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.superuser)),
+):
+    """
+    删除 data_doc_collection_2 中的单条记录（物理删除）。
+    """
+    try:
+        exists = db.execute(
+            text(f"SELECT id FROM {_COLLECTION2_TABLE} WHERE id = :id"),
+            {"id": record_id},
+        ).first()
+        if exists is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="记录不存在")
+
+        delete_result = db.execute(
+            text(f"DELETE FROM {_COLLECTION2_TABLE} WHERE id = :id"),
+            {"id": record_id},
+        )
+        if (delete_result.rowcount or 0) <= 0:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="删除失败，请稍后重试")
+
+        logger.info(
+            "删除 data_doc_collection_2 记录: record_id=%s, deleted_by=%s",
+            record_id,
+            current_user.username,
+        )
+        return ClosingFormDeleteResponse(success=True, message="删除成功", deleted_id=str(record_id))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("删除 data_doc_collection_2 记录失败: record_id=%s", record_id)
+        raise HTTPException(status_code=500, detail="删除失败，请稍后重试")
+
+
+@router.delete(
+    "/approved/{record_id}",
+    response_model=ClosingFormDeleteResponse,
+    summary="删除已通过表单（superuser 专属）",
+)
+def delete_approved_closing_form(
+    record_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.superuser)),
+):
+    """
+    删除 data_doc_collection_1 中的已通过表单（物理删除，仅 superuser）。
+    """
+    try:
+        exists = db.execute(
+            text(f"SELECT id FROM {_CLOSING_FORM_TABLE} WHERE id = :id"),
+            {"id": record_id},
+        ).first()
+        if exists is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="记录不存在")
+
+        delete_result = db.execute(
+            text(f"DELETE FROM {_CLOSING_FORM_TABLE} WHERE id = :id"),
+            {"id": record_id},
+        )
+        if (delete_result.rowcount or 0) <= 0:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="删除失败，请稍后重试")
+
+        logger.info(
+            "删除已通过表单记录: record_id=%s, deleted_by=%s",
+            record_id,
+            current_user.username,
+        )
+        return ClosingFormDeleteResponse(success=True, message="删除成功", deleted_id=str(record_id))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("删除已通过表单记录失败: record_id=%s", record_id)
+        raise HTTPException(status_code=500, detail="删除失败，请稍后重试")

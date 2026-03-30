@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
-import { config } from '../config'
 import { readUserRole } from '../services/auth'
+import { getAuthTokenFromStorage } from '../services/token_storage'
 
 const PUBLIC_PATHS = ['/login', '/register']
 
@@ -35,16 +35,22 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '文件管理' },
   },
   {
-    path: '/policy',
-    name: 'policy',
+    path: '/closing-form',
+    name: 'closing-form',
     component: () => import('@/pages/PolicyGeneratePage.vue'),
-    meta: { title: '保单生成' },
+    meta: { title: '报单填写' },
   },
   {
     path: '/users',
     name: 'users',
     component: () => import('@/pages/UserManagePage.vue'),
     meta: { title: '用户管理', requiresSuperuser: true },
+  },
+  {
+    path: '/collection2',
+    name: 'collection2',
+    component: () => import('@/pages/Collection2ManagePage.vue'),
+    meta: { title: '知识库管理', requiresAdminOrSuperuser: true },
   },
 ]
 
@@ -54,12 +60,7 @@ const router = createRouter({
 })
 
 router.beforeEach((to, _from, next) => {
-  let token: string | null = null
-  try {
-    token = localStorage.getItem(config.authTokenStorageKey)
-  } catch {
-    token = null
-  }
+  const token = getAuthTokenFromStorage()
 
   const isPublic = PUBLIC_PATHS.includes(to.path)
 
@@ -76,6 +77,14 @@ router.beforeEach((to, _from, next) => {
   if (to.meta.requiresSuperuser && readUserRole() !== 'superuser') {
     next('/chat')
     return
+  }
+
+  if (to.meta.requiresAdminOrSuperuser) {
+    const role = readUserRole()
+    if (role !== 'admin' && role !== 'superuser') {
+      next('/chat')
+      return
+    }
   }
 
   next()

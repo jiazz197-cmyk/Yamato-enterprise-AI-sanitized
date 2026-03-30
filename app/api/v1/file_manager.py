@@ -180,7 +180,7 @@ async def upload_file(
     except Exception as e:
         logger.error(f"文件上传失败: {e}", exc_info=True)
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="文件上传失败")
 
 
 @router.get("/download/{file_id}", summary="下载文件")
@@ -227,7 +227,7 @@ async def download_file(
         raise
     except Exception as e:
         logger.error(f"文件下载失败 (ID: {file_id}): {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"文件下载失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="文件下载失败")
 
 
 @router.get("/info/{file_id}", response_model=FileInfoResponse, summary="获取文件信息")
@@ -314,7 +314,7 @@ async def list_files(
         raise
     except Exception as e:
         logger.error(f"获取文件列表失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"获取文件列表失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取文件列表失败")
 
 
 @router.delete("/delete/{file_id}", response_model=DeleteResponse, summary="删除文件")
@@ -359,7 +359,7 @@ async def delete_file(
     except Exception as e:
         logger.error(f"文件删除失败 (ID: {file_id}): {e}", exc_info=True)
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"文件删除失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="文件删除失败")
 
 
 @router.post("/batch-delete", response_model=BatchDeleteResponse, summary="批量删除文件")
@@ -464,4 +464,4 @@ async def search_files(
         raise
     except Exception as e:
         logger.error(f"搜索文件失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"搜索文件失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="搜索文件失败")

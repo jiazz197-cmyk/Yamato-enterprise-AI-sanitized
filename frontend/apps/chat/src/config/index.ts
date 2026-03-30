@@ -6,7 +6,6 @@
 interface AppConfig {
   port: number
   apiBaseUrl: string
-  chatApiKey: string
   env: string
   userName?: string
   userAvatarUrl?: string
@@ -44,14 +43,6 @@ const getConfig = (): AppConfig => {
     throw new Error('VITE_API_BASE_URL is required in .env file')
   }
 
-  const chatApiKey = import.meta.env.VITE_CHAT_API_KEY
-  if (!chatApiKey) {
-    throw new Error('VITE_CHAT_API_KEY is required in .env file')
-  }
-  if (chatApiKey.includes('change_me')) {
-    throw new Error('VITE_CHAT_API_KEY must not use placeholder value')
-  }
-
   const loginEndpoint = import.meta.env.VITE_LOGIN_ENDPOINT
   if (!loginEndpoint) {
     throw new Error('VITE_LOGIN_ENDPOINT is required in .env file')
@@ -75,7 +66,6 @@ const getConfig = (): AppConfig => {
   return {
     port: portNumber,
     apiBaseUrl,
-    chatApiKey,
     env: import.meta.env.VITE_ENV || import.meta.env.MODE,
     userName: import.meta.env.VITE_USER_NAME,
     userAvatarUrl: import.meta.env.VITE_USER_AVATAR_URL,

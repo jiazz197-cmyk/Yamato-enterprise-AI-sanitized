@@ -49,6 +49,7 @@ import { RouterLink, useRouter } from 'vue-router'
 import { Input, useToast } from '@yamato/components'
 import { config } from '../config'
 import { login, getMe, saveUserRole } from '../services/auth'
+import { setAuthTokenToStorage } from '../services/token_storage'
 
 const router = useRouter()
 const { showSuccess, showError } = useToast()
@@ -67,11 +68,7 @@ const handleSubmit = async () => {
       password: password.value,
     })
 
-    try {
-      localStorage.setItem(config.authTokenStorageKey, result.access_token)
-    } catch {
-      // ignore storage error
-    }
+    setAuthTokenToStorage(result.access_token)
 
     try {
       const me = await getMe()

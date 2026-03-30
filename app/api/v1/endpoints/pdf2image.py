@@ -12,6 +12,7 @@ from app.integrations.ocr.pdf2image import pdf_to_images, pdf_to_single_image, g
 from app.integrations.ocr.image2url import upload_file_to_minio
 from app.core.executor import executor_manager, CancellationToken
 from app.core.dependencies import get_db
+from app.core.config import settings
 from app.core.storage import upload_stream_to_minio
 from app.models.orm.file_resource import FileResource
 from app.core.security import get_current_user, normalize_self_uploader
@@ -301,7 +302,7 @@ async def convert_pdf_to_images(
         raise
     except Exception as e:
         logger.error(f"启动 PDF 转图片任务失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"启动转换任务失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="启动转换任务失败")
 
 @router.get("/pdf/task/{task_id}")
 async def get_pdf_convert_task_status(
@@ -381,7 +382,7 @@ async def get_pdf_convert_task_status(
         raise
     except Exception as e:
         logger.error(f"获取 PDF 转图片任务状态失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"获取任务状态失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取任务状态失败")
 
 @router.get("/pdf/task/{task_id}/result")
 async def get_pdf_convert_task_result(
@@ -443,14 +444,14 @@ async def get_pdf_convert_task_result(
             logger.error(f"任务 {task_id} 执行失败: {e}")
             raise HTTPException(
                 status_code=500,
-                detail=f"任务执行失败: {str(e)}"
+                detail="任务执行失败"
             )
     
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"获取 PDF 转图片任务结果失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"获取任务结果失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取任务结果失败")
 
 @router.delete("/pdf/task/{task_id}")
 async def cancel_pdf_convert_task(
@@ -495,10 +496,13 @@ async def cancel_pdf_convert_task(
         raise
     except Exception as e:
         logger.error(f"取消 PDF 转图片任务失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"取消任务失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="取消任务失败")
 
 @router.post("/pdf/page-count")
-async def get_pdf_pages(file: UploadFile = File(...)) -> Dict[str, Any]:
+async def get_pdf_pages(
+    file: UploadFile = File(...),
+    _: User = Depends(get_current_user),
+) -> Dict[str, Any]:
     """
     快速获取 PDF 文件页数（同步接口，用于预览）
     
@@ -520,6 +524,12 @@ async def get_pdf_pages(file: UploadFile = File(...)) -> Dict[str, Any]:
         
         # 读取文件数据
         file_data = await file.read()
+        max_size = settings.MAX_FILE_SIZE
+        if len(file_data) > max_size:
+            raise HTTPException(
+                status_code=413,
+                detail="文件过大",
+            )
         
         # 获取页数
         page_count = get_pdf_page_count(file_data)
@@ -534,5 +544,5 @@ async def get_pdf_pages(file: UploadFile = File(...)) -> Dict[str, Any]:
         raise
     except Exception as e:
         logger.error(f"获取 PDF 页数失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"获取页数失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取页数失败")
 

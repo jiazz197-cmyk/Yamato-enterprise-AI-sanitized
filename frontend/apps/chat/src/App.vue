@@ -19,8 +19,11 @@
         <RouterLink class="sidebar-nav__item" active-class="is-active" to="/files">
           文件管理
         </RouterLink>
-        <RouterLink class="sidebar-nav__item" active-class="is-active" to="/policy">
+        <RouterLink class="sidebar-nav__item" active-class="is-active" to="/closing-form">
           报单填写
+        </RouterLink>
+        <RouterLink v-if="isAdminOrSuperuser" class="sidebar-nav__item" active-class="is-active" to="/collection2">
+          知识库管理
         </RouterLink>
         <RouterLink v-if="isSuperuser" class="sidebar-nav__item" active-class="is-active" to="/users">
           用户管理
@@ -58,7 +61,7 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { Sidebar, ConfirmDialog } from '@yamato/components'
 import { config } from './config'
 import { useIdleTimer } from './composables/useIdleTimer'
-import { readUserRole } from './services/auth'
+import { clearAuthTokenFromStorage } from './services/token_storage'
 
 const sidebarUserId = ref('')
 const sidebarUserName = ref('')
@@ -94,6 +97,7 @@ const readSidebarState = () => {
 const userName = computed(() => sidebarUserName.value || sidebarUserId.value || config.userName || '')
 const userAvatarUrl = computed(() => config.userAvatarUrl || '')
 const isSuperuser = computed(() => userRole.value === 'superuser')
+const isAdminOrSuperuser = computed(() => userRole.value === 'admin' || userRole.value === 'superuser')
 
 const route = useRoute()
 const router = useRouter()
@@ -116,8 +120,8 @@ const openLogoutDialog = () => {
 }
 
 const doLogout = async () => {
+  clearAuthTokenFromStorage()
   try {
-    localStorage.removeItem(config.authTokenStorageKey)
     localStorage.removeItem(config.settingsStorageKey)
   } catch {
     // ignore

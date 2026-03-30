@@ -57,5 +57,5 @@ def compress_chat_context(
         logger.error("Failed to compress context for conversation %s: %s", request.conversation_id, str(e))
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to compress context: {str(e)}"
+            detail="Failed to compress context"
         )

@@ -419,7 +419,7 @@ async def submit_document_processing(
     except Exception as e:
         logger.error(f"提交文档处理任务失败: {e}", exc_info=True)
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"提交任务失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="提交任务失败")
 
 
 @router.get("/status/{task_id}", response_model=TaskStatusResponse, summary="查询任务状态")
@@ -462,7 +462,7 @@ async def get_task_status(
         raise
     except Exception as e:
         logger.error(f"查询任务状态失败 {task_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"查询任务状态失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="查询任务状态失败")
 
 
 @router.get("/tasks", response_model=TaskListResponse, summary="获取任务列表")
@@ -514,7 +514,7 @@ async def list_tasks(
         raise
     except Exception as e:
         logger.error(f"获取任务列表失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"获取任务列表失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取任务列表失败")
 
 
 @router.post("/tasks/{task_id}/cancel", summary="取消任务")
@@ -572,7 +572,7 @@ async def cancel_task_endpoint(
         raise
     except Exception as e:
         logger.error(f"取消任务失败 {task_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"取消任务失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="取消任务失败")
 
 
 @router.delete("/tasks/{task_id}", summary="删除任务记录")
@@ -625,7 +625,7 @@ async def delete_task_endpoint(
         raise
     except Exception as e:
         logger.error(f"删除任务失败 {task_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"删除任务失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="删除任务失败")
 
 
 

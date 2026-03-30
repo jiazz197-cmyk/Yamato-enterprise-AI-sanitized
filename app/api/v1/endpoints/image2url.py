@@ -181,7 +181,7 @@ async def upload_image(
         raise
     except Exception as e:
         logger.error(f"启动图片上传任务失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"启动上传任务失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="启动上传任务失败")
 
 @router.get("/image/task/{task_id}")
 async def get_image_upload_task_status(
@@ -261,7 +261,7 @@ async def get_image_upload_task_status(
         raise
     except Exception as e:
         logger.error(f"获取图片上传任务状态失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"获取任务状态失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取任务状态失败")
 
 @router.get("/image/task/{task_id}/result")
 async def get_image_upload_task_result(
@@ -323,14 +323,14 @@ async def get_image_upload_task_result(
             logger.error(f"任务 {task_id} 执行失败: {e}")
             raise HTTPException(
                 status_code=500,
-                detail=f"任务执行失败: {str(e)}"
+                detail="任务执行失败"
             )
     
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"获取图片上传任务结果失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"获取任务结果失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取任务结果失败")
 
 @router.delete("/image/task/{task_id}")
 async def cancel_image_upload_task(
@@ -375,7 +375,7 @@ async def cancel_image_upload_task(
         raise
     except Exception as e:
         logger.error(f"取消图片上传任务失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"取消任务失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="取消任务失败")
 
 @router.get("/image/tasks/stats")
 async def get_image_upload_tasks_stats(
@@ -403,4 +403,4 @@ async def get_image_upload_tasks_stats(
     
     except Exception as e:
         logger.error(f"获取任务统计信息失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"获取统计信息失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取统计信息失败")

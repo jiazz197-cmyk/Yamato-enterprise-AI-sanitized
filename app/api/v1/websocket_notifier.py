@@ -6,6 +6,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, WebSocketExceptio
 from typing import Dict, Set
 import json
 import jwt
+import time
 from app.core.observer import TaskObserver, TaskEvent
 from app.core.logging import get_logger
 from app.core.config import settings
@@ -25,13 +26,25 @@ class WebSocketConnectionManager:
     def __init__(self):
         # {task_id: Set[WebSocket]}
         self.active_connections: Dict[str, Set[WebSocket]] = {}
+        # {client_ip: connection_count}
+        self.ip_connections: Dict[str, int] = {}
+        # {client_ip: {"window": int, "count": int}}
+        self.ip_message_counters: Dict[str, Dict[str, int]] = {}
 
-    async def connect(self, websocket: WebSocket, task_id: str):
+    async def connect(self, websocket: WebSocket, task_id: str, client_ip: str):
         """Connect client"""
+        current_count = self.ip_connections.get(client_ip, 0)
+        if current_count >= settings.WS_MAX_CONNECTIONS_PER_IP:
+            raise WebSocketException(
+                code=status.WS_1008_POLICY_VIOLATION,
+                reason="连接数超过限制",
+            )
         await websocket.accept()
         if task_id not in self.active_connections:
             self.active_connections[task_id] = set()
         self.active_connections[task_id].add(websocket)
+        self.ip_connections[client_ip] = current_count + 1
+        websocket.state.client_ip = client_ip
         logger.info(
             f"✅ WebSocket client connected: task_id={task_id}, "
             f"connections={len(self.active_connections[task_id])}"
@@ -43,7 +56,24 @@ class WebSocketConnectionManager:
             self.active_connections[task_id].discard(websocket)
             if not self.active_connections[task_id]:
                 del self.active_connections[task_id]
+            client_ip = getattr(websocket.state, "client_ip", "")
+            if client_ip:
+                next_count = max(self.ip_connections.get(client_ip, 1) - 1, 0)
+                if next_count == 0:
+                    self.ip_connections.pop(client_ip, None)
+                else:
+                    self.ip_connections[client_ip] = next_count
             logger.info(f"❌ WebSocket client disconnected: task_id={task_id}")
+
+    def allow_message(self, client_ip: str) -> bool:
+        """Simple fixed-window message limiter by client IP."""
+        current_window = int(time.time()) // 60
+        counter = self.ip_message_counters.get(client_ip)
+        if not counter or counter["window"] != current_window:
+            self.ip_message_counters[client_ip] = {"window": current_window, "count": 1}
+            return True
+        counter["count"] += 1
+        return counter["count"] <= settings.WS_MAX_MESSAGES_PER_MINUTE
 
     async def send_to_task(self, task_id: str, message: dict):
         """Send message to all clients subscribed to a specific task"""
@@ -158,6 +188,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str):
     - task_completed: Task completed
     - task_failed: Task failed
     """
+    client_ip = (websocket.client.host if websocket.client else "") or "unknown"
     token = websocket.query_params.get("token")
     if not token:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="缺少认证令牌")
@@ -186,7 +217,11 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="无权订阅该任务")
         return
 
-    await ws_manager.connect(websocket, task_id)
+    try:
+        await ws_manager.connect(websocket, task_id, client_ip)
+    except WebSocketException as exc:
+        await websocket.close(code=exc.code, reason=exc.reason or "连接被拒绝")
+        return
 
     try:
         # Send welcome message
@@ -198,6 +233,12 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str):
         
         # Keep connection alive and receive client messages (optional)
         while True:
+            if not ws_manager.allow_message(client_ip):
+                await websocket.close(
+                    code=status.WS_1008_POLICY_VIOLATION,
+                    reason="消息频率超过限制",
+                )
+                break
             data = await websocket.receive_text()
             logger.debug(f"Received client message: {data}")
             

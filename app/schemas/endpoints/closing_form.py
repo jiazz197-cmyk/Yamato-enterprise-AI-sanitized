@@ -99,3 +99,30 @@ class ClosingFormApproveResponse(BaseModel):
 
     success: bool = True
     message: str = "审批通过"
+
+
+class ClosingFormDeleteResponse(BaseModel):
+    """删除响应"""
+
+    success: bool = True
+    message: str = "删除成功"
+    deleted_id: str
+
+
+class Collection2Record(BaseModel):
+    """data_doc_collection_2 单条记录"""
+
+    id: str
+    text: str
+    file_name: Optional[str] = None
+    upload_time: Optional[str] = None
+    uploader: str = ""
+    status: str = "approved"
+
+
+class Collection2ListResponse(BaseModel):
+    """data_doc_collection_2 列表响应"""
+
+    success: bool = True
+    total: int = 0
+    records: list[Collection2Record] = []

@@ -247,14 +247,19 @@ async def lifespan(app: FastAPI):
         print("🛑 关闭完成\n")
 
 def create_app() -> FastAPI:
+    is_production = str(settings.ENVIRONMENT).strip().lower() in {"production", "prod"}
+    docs_url = None if is_production else f"{settings.API_V1_STR}/docs"
+    redoc_url = None if is_production else f"{settings.API_V1_STR}/redoc"
+    openapi_url = None if is_production else f"{settings.API_V1_STR}/openapi.json"
+
     app = FastAPI(
         title=settings.PROJECT_NAME,
         description=settings.DESCRIPTION,
         version=settings.VERSION,
         debug=settings.DEBUG,
-        docs_url=f"{settings.API_V1_STR}/docs",
-        redoc_url=f"{settings.API_V1_STR}/redoc",
-        openapi_url=f"{settings.API_V1_STR}/openapi.json",
+        docs_url=docs_url,
+        redoc_url=redoc_url,
+        openapi_url=openapi_url,
         lifespan=lifespan,
     )
 

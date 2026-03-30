@@ -9,10 +9,10 @@
         :editing-item-id="editingChatId"
         :editing-title="editingChatTitle"
         :rename-api-base-url="config.apiBaseUrl"
-        :rename-api-token="config.chatApiKey"
+        :rename-api-token="''"
         :rename-user="chatSettings.user"
         :delete-api-base-url="config.apiBaseUrl"
-        :delete-api-token="config.chatApiKey"
+        :delete-api-token="''"
         :delete-user="chatSettings.user"
         @update:editingTitle="editingChatTitle = $event"
         @create="createNewChat"
@@ -223,6 +223,7 @@ import {
 } from '@yamato/components'
 import { config } from '../config'
 import { sendChatMessage, getConversations, getMessages, stopChatMessage, compressContext } from '../services/chat'
+import { getAuthTokenFromStorage } from '../services/token_storage'
 import type { Conversation, SearchMode } from '../types/chat'
 
 interface Message {
@@ -396,11 +397,7 @@ const summaryUserId = computed(() => {
 })
 
 const authToken = computed(() => {
-  try {
-    return localStorage.getItem(config.authTokenStorageKey) || ''
-  } catch {
-    return ''
-  }
+  return getAuthTokenFromStorage() || ''
 })
 
 const { showSuccess, showError } = useToast()
@@ -513,15 +510,11 @@ const openKnowledgeUpload = () => {
 }
 
 const getUploadAuthorization = (): string => {
-  try {
-    const token = localStorage.getItem(config.authTokenStorageKey)
-    if (token) {
-      return `Bearer ${token}`
-    }
-  } catch {
-    // ignore
+  const token = getAuthTokenFromStorage()
+  if (token) {
+    return `Bearer ${token}`
   }
-  return `Bearer ${config.chatApiKey}`
+  throw new Error('未登录或登录态已失效，请重新登录')
 }
 
 const clearKnowledgeTaskPolling = () => {

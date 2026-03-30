@@ -328,6 +328,15 @@
                   <span class="status-badge__dot"></span>
                   {{ record.status === 'approved' ? '已通过' : record.status === 'rejected' ? '不通过' : '待审批' }}
                 </span>
+                <div v-if="isSuperuser && record.status === 'approved'" class="action-buttons">
+                  <button
+                    class="approve-btn reject-btn"
+                    :disabled="deletingApprovedId === record.id"
+                    @click.stop="openDeleteApprovedDialog(record.id)"
+                  >
+                    {{ deletingApprovedId === record.id ? '...' : '删除' }}
+                  </button>
+                </div>
                 <div v-if="isAdmin && record.status === 'pending'" class="action-buttons">
                   <button
                     class="approve-btn reject-btn"
@@ -381,15 +390,30 @@
       </div>
 
     </div>
+
+    <ConfirmDialog
+      v-model="showDeleteApprovedDialog"
+      title="删除已通过表单"
+      message="确定要删除这条已通过表单吗？此操作无法撤销。"
+      type="danger"
+      confirm-text="删除"
+      cancel-text="取消"
+      @confirm="confirmDeleteApproved"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useToast } from '@yamato/components'
-import { apiRequest } from '../services/api'
+import { ConfirmDialog, useToast } from '@yamato/components'
+import {
+  approveClosingForm,
+  deleteApprovedClosingForm,
+  listClosingFormRecords,
+  rejectClosingForm,
+  submitClosingForm,
+} from '../services/closing_form'
 import { readUserRole } from '../services/auth'
-import { config } from '../config'
 
 interface FormData {
   closing_date: string
@@ -435,6 +459,7 @@ const isAdmin = computed(() => {
   const role = readUserRole()
   return role === 'admin' || role === 'superuser'
 })
+const isSuperuser = computed(() => readUserRole() === 'superuser')
 
 const createEmptyForm = (): FormData => ({
   closing_date: '',
@@ -466,6 +491,9 @@ const records = ref<FormRecord[]>([])
 const loadingRecords = ref(false)
 const expandedId = ref<string | null>(null)
 const approvingId = ref<string | null>(null)
+const deletingApprovedId = ref<string | null>(null)
+const showDeleteApprovedDialog = ref(false)
+const approvedToDelete = ref<string | null>(null)
 
 const resetForm = () => {
   form.value = createEmptyForm()
@@ -474,11 +502,7 @@ const resetForm = () => {
 const submitForm = async () => {
   submitting.value = true
   try {
-    await apiRequest('/closing-form/submit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(form.value),
-    })
+    await submitClosingForm(form.value as unknown as Record<string, unknown>)
     showSuccess('提交成功，等待审批')
     resetForm()
   } catch (err: any) {
@@ -491,8 +515,7 @@ const submitForm = async () => {
 const loadRecords = async () => {
   loadingRecords.value = true
   try {
-    const data = await apiRequest<{ records: FormRecord[] }>('/closing-form/list')
-    records.value = data.records ?? []
+    records.value = await listClosingFormRecords()
   } catch (err: any) {
     showError(err?.message || '加载失败')
   } finally {
@@ -503,7 +526,7 @@ const loadRecords = async () => {
 const approveRecord = async (formId: string) => {
   approvingId.value = formId
   try {
-    await apiRequest(`/closing-form/approve/${formId}`, { method: 'PATCH' })
+    await approveClosingForm(formId)
     const idx = records.value.findIndex((r) => r.id === formId)
     if (idx !== -1) records.value[idx] = { ...records.value[idx], status: 'approved' }
     showSuccess('已审批通过')
@@ -517,7 +540,7 @@ const approveRecord = async (formId: string) => {
 const rejectRecord = async (formId: string) => {
   approvingId.value = formId
   try {
-    await apiRequest(`/closing-form/reject/${formId}`, { method: 'PATCH' })
+    await rejectClosingForm(formId)
     const idx = records.value.findIndex((r) => r.id === formId)
     if (idx !== -1) records.value[idx] = { ...records.value[idx], status: 'rejected' }
     showSuccess('已审批不通过')
@@ -525,6 +548,34 @@ const rejectRecord = async (formId: string) => {
     showError(err?.message || '操作失败')
   } finally {
     approvingId.value = null
+  }
+}
+
+const openDeleteApprovedDialog = (formId: string) => {
+  approvedToDelete.value = formId
+  showDeleteApprovedDialog.value = true
+}
+
+const confirmDeleteApproved = async () => {
+  if (!approvedToDelete.value) {
+    return
+  }
+
+  const formId = approvedToDelete.value
+  deletingApprovedId.value = formId
+  try {
+    await deleteApprovedClosingForm(formId)
+    records.value = records.value.filter((record) => record.id !== formId)
+    if (expandedId.value === formId) {
+      expandedId.value = null
+    }
+    showSuccess('已删除已通过表单')
+  } catch (err: any) {
+    showError(err?.message || '删除失败')
+  } finally {
+    deletingApprovedId.value = null
+    approvedToDelete.value = null
+    showDeleteApprovedDialog.value = false
   }
 }
 

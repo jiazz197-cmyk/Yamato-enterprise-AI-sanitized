@@ -1,9 +1,10 @@
 import { config } from '../config'
 import type { ApiError } from '../types/chat'
+import { clearAuthTokenFromStorage, getAuthTokenFromStorage } from './token_storage'
 
 const handleUnauthorized = (): void => {
+  clearAuthTokenFromStorage()
   try {
-    localStorage.removeItem(config.authTokenStorageKey)
     localStorage.removeItem(config.settingsStorageKey)
   } catch {
     // ignore storage errors
@@ -15,21 +16,15 @@ const handleUnauthorized = (): void => {
 }
 
 const getAuthToken = (): string | null => {
-  try {
-    const token = localStorage.getItem(config.authTokenStorageKey)
-    return token || null
-  } catch {
-    return null
-  }
+  return getAuthTokenFromStorage()
 }
 
 /**
- * 创建标准请求头
- * 聊天接口使用 Chat API Key
+ * 创建聊天接口请求头
+ * Dify 鉴权由代理层注入，前端仅发送业务参数
  */
 export const createChatHeaders = (): HeadersInit => {
   return {
-    Authorization: `Bearer ${config.chatApiKey}`,
     'Content-Type': 'application/json',
   }
 }

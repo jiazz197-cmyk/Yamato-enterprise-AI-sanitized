@@ -117,7 +117,7 @@ def create_chat_summary(
         logger.error(f"Failed to create chat summary: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to create chat summary: {str(e)}"
+            detail="Failed to create chat summary"
         )
 
 
@@ -194,5 +194,5 @@ def query_user_summary(
         logger.error(f"Failed to query user summary: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to query user summary: {str(e)}"
+            detail="Failed to query user summary"
         )

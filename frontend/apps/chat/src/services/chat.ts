@@ -1,5 +1,6 @@
 import { config } from '../config'
 import { createChatHeaders } from './api'
+import { getAuthTokenFromStorage } from './token_storage'
 import type {
   SearchMode,
   SSEEvent,
@@ -171,11 +172,7 @@ const isUUID = (value: string | undefined): value is string => {
 }
 
 const getAuthToken = (): string => {
-  try {
-    return localStorage.getItem(config.authTokenStorageKey) || ''
-  } catch {
-    return ''
-  }
+  return getAuthTokenFromStorage() || ''
 }
 
 /**
