@@ -224,6 +224,7 @@ import {
 import { config } from '../config'
 import { sendChatMessage, getConversations, getMessages, stopChatMessage, compressContext } from '../services/chat'
 import { getAuthTokenFromStorage } from '../services/token_storage'
+import { countTokens } from '../utils/token_counter'
 import type { Conversation, SearchMode } from '../types/chat'
 
 interface Message {
@@ -374,6 +375,49 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
     return error.message
   }
   return fallback
+}
+
+const stripThinkContent = (raw: string): string => {
+  if (!raw) {
+    return ''
+  }
+
+  // Normalize escaped think tags to raw tags so one parser can handle both.
+  const normalized = raw
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+
+  const openTagPattern = /^<\s*think\s*>/i
+  const closeTagPattern = /^<\s*\/\s*think\s*>/i
+
+  let inThinkBlock = false
+  let cursor = 0
+  let visibleText = ''
+
+  while (cursor < normalized.length) {
+    const tail = normalized.slice(cursor)
+    const openMatch = openTagPattern.exec(tail)
+    const closeMatch = closeTagPattern.exec(tail)
+
+    if (!inThinkBlock && openMatch) {
+      inThinkBlock = true
+      cursor += openMatch[0].length
+      continue
+    }
+
+    if (closeMatch) {
+      inThinkBlock = false
+      cursor += closeMatch[0].length
+      continue
+    }
+
+    if (!inThinkBlock) {
+      visibleText += normalized[cursor]
+    }
+    cursor += 1
+  }
+
+  return visibleText
 }
 
 const showSearchDropdown = ref(false)
@@ -869,66 +913,13 @@ const sendMessage = async () => {
             flushRenderImmediately()
           }
           
-          // 更新 Token 消耗，并扣除 <think>...</think> 标签内的内容
-          // 由于发现如果不用累加会导致多轮对话后token计数卡在固定值（不累积之前的增量），
-          // 所以我们恢复累加逻辑，将本次产生（包含 prompt 和 completion）扣除思考 token 后，
-          // 减去上一轮的数值得到的“增量”加到全局 tokenUsage 中，或者直接累加本次纯增加的量。
-          // 最简单的近似做法：将用户输入字数与 AI 本次去除 think 后的生成字数合算成 token 增量。
-          const usage = (data as any)?.metadata?.usage
-          console.debug('[TokenDebug] onEnd data:', data)
-
-          let thinkTokens = 0
-          let thinkText = ''
-          let searchIdx = 0
-
-          // 鲁棒的提取：处理多个闭合、未闭合的 <think> 标签
-          while (true) {
-            const startIdx = targetContent.indexOf('<think>', searchIdx)
-            if (startIdx === -1) break
-            const endIdx = targetContent.indexOf('</think>', startIdx)
-            if (endIdx === -1) {
-              thinkText += targetContent.slice(startIdx)
-              break
-            } else {
-              thinkText += targetContent.slice(startIdx, endIdx + 8)
-              searchIdx = endIdx + 8
-            }
-          }
-
-          if (thinkText) {
-            thinkTokens = Math.ceil(thinkText.length * 1.0)
-          }
-
-          // 默认使用本地估算，确保 usage 缺失时也持续累计
-          const cleanAiText = targetContent.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<think>[\s\S]*/gi, '')
-          const aiTokens = Math.ceil(cleanAiText.length * 1.2)
-          const userTokens = Math.ceil(currentInput.length * 1.2)
-          let increment = aiTokens + userTokens
-
-          // usage 可用时优先使用后端统计值，并扣除 think 区段估算
-          const promptTokens = Number((usage as any)?.prompt_tokens ?? NaN)
-          const completionTokens = Number((usage as any)?.completion_tokens ?? NaN)
-          if (Number.isFinite(promptTokens) && Number.isFinite(completionTokens)) {
-            const usageIncrement = Math.max(0, Math.ceil(promptTokens + completionTokens - thinkTokens))
-            if (usageIncrement > 0) {
-              increment = usageIncrement
-            }
-          } else {
-            console.warn('[TokenDebug] usage not found in metadata, fallback to local estimation')
-          }
-
-          console.debug('[TokenDebug] increment calculation:', {
-            promptTokens,
-            completionTokens,
-            thinkTokens,
-            aiTokens,
-            userTokens,
-            increment,
-            oldTokenUsage: tokenUsage.value,
-            newTokenUsage: tokenUsage.value + increment,
-            targetContentLength: targetContent.length,
-            currentInputLength: currentInput.length
-          })
+          // Token统计仅计入可见回答文本，不计入 <think>...</think> 思考内容。
+          // 流式场景下后端 usage 往往包含 think token，前端无法稳定精确扣减，
+          // 因此统一采用前端可见文本估算，保证口径一致。
+          const cleanAiText = stripThinkContent(targetContent)
+          const aiTokens = countTokens(cleanAiText)
+          const userTokens = countTokens(currentInput)
+          const increment = aiTokens + userTokens
 
           tokenUsage.value += increment
 
