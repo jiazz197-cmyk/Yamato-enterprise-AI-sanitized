@@ -12,6 +12,7 @@
 import asyncio
 import json
 import threading
+import time
 import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -45,13 +46,27 @@ class MemoryTaskStorage:
     """内存任务存储（Redis 不可用时的备用方案）"""
     
     def __init__(self):
-        self._tasks: Dict[str, TaskStatus] = {}
+        self._tasks: Dict[str, Any] = {}
+        self._expires_at: Dict[str, float] = {}
         self.default_ttl = 3600 * 24  # 24小时
+
+    def _prune_expired(self) -> None:
+        now = time.time()
+        expired_keys = [key for key, expires_at in self._expires_at.items() if expires_at <= now]
+        for key in expired_keys:
+            self._tasks.pop(key, None)
+            self._expires_at.pop(key, None)
     
     async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
         """设置任务数据"""
         try:
+            self._prune_expired()
             self._tasks[key] = value
+            expire_after = self.default_ttl if ttl is None else ttl
+            if expire_after and expire_after > 0:
+                self._expires_at[key] = time.time() + float(expire_after)
+            else:
+                self._expires_at.pop(key, None)
             return True
         except Exception as e:
             logger.error(f"内存存储设置失败 {key}: {e}")
@@ -60,6 +75,7 @@ class MemoryTaskStorage:
     async def get(self, key: str) -> Optional[Any]:
         """获取任务数据"""
         try:
+            self._prune_expired()
             return self._tasks.get(key)
         except Exception as e:
             logger.error(f"内存存储获取失败 {key}: {e}")
@@ -68,8 +84,10 @@ class MemoryTaskStorage:
     async def delete(self, key: str) -> bool:
         """删除任务数据"""
         try:
+            self._prune_expired()
             if key in self._tasks:
                 del self._tasks[key]
+                self._expires_at.pop(key, None)
                 return True
             return False
         except Exception as e:
@@ -79,6 +97,7 @@ class MemoryTaskStorage:
     async def keys(self, pattern: str) -> list:
         """获取匹配的键列表"""
         try:
+            self._prune_expired()
             # 简单的前缀匹配
             prefix = pattern.replace("*", "")
             return [key for key in self._tasks.keys() if key.startswith(prefix)]
@@ -139,6 +158,9 @@ class TaskManager:
         # ✨ 观察者模式支持（可选特性）
         self._subject = TaskSubject()
         self._observer_enabled = True  # 全局开关
+        # 主事件循环桥接（用于线程任务回投事件到主循环）
+        self._notify_loop = None
+        self._bridge_subject = self._subject
 
         # 尝试初始化存储
         self._try_init_storage()
@@ -239,6 +261,11 @@ class TaskManager:
         stats = self._subject.get_stats()
         stats["observer_enabled"] = self._observer_enabled
         return stats
+
+    def set_notify_loop(self, loop) -> None:
+        """设置主事件循环，供线程任务回投观察者事件。"""
+        self._notify_loop = loop
+        self._bridge_subject = self._subject
     
     async def remove_all_observers(self) -> int:
         """
@@ -287,6 +314,24 @@ class TaskManager:
             )
             # 🐛 调试日志：记录事件发布
             logger.debug(f"📡 准备发布事件: {event_type.value} [task_id={task_id}]")
+
+            notify_loop = getattr(self, "_notify_loop", None)
+            bridge_subject = getattr(self, "_bridge_subject", self._subject)
+            if notify_loop is not None:
+                try:
+                    current_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    current_loop = None
+
+                if current_loop is not notify_loop:
+                    # 在线程事件循环中，将通知回投到主事件循环，避免跨循环访问 WS/Lock。
+                    asyncio.run_coroutine_threadsafe(
+                        bridge_subject.notify(event),
+                        notify_loop,
+                    )
+                    logger.debug(f"✅ 事件已桥接到主循环: {event_type.value} [task_id={task_id}]")
+                    return
+
             await self._subject.notify(event)
             logger.debug(f"✅ 事件发布完成: {event_type.value} [task_id={task_id}]")
         except Exception as e:
@@ -644,18 +689,21 @@ class TaskManager:
             instance.storage = MemoryTaskStorage()
             instance.storage_type = "memory"
         
-        # ✨ 关键修复：共享全局单例的观察者（确保事件能被发布到 WebSocket）
-        # 虽然 Redis 连接是线程独立的，但观察者可以共享（观察者内部会处理线程安全）
+        # 线程实例使用独立 subject，事件通过桥接回投到全局主循环。
         global_instance = TaskManager._instance
         if global_instance and hasattr(global_instance, '_subject'):
-            instance._subject = global_instance._subject
+            instance._subject = TaskSubject()
             instance._observer_enabled = global_instance._observer_enabled
+            instance._notify_loop = getattr(global_instance, "_notify_loop", None)
+            instance._bridge_subject = global_instance._subject
             observer_count = len(global_instance._subject._observers) if hasattr(global_instance._subject, '_observers') else 0
-            logger.info(f"✨ 线程安全实例已共享全局观察者（{observer_count} 个观察者）")
+            logger.info(f"✨ 线程安全实例已启用主循环桥接（{observer_count} 个观察者）")
         else:
             # 如果全局实例还没有观察者，初始化空的观察者
             instance._subject = TaskSubject()
             instance._observer_enabled = True
+            instance._notify_loop = None
+            instance._bridge_subject = instance._subject
             logger.warning("⚠️  线程安全实例创建了独立观察者（全局实例不可用）")
         
         return instance

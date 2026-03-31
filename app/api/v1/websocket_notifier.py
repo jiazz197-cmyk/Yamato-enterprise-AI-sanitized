@@ -82,8 +82,9 @@ class WebSocketConnectionManager:
 
         message_text = json.dumps(message, ensure_ascii=False)
         disconnected = []
+        subscribers = list(self.active_connections.get(task_id, set()))
 
-        for websocket in self.active_connections[task_id]:
+        for websocket in subscribers:
             try:
                 await websocket.send_text(message_text)
                 logger.debug(
@@ -200,8 +201,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str):
         await websocket.close(code=exc.code, reason=exc.reason or "认证失败")
         return
 
-    task_owner_map = getattr(executor_manager, "_task_owner_map", {})
-    owner_id = str(task_owner_map.get(task_id, "")).strip()
+    owner_id = executor_manager.get_task_owner(task_id)
 
     if not owner_id:
         task_status = await task_manager.get_task_status(task_id)

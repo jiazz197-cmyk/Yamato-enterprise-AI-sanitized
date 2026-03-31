@@ -6,14 +6,13 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, File, UploadFile, Query, Depends, status
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
 from app.integrations.ocr.pdf2image import pdf_to_images, pdf_to_single_image, get_pdf_page_count
 from app.integrations.ocr.image2url import upload_file_to_minio
 from app.core.executor import executor_manager, CancellationToken
-from app.core.dependencies import get_db
 from app.core.config import settings
 from app.core.storage import upload_stream_to_minio
+from app.core.database import SessionLocal
 from app.models.orm.file_resource import FileResource
 from app.core.security import get_current_user, normalize_self_uploader
 from app.models.orm.platform.user import User, UserRole
@@ -72,7 +71,6 @@ def background_pdf_convert_task(
     upload_to_minio: bool = True,
     file_name_prefix: Optional[str] = None,
     uploader: str = "anonymous",
-    db: Session = None
 ) -> Dict[str, Any]:
     """
     后台执行 PDF 转图片任务（使用 ExecutorManager）
@@ -89,7 +87,6 @@ def background_pdf_convert_task(
         upload_to_minio: 是否上传到 MinIO
         file_name_prefix: 文件名前缀（可选）
         uploader: 上传者标识
-        db: 数据库会话
     
     Returns:
         转换结果字典
@@ -137,33 +134,33 @@ def background_pdf_convert_task(
         # 处理转换结果
         images_info = []
         base_filename = os.path.splitext(original_filename)[0]
+        db_session = SessionLocal()
         
-        for idx, (img_bytes, suggested_filename) in enumerate(image_results, start=1):
-            # 检查是否被取消
-            if token.is_cancelled():
-                logger.warning(f"任务 {task_id} 在处理第 {idx} 张图片时被取消")
-                return {"status": "cancelled", "message": "任务已取消"}
-            
-            page_num = (first_page or 1) + idx - 1
-            
-            # 生成文件名
-            filename = f"{base_filename}_page_{page_num:03d}.jpg"
-            
-            url = None
-            file_id = None
-            if upload_to_minio:
-                # 生成唯一文件名
-                unique_filename = f"{uuid.uuid4().hex}_{filename}"
-                if file_name_prefix:
-                    unique_filename = f"{file_name_prefix}/{unique_filename}"
-                # 统一存入 temp 目录
-                unique_filename = f"temp/{unique_filename}"
+        try:
+            for idx, (img_bytes, suggested_filename) in enumerate(image_results, start=1):
+                # 检查是否被取消
+                if token.is_cancelled():
+                    logger.warning(f"任务 {task_id} 在处理第 {idx} 张图片时被取消")
+                    return {"status": "cancelled", "message": "任务已取消"}
                 
-                logger.info(f"上传图片 {idx}/{len(image_results)}: {unique_filename}")
-                url = upload_file_to_minio(img_bytes, unique_filename)
+                page_num = (first_page or 1) + idx - 1
                 
-                # 如果提供了数据库会话，则保存文件记录
-                if db:
+                # 生成文件名
+                filename = f"{base_filename}_page_{page_num:03d}.jpg"
+                
+                url = None
+                file_id = None
+                if upload_to_minio:
+                    # 生成唯一文件名
+                    unique_filename = f"{uuid.uuid4().hex}_{filename}"
+                    if file_name_prefix:
+                        unique_filename = f"{file_name_prefix}/{unique_filename}"
+                    # 统一存入 temp 目录
+                    unique_filename = f"temp/{unique_filename}"
+                    
+                    logger.info(f"上传图片 {idx}/{len(image_results)}: {unique_filename}")
+                    url = upload_file_to_minio(img_bytes, unique_filename)
+                    
                     try:
                         file_record = FileResource(
                             file_name=filename,
@@ -173,27 +170,29 @@ def background_pdf_convert_task(
                             file_size=len(img_bytes),
                             uploader=uploader,
                         )
-                        db.add(file_record)
-                        db.commit()
-                        db.refresh(file_record)
+                        db_session.add(file_record)
+                        db_session.commit()
+                        db_session.refresh(file_record)
                         file_id = file_record.id
                         logger.info(f"文件记录已保存到数据库: ID={file_id}, 文件名={filename}")
                     except Exception as e:
                         logger.error(f"保存文件记录到数据库失败: {e}", exc_info=True)
-                        db.rollback()
+                        db_session.rollback()
                         # 继续执行，不中断任务
+                    
+                    filename = unique_filename
                 
-                filename = unique_filename
-            
-            images_info.append(
-                ImageInfo(
-                    page_number=page_num,
-                    filename=filename,
-                    url=url,
-                    file_size=len(img_bytes),
-                    file_id=file_id
-                ).model_dump()
-            )
+                images_info.append(
+                    ImageInfo(
+                        page_number=page_num,
+                        filename=filename,
+                        url=url,
+                        file_size=len(img_bytes),
+                        file_id=file_id
+                    ).model_dump()
+                )
+        finally:
+            db_session.close()
         
         # 构建结果
         result = {
@@ -224,7 +223,6 @@ async def convert_pdf_to_images(
     file: UploadFile = File(...),
     request: PdfConvertRequest = PdfConvertRequest(),
     uploader: str = Query(default="anonymous", description="上传者标识（仅允许传本人信息）"),
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> PdfConvertResponse:
     """
@@ -234,7 +232,6 @@ async def convert_pdf_to_images(
         file: 待转换的 PDF 文件
         request: 转换配置参数
         uploader: 上传者标识（可选，默认为 anonymous）
-        db: 数据库会话
     
     Returns:
         包含任务ID的响应（客户端可通过 task_id 查询结果）
@@ -282,14 +279,9 @@ async def convert_pdf_to_images(
             request.upload_to_minio,
             request.file_name_prefix,
             normalized_uploader,  # 上传者标识（已规范化）
-            db  # 数据库会话
         )
 
-        task_owner_map = getattr(executor_manager, "_task_owner_map", None)
-        if task_owner_map is None:
-            task_owner_map = {}
-            setattr(executor_manager, "_task_owner_map", task_owner_map)
-        task_owner_map[task_id] = str(current_user.id)
+        executor_manager.set_task_owner(task_id, str(current_user.id))
 
         logger.info(f"启动 PDF 转图片任务: {task_id}")
         return PdfConvertResponse(
@@ -325,8 +317,7 @@ async def get_pdf_convert_task_status(
         if not future:
             raise HTTPException(status_code=404, detail="任务不存在")
         
-        task_owner_map = getattr(executor_manager, "_task_owner_map", {})
-        owner_id = str(task_owner_map.get(task_id, "")).strip()
+        owner_id = executor_manager.get_task_owner(task_id)
         if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该任务")
 
@@ -403,8 +394,7 @@ async def get_pdf_convert_task_result(
         if not future:
             raise HTTPException(status_code=404, detail="任务不存在")
         
-        task_owner_map = getattr(executor_manager, "_task_owner_map", {})
-        owner_id = str(task_owner_map.get(task_id, "")).strip()
+        owner_id = executor_manager.get_task_owner(task_id)
         if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该任务")
 
@@ -472,8 +462,7 @@ async def cancel_pdf_convert_task(
         if not future:
             raise HTTPException(status_code=404, detail="任务不存在")
         
-        task_owner_map = getattr(executor_manager, "_task_owner_map", {})
-        owner_id = str(task_owner_map.get(task_id, "")).strip()
+        owner_id = executor_manager.get_task_owner(task_id)
         if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权取消该任务")
 

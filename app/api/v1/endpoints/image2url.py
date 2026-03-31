@@ -164,11 +164,7 @@ async def upload_image(
         )
 
         # 记录任务归属，用于后续状态查询鉴权
-        task_owner_map = getattr(executor_manager, "_task_owner_map", None)
-        if task_owner_map is None:
-            task_owner_map = {}
-            setattr(executor_manager, "_task_owner_map", task_owner_map)
-        task_owner_map[task_id] = str(current_user.id)
+        executor_manager.set_task_owner(task_id, str(current_user.id))
         
         logger.info(f"启动图片上传任务: {task_id}")
         return ImageUploadResponse(
@@ -204,8 +200,7 @@ async def get_image_upload_task_status(
         if not future:
             raise HTTPException(status_code=404, detail="任务不存在")
 
-        task_owner_map = getattr(executor_manager, "_task_owner_map", {})
-        owner_id = str(task_owner_map.get(task_id, "")).strip()
+        owner_id = executor_manager.get_task_owner(task_id)
         if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该任务")
         
@@ -282,8 +277,7 @@ async def get_image_upload_task_result(
         if not future:
             raise HTTPException(status_code=404, detail="任务不存在")
 
-        task_owner_map = getattr(executor_manager, "_task_owner_map", {})
-        owner_id = str(task_owner_map.get(task_id, "")).strip()
+        owner_id = executor_manager.get_task_owner(task_id)
         if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该任务结果")
         
@@ -351,8 +345,7 @@ async def cancel_image_upload_task(
         if not future:
             raise HTTPException(status_code=404, detail="任务不存在")
 
-        task_owner_map = getattr(executor_manager, "_task_owner_map", {})
-        owner_id = str(task_owner_map.get(task_id, "")).strip()
+        owner_id = executor_manager.get_task_owner(task_id)
         if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权取消该任务")
         

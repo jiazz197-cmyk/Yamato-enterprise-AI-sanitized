@@ -71,6 +71,7 @@ const emit = defineEmits<{
 const loading = ref(false)
 const errorMessage = ref('')
 const summary = ref<UserSummaryResult | null>(null)
+let latestLoadRequestId = 0
 
 const normalizedUserId = computed(() => String(props.userId ?? '').trim())
 
@@ -80,9 +81,12 @@ const { loadUserSummary } = useChatSummary({
 })
 
 const loadSummary = async () => {
+  const requestId = ++latestLoadRequestId
   if (!normalizedUserId.value) {
-    summary.value = null
-    errorMessage.value = '缺少 user_id，无法读取摘要'
+    if (requestId === latestLoadRequestId) {
+      summary.value = null
+      errorMessage.value = '缺少 user_id，无法读取摘要'
+    }
     return
   }
 
@@ -90,12 +94,21 @@ const loadSummary = async () => {
   errorMessage.value = ''
 
   try {
-    summary.value = await loadUserSummary(normalizedUserId.value)
+    const result = await loadUserSummary(normalizedUserId.value)
+    if (requestId !== latestLoadRequestId) {
+      return
+    }
+    summary.value = result
   } catch (error) {
+    if (requestId !== latestLoadRequestId) {
+      return
+    }
     summary.value = null
     errorMessage.value = error instanceof Error ? error.message : '读取摘要失败'
   } finally {
-    loading.value = false
+    if (requestId === latestLoadRequestId) {
+      loading.value = false
+    }
   }
 }
 

@@ -125,8 +125,10 @@ class ExecutorManager:
             max_workers=self._max_workers,
             thread_name_prefix="bg_executor_"
         )
+        self._max_task_history = 60
         # ✅ 任务历史：保留 Future 供查询结果，不删除
         self._task_futures: Dict[str, Future] = {}
+        self._task_owner_map: Dict[str, str] = {}
         # ✅ 取消令牌：任务完成后可删除（节省内存）
         self._cancellation_tokens: Dict[str, CancellationToken] = {}
         self._lock = threading.Lock()
@@ -138,6 +140,39 @@ class ExecutorManager:
         
         self._initialized = True
         logger.info(f"初始化全局线程池: {self._max_workers} workers")
+
+    def _trim_task_history_locked(self):
+        """Keep bounded task history to avoid unbounded memory growth."""
+        while len(self._task_futures) > self._max_task_history:
+            oldest_task_id = None
+            for candidate_task_id, candidate_future in self._task_futures.items():
+                if candidate_future.done():
+                    oldest_task_id = candidate_task_id
+                    break
+            if oldest_task_id is None:
+                oldest_task_id = next(iter(self._task_futures))
+            self._task_futures.pop(oldest_task_id, None)
+            self._task_owner_map.pop(oldest_task_id, None)
+            self._cancellation_tokens.pop(oldest_task_id, None)
+
+    def set_task_owner(self, task_id: str, owner_id: str):
+        """Bind owner id to task and keep owner map bounded."""
+        normalized_owner = str(owner_id).strip()
+        if not normalized_owner:
+            return
+        with self._lock:
+            self._task_owner_map[task_id] = normalized_owner
+            self._trim_task_history_locked()
+
+    def get_task_owner(self, task_id: str) -> str:
+        """Read owner id for authorization checks."""
+        with self._lock:
+            return str(self._task_owner_map.get(task_id, "")).strip()
+
+    def remove_task_owner(self, task_id: str):
+        """Remove owner mapping when task metadata is purged."""
+        with self._lock:
+            self._task_owner_map.pop(task_id, None)
     
     def set_task_manager(self, task_manager: Optional['TaskManager'], auto_sync: bool = True):
         """
@@ -278,21 +313,20 @@ class ExecutorManager:
             should_sync = sync_to_task_manager if sync_to_task_manager is not None else self._auto_sync_status
             needs_task_manager = should_sync and self._task_manager is not None
             
-            # 🆕 如果需要同步，先标记任务为 running
-            if needs_task_manager:
-                try:
-                    # 在后台线程中运行异步操作
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(self._task_manager.start_task(task_id))
-                    loop.close()
-                    logger.debug(f"[{task_id}] 已同步状态到 TaskManager: running")
-                except Exception as e:
-                    logger.warning(f"[{task_id}] 同步启动状态到 TaskManager 失败: {e}")
-            
             # ✅ 包装函数，自动注入 token 作为第一个参数
             def wrapped_fn():
                 try:
+                    # 在线程执行上下文中同步启动状态，避免 submit 路径锁内阻塞。
+                    if needs_task_manager:
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(self._task_manager.start_task(task_id))
+                            loop.close()
+                            logger.debug(f"[{task_id}] 已同步状态到 TaskManager: running")
+                        except Exception as e:
+                            logger.warning(f"[{task_id}] 同步启动状态到 TaskManager 失败: {e}")
+
                     result = fn(token, *args, **kwargs)
                     
                     # 🆕 任务成功完成，同步到 TaskManager
@@ -354,6 +388,7 @@ class ExecutorManager:
             # 提交到线程池
             future = self._executor.submit(wrapped_fn)
             self._task_futures[task_id] = future
+            self._trim_task_history_locked()
             
             # ✅ 改进的清理回调（保留任务历史）
             def cleanup_callback(f):
@@ -603,6 +638,7 @@ class ExecutorManager:
             with self._lock:
                 # ✅ shutdown 时清理所有资源
                 self._task_futures.clear()
+                self._task_owner_map.clear()
                 self._cancellation_tokens.clear()
 
 

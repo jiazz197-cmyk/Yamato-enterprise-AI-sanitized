@@ -175,6 +175,21 @@ const getAuthToken = (): string => {
   return getAuthTokenFromStorage() || ''
 }
 
+const parseErrorResponseMessage = async (response: Response): Promise<string | undefined> => {
+  const contentType = response.headers.get('content-type') || ''
+  const isJsonResponse = contentType.toLowerCase().includes('application/json')
+
+  if (isJsonResponse) {
+    const payload = (await response.json().catch(() => null)) as
+      | { message?: unknown; detail?: unknown; error?: unknown }
+      | null
+    return pickFirstString([payload?.message, payload?.detail, payload?.error])
+  }
+
+  const rawText = await response.text().catch(() => '')
+  return rawText.trim() || undefined
+}
+
 /**
  * 发送聊天消息（SSE 流式响应）
  */
@@ -182,7 +197,8 @@ export const sendChatMessage = async (
   query: string,
   conversationId: string | undefined,
   settings: { user: string; search: SearchMode; background?: string },
-  callbacks: SSECallbacks
+  callbacks: SSECallbacks,
+  signal?: AbortSignal
 ): Promise<{ taskId: string; conversationId: string }> => {
   const url = `${config.apiBaseUrl}/chat-messages`
   const user = settings.user.trim()
@@ -215,11 +231,16 @@ export const sendChatMessage = async (
     method: 'POST',
     headers: createChatHeaders(),
     body: JSON.stringify(requestBody),
+    signal,
   })
   
   if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.message || '发送消息失败')
+    const backendMessage = await parseErrorResponseMessage(response)
+    if (response.status === 429) {
+      const rateLimitHint = backendMessage ? `429 ${backendMessage}` : '429 Too Many Requests'
+      throw new Error(rateLimitHint)
+    }
+    throw new Error(backendMessage || `HTTP ${response.status} 发送消息失败`)
   }
   
   const reader = response.body?.getReader()
@@ -236,6 +257,15 @@ export const sendChatMessage = async (
   let accumulatedContent = ''
   let hasStreamedContent = false
   let fallbackContent = ''
+  let endEventEmitted = false
+
+  const emitEndEvent = (event: RawSSEEvent) => {
+    if (endEventEmitted) {
+      return
+    }
+    endEventEmitted = true
+    callbacks.onEnd?.(event as SSEEvent)
+  }
 
   const processSSEBlock = (block: string) => {
     const parsed = parseSSEBlock(block)
@@ -302,7 +332,7 @@ export const sendChatMessage = async (
         callbacks.onMessage?.(accumulatedContent, data as SSEEvent)
         hasStreamedContent = true
       }
-      callbacks.onEnd?.(data as SSEEvent)
+      emitEndEvent(data)
     } else if (eventType === 'error') {
       callbacks.onError?.(new Error(typeof data.message === 'string' ? data.message : '请求失败'))
     }
@@ -340,7 +370,18 @@ export const sendChatMessage = async (
         event: 'message_end',
       } as SSEEvent)
     }
+
+    if (!endEventEmitted) {
+      emitEndEvent({
+        event: 'message_end',
+        task_id: taskId,
+        conversation_id: responseConversationId,
+      })
+    }
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error
+    }
     callbacks.onError?.(error as Error)
     throw error
   } finally {

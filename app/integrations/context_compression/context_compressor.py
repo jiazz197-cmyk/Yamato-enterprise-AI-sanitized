@@ -5,6 +5,7 @@ Fetches dialogue history from Dify.
 """
 import logging
 from typing import Dict, Any, List, Optional
+from urllib.parse import unquote
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -13,6 +14,14 @@ from app.core.config import settings
 from app.integrations.Chat_message_archive.message_extractor import MessageExtractor
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_user_id(raw_user_id: str) -> str:
+    value = (raw_user_id or "").strip()
+    if not value:
+        return value
+    # Decode once to handle already URL-encoded identifiers from client side.
+    return unquote(value).strip()
 
 class ContextCompressor:
     """
@@ -53,8 +62,10 @@ class ContextCompressor:
         import requests
         import ast
 
+        decoded_user_id = _decode_user_id(str(user_id))
+        # Dify variables endpoint: path uses conversation_id, query uses business user_id.
         url = f"{self.extractor.base_url}/conversations/{conversation_id}/variables"
-        params = {'user': user_id}
+        params = {'user': decoded_user_id}
         
         try:
             logger.info(f"Fetching conversation variables from {url} with params: {params}")
@@ -134,9 +145,10 @@ class ContextCompressor:
 
 **必须严格遵守以下规则：**
 1. **必须**严格按照以下三部分进行输出，且每部分必须包含标题（使用 ** 加粗）：
-   - **工作上下文（working context）**：当前的系统提示关键点、当前任务、以及最近N轮对话核心。
+   - **工作上下文（working context）**：当前的系统提示关键点、当前任务、以及最近5轮对话核心。
    - **会话摘要（session summary）**：把较早的对话压缩成“到目前为止发生了什么”。
    - **长期记忆（durable memory）**：提炼用户偏好、长期约束、术语表、项目背景、已确认决策。
+   - **记录最近一轮的待执行决策**
 2. **总字数控制在300字左右。** 优先保证信息完整性，绝对不能在话说到一半时截断。
 3. 使用极其简练的短句，保留关键实体和动作。
 4. 确保最终输出包含完整的三个部分，并在完成所有总结后结束。

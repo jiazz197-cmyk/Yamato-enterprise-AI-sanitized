@@ -85,11 +85,14 @@
 
                   <button
                     class="knowledge-upload-btn"
+                    :class="{ 'knowledge-upload-btn--uploading': isUploadingKnowledge }"
                     type="button"
                     :disabled="isUploadingKnowledge"
+                    :aria-busy="isUploadingKnowledge"
                     @click.stop="openKnowledgeUpload"
                   >
-                    {{ isUploadingKnowledge ? '上传中...' : '知识上传' }}
+                    <span v-if="isUploadingKnowledge" class="knowledge-upload-btn__spinner" aria-hidden="true"></span>
+                    <span>{{ isUploadingKnowledge ? '知识上传中' : '知识上传' }}</span>
                   </button>
 
                   <div class="token-indicator" v-if="tokenUsage > 0" title="当前会话 Token 消耗">
@@ -255,6 +258,7 @@ interface BackendMessageRecord {
 const inputMessage = ref('')
 const messages = ref<Message[]>([])
 const isLoading = ref(false)
+const isUnmounted = ref(false)
 const messageListRef = ref<HTMLElement | null>(null)
 const historyMessageListRef = ref<{ deleteConversation: (chatId: string) => Promise<boolean> } | null>(null)
 const isMounted = ref(false)
@@ -271,6 +275,7 @@ const chatHistory = ref<ChatHistoryItem[]>([
 ])
 const currentConversationId = ref<string | undefined>(undefined)
 const currentTaskId = ref<string | undefined>(undefined)
+const activeGenerationId = ref(0)
 const tokenUsage = ref<number>(0)
 const isCompressing = ref(false)
 const chatBackgrounds = ref<Record<string, string>>({})
@@ -371,7 +376,19 @@ const isSearchMode = (value: unknown): value is SearchMode => {
 }
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
+  const rateLimitMessage = '重试次数过多，已限流，稍后重试'
+
   if (error instanceof Error && error.message) {
+    const normalized = error.message.toLowerCase()
+    const isRateLimited =
+      normalized.includes('429') ||
+      normalized.includes('too many request') ||
+      normalized.includes('rate limit') ||
+      normalized.includes('限流')
+
+    if (isRateLimited) {
+      return rateLimitMessage
+    }
     return error.message
   }
   return fallback
@@ -451,10 +468,12 @@ const { archiveConversation } = useChatSummary({
 })
 
 let streamingAbortController: AbortController | null = null
+const currentStreamRendererStopper = ref<(() => void) | null>(null)
 const knowledgeUploadInputRef = ref<HTMLInputElement | null>(null)
 const isUploadingKnowledge = ref(false)
 const activeKnowledgeTaskId = ref<string | null>(null)
 let knowledgeStatusPollTimer: number | null = null
+let knowledgeStatusAbortController: AbortController | null = null
 
 const WELCOME_TEXT = '有什么我能帮您的吗😊'
 const welcomeDisplayText = ref('')
@@ -566,6 +585,10 @@ const clearKnowledgeTaskPolling = () => {
     window.clearTimeout(knowledgeStatusPollTimer)
     knowledgeStatusPollTimer = null
   }
+  if (knowledgeStatusAbortController) {
+    knowledgeStatusAbortController.abort()
+    knowledgeStatusAbortController = null
+  }
 }
 
 const finishKnowledgeTask = () => {
@@ -575,12 +598,23 @@ const finishKnowledgeTask = () => {
 }
 
 const pollKnowledgeTaskStatus = async (taskId: string) => {
+  if (isUnmounted.value || activeKnowledgeTaskId.value !== taskId) {
+    return
+  }
+
+  const abortController = new AbortController()
+  if (knowledgeStatusAbortController) {
+    knowledgeStatusAbortController.abort()
+  }
+  knowledgeStatusAbortController = abortController
+
   try {
     const response = await fetch(`${config.apiBaseUrl}/docs/status/${encodeURIComponent(taskId)}`, {
       method: 'GET',
       headers: {
         Authorization: getUploadAuthorization(),
       },
+      signal: abortController.signal,
     })
 
     if (!response.ok) {
@@ -608,12 +642,26 @@ const pollKnowledgeTaskStatus = async (taskId: string) => {
       return
     }
 
+    if (isUnmounted.value || activeKnowledgeTaskId.value !== taskId) {
+      return
+    }
+
     knowledgeStatusPollTimer = window.setTimeout(() => {
+      if (isUnmounted.value || activeKnowledgeTaskId.value !== taskId) {
+        return
+      }
       void pollKnowledgeTaskStatus(taskId)
     }, 1500)
   } catch (error: unknown) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return
+    }
     showError(getErrorMessage(error, '知识上传状态查询失败'))
     finishKnowledgeTask()
+  } finally {
+    if (knowledgeStatusAbortController === abortController) {
+      knowledgeStatusAbortController = null
+    }
   }
 }
 
@@ -730,7 +778,20 @@ const scrollToBottom = async () => {
   }
 }
 
+const invalidateActiveGeneration = () => {
+  activeGenerationId.value += 1
+  if (streamingAbortController) {
+    streamingAbortController.abort()
+    streamingAbortController = null
+  }
+}
+
 const stopGeneration = async () => {
+  invalidateActiveGeneration()
+  if (currentStreamRendererStopper.value) {
+    currentStreamRendererStopper.value()
+    currentStreamRendererStopper.value = null
+  }
   if (currentTaskId.value) {
     try {
       await stopChatMessage(currentTaskId.value)
@@ -739,10 +800,6 @@ const stopGeneration = async () => {
         console.error('停止消息生成失败:', error)
       }
     }
-  }
-  if (streamingAbortController) {
-    streamingAbortController.abort()
-    streamingAbortController = null
   }
   isLoading.value = false
   currentTaskId.value = undefined
@@ -754,6 +811,9 @@ const sendMessage = async () => {
   }
 
   stopWelcomeTyping()
+  const generationId = activeGenerationId.value + 1
+  activeGenerationId.value = generationId
+  const isGenerationStale = () => generationId !== activeGenerationId.value
 
   const userMessage: Message = {
     role: 'user',
@@ -806,6 +866,14 @@ const sendMessage = async () => {
       const response = await compressContext(userId, convId)
       const compressedText = response.data.compressed_context
 
+      if (import.meta.env.DEV) {
+        console.debug('[context-compression] compressed context:', {
+          conversationId: convId,
+          length: compressedText.length,
+          content: compressedText,
+        })
+      }
+
       saveBackground(convId, compressedText)
       const estimatedTokens = Math.ceil(compressedText.length * 1.2)
       tokenUsage.value = estimatedTokens
@@ -855,10 +923,19 @@ const sendMessage = async () => {
   }
 
   const flushRenderImmediately = () => {
-    stopStreamRenderer()
+    stopStreamRendererAndRelease()
     renderedContent = targetContent
     reactiveAssistantMessage.content = renderedContent
   }
+
+  const stopStreamRendererAndRelease = () => {
+    stopStreamRenderer()
+    if (currentStreamRendererStopper.value === stopStreamRendererAndRelease) {
+      currentStreamRendererStopper.value = null
+    }
+  }
+
+  currentStreamRendererStopper.value = stopStreamRendererAndRelease
 
   const startStreamRenderer = () => {
     if (streamRenderTimer !== undefined) {
@@ -867,7 +944,7 @@ const sendMessage = async () => {
 
     streamRenderTimer = window.setInterval(() => {
       if (renderedContent === targetContent) {
-        stopStreamRenderer()
+        stopStreamRendererAndRelease()
         return
       }
 
@@ -881,6 +958,9 @@ const sendMessage = async () => {
   }
 
   try {
+    if (isGenerationStale()) {
+      return
+    }
     const normalizedUser = String(chatSettings.value.user ?? '').trim()
 
     // 调用 API
@@ -901,10 +981,16 @@ const sendMessage = async () => {
       },
       {
         onMessage: (content: string) => {
+          if (isGenerationStale()) {
+            return
+          }
           targetContent = content
           startStreamRenderer()
         },
         onEnd: (data) => {
+          if (isGenerationStale()) {
+            return
+          }
           // If the animation timer is not running, flush immediately.
           // If it is running, let it animate to completion naturally — do not
           // cancel it here, otherwise all buffered SSE events (which arrive in a
@@ -934,12 +1020,17 @@ const sendMessage = async () => {
           if (conversationId) {
             currentConversationId.value = conversationId
           }
+          streamingAbortController = null
           isLoading.value = false
           currentTaskId.value = undefined
         },
         onError: (error) => {
-          stopStreamRenderer()
-          reactiveAssistantMessage.content = `错误: ${error.message}`
+          if (isGenerationStale()) {
+            return
+          }
+          stopStreamRendererAndRelease()
+          reactiveAssistantMessage.content = getErrorMessage(error, '发送消息失败')
+          streamingAbortController = null
           isLoading.value = false
           currentTaskId.value = undefined
           if (import.meta.env.DEV) {
@@ -950,8 +1041,14 @@ const sendMessage = async () => {
             saveBackground(currentConversationId.value, currentBg)
           }
         },
-      }
+      },
+      streamingAbortController.signal
     )
+
+    if (isGenerationStale()) {
+      stopStreamRendererAndRelease()
+      return
+    }
 
     // 保存 task_id 和 conversation_id
     currentTaskId.value = result.taskId
@@ -980,14 +1077,21 @@ const sendMessage = async () => {
       chatHistory.value = [...chatHistory.value]
     }
   } catch (error: unknown) {
+    streamingAbortController = null
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      stopStreamRendererAndRelease()
+      isLoading.value = false
+      currentTaskId.value = undefined
+      return
+    }
     if (tempConversationId) {
       removeChatHistoryItem(tempConversationId)
       if (currentConversationId.value === tempConversationId) {
         currentConversationId.value = undefined
       }
     }
-    stopStreamRenderer()
-    assistantMessage.content = `错误: ${getErrorMessage(error, '发送消息失败')}`
+    stopStreamRendererAndRelease()
+    reactiveAssistantMessage.content = getErrorMessage(error, '发送消息失败')
     isLoading.value = false
     currentTaskId.value = undefined
     if (import.meta.env.DEV) {
@@ -997,6 +1101,7 @@ const sendMessage = async () => {
 }
 
 const createNewChat = (tempId?: string) => {
+  invalidateActiveGeneration()
   // 清空当前消息和会话 ID
   messages.value = []
   
@@ -1018,6 +1123,7 @@ const createNewChat = (tempId?: string) => {
 }
 
 const loadChat = async (chatId: string) => {
+  invalidateActiveGeneration()
   // 临时生成的 ID 不应请求后端
   if (chatId.startsWith('new-') || chatId.startsWith('temp-')) {
     messages.value = []
@@ -1224,6 +1330,7 @@ const handleDocumentClick = () => {
 }
 
 onMounted(async () => {
+  isUnmounted.value = false
   isMounted.value = true
 
   // 加载缓存设置
@@ -1253,8 +1360,14 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  isUnmounted.value = true
+  invalidateActiveGeneration()
   document.removeEventListener('click', handleDocumentClick)
   clearKnowledgeTaskPolling()
+  if (currentStreamRendererStopper.value) {
+    currentStreamRendererStopper.value()
+    currentStreamRendererStopper.value = null
+  }
   stopWelcomeTyping()
 })
 </script>
@@ -1540,6 +1653,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -1552,8 +1666,43 @@ onBeforeUnmount(() => {
   }
 
   &:disabled {
-    opacity: 0.6;
     cursor: not-allowed;
+  }
+}
+
+.knowledge-upload-btn__spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: knowledge-upload-spin 0.9s linear infinite;
+}
+
+.knowledge-upload-btn--uploading {
+  border-color: #1a73e8;
+  background: linear-gradient(90deg, #1a73e8 0%, #4285f4 100%);
+  color: #ffffff;
+  box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.2);
+  animation: knowledge-upload-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes knowledge-upload-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes knowledge-upload-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(66, 133, 244, 0.28);
   }
 }
 

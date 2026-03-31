@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import logging
+from urllib.parse import unquote
 
 from app.integrations.context_compression import compress_context
 from app.schemas.base import FormatJSONResponse
@@ -31,21 +32,23 @@ def compress_chat_context(
     Total length will be between 500-700 words.
     """
     try:
+        decoded_user_id = unquote(request.user_id).strip()
         logger.info(
             "Received context compression request for conversation %s from user %s",
             request.conversation_id,
-            request.user_id,
+            decoded_user_id,
         )
 
         context_data = request.model_dump()
         if current_user.role == UserRole.superuser:
             # superuser can run compression for any target user
-            effective_user_id = request.user_id.strip()
+            effective_user_id = decoded_user_id
         else:
             # normal users can only access their own identity aliases
-            effective_user_id = normalize_self_user_identifier(request.user_id, current_user)
+            normalize_self_user_identifier(decoded_user_id, current_user)
+            effective_user_id = decoded_user_id
 
-        # Always overwrite user_id on server side to prevent client-side spoofing.
+        # Dify variables endpoint expects business user_id, not auth UUID.
         context_data["user_id"] = effective_user_id
         compressed_result = compress_context(context_data)
         

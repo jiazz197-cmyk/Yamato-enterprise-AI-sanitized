@@ -126,6 +126,7 @@ async def lifespan(app: FastAPI):
         # 注册 WebSocket 推送观察者（实时推送给客户端）
         ws_observer = WebSocketTaskObserver(ws_manager)
         await task_manager.register_observer(ws_observer)
+        task_manager.set_notify_loop(asyncio.get_running_loop())
         
         print("✅ 任务观察者注册完成")
         observer_stats = task_manager.get_observer_stats()
