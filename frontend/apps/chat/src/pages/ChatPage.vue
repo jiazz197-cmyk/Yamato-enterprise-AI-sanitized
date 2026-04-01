@@ -1,21 +1,18 @@
 <template>
   <div class="chat-page">
-    <PageHeader title="AI" subtitle="与 AI 助手对话" />
-
-    <div class="chat-body">
+    <Teleport to="#sidebar-extra-slot" v-if="isMounted">
       <MessageList
         ref="historyMessageListRef"
         variant="history"
-        :class="{ 'chat-history-panel--collapsed': historyCollapsed }"
         :history-items="chatHistory"
-        :active-item-id="currentConversationId"
+        v-model:active-item-id="currentConversationId"
         :editing-item-id="editingChatId"
         :editing-title="editingChatTitle"
         :rename-api-base-url="config.apiBaseUrl"
-        :rename-api-token="config.chatApiKey"
+        :rename-api-token="''"
         :rename-user="chatSettings.user"
         :delete-api-base-url="config.apiBaseUrl"
-        :delete-api-token="config.chatApiKey"
+        :delete-api-token="''"
         :delete-user="chatSettings.user"
         @update:editingTitle="editingChatTitle = $event"
         @create="createNewChat"
@@ -31,28 +28,15 @@
           <ChatSummaryAction @click="openSummaryDialog" />
         </template>
       </MessageList>
+    </Teleport>
 
-      <button
-        class="chat-history-toggle"
-        :class="{ 'chat-history-toggle--collapsed': historyCollapsed }"
-        type="button"
-        :aria-expanded="!historyCollapsed"
-        @click="toggleHistory"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M15 18l-6-6 6-6"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-      </button>
-
+    <div class="chat-body">
       <div class="chat-main">
         <div ref="messageListRef" class="message-list-container">
-          <MessageList>
+          <div v-if="messages.length === 0" class="chat-welcome">
+            <h1 class="chat-welcome__text">{{ welcomeDisplayText }}</h1>
+          </div>
+          <MessageList v-else>
             <MessageItem
               v-for="(message, index) in messages"
               :key="index"
@@ -73,13 +57,23 @@
 
           <div class="chat-input-container">
             <div class="chat-input-wrapper">
-                <div class="chat-input-side chat-input-side--left">
+                <Input
+                  v-model="inputMessage"
+                  class="chat-input"
+                  placeholder="输入消息..."
+                  multiline
+                  :rows="1"
+                  :disabled="isCompressing"
+                  @enter="sendMessage"
+                />
+
+                <div class="chat-input-overlay chat-input-overlay--left">
                   <div ref="searchDropdownRef" class="search-mode-dropdown">
                     <button class="search-mode-btn" type="button" @click.stop="toggleSearchDropdown">
                       <span class="search-mode-label">{{ searchModeLabel }}</span>
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                         <path
-                          d="M6 9l6 6 6-6"
+                          d="M6 15l6-6 6 6"
                           stroke="currentColor"
                           stroke-width="2.5"
                           stroke-linecap="round"
@@ -88,22 +82,58 @@
                       </svg>
                     </button>
                   </div>
+
+                  <button
+                    class="knowledge-upload-btn"
+                    :class="{ 'knowledge-upload-btn--uploading': isUploadingKnowledge }"
+                    type="button"
+                    :disabled="isUploadingKnowledge"
+                    :aria-busy="isUploadingKnowledge"
+                    @click.stop="openKnowledgeUpload"
+                  >
+                    <span v-if="isUploadingKnowledge" class="knowledge-upload-btn__spinner" aria-hidden="true"></span>
+                    <span>{{ isUploadingKnowledge ? '知识上传中' : '知识上传' }}</span>
+                  </button>
+
+                  <div class="token-indicator" v-if="tokenUsage > 0" title="当前会话 Token 消耗">
+                    <div class="token-indicator-label">{{ tokenUsage }} / 32k</div>
+                    <div class="token-indicator-progress">
+                      <div
+                        class="token-indicator-bar"
+                        :style="{
+                          width: `${Math.min((tokenUsage / 32000) * 100, 100)}%`,
+                          backgroundColor: tokenBarColor
+                        }"
+                      ></div>
+                    </div>
+                    <button
+                      class="compress-context-btn"
+                      type="button"
+                      title="压缩当前对话以节省 Token"
+                      :disabled="isCompressing"
+                      @click.stop="handleCompressContext"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                      {{ isCompressing ? '压缩中...' : '压缩' }}
+                    </button>
+                  </div>
+
+                  <input
+                    ref="knowledgeUploadInputRef"
+                    class="knowledge-upload-input"
+                    type="file"
+                    multiple
+                    @change="handleKnowledgeUploadChange"
+                  />
                 </div>
 
-                <Input
-                  v-model="inputMessage"
-                  class="chat-input"
-                  placeholder="输入消息..."
-                  multiline
-                  :rows="1"
-                  @enter="sendMessage"
-                />
-
-                <div class="chat-input-side chat-input-side--right">
+                <div class="chat-input-overlay chat-input-overlay--right">
                   <button
                     class="chat-send-btn"
                     :class="{ 'chat-send-btn--stop': isLoading }"
-                    :disabled="!isLoading && !inputMessage.trim()"
+                    :disabled="(!isLoading && !inputMessage.trim()) || isCompressing"
                     type="button"
                     @click="isLoading ? stopGeneration() : sendMessage()"
                   >
@@ -176,7 +206,7 @@
       v-model="showSummaryDialog"
       :user-id="summaryUserId"
       :api-base-url="config.apiBaseUrl"
-      :api-token="config.chatApiKey"
+      :api-token="authToken"
     />
 
   </div>
@@ -185,18 +215,19 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import {
-  PageHeader,
   MessageList,
+  ChatSummaryAction,
   MessageItem,
   ConfirmDialog,
-  ChatSummaryAction,
   ChatSummaryDialog,
   Input,
   useToast,
   useChatSummary,
 } from '@yamato/components'
 import { config } from '../config'
-import { sendChatMessage, getConversations, getMessages, stopChatMessage } from '../services/chat'
+import { sendChatMessage, getConversations, getMessages, stopChatMessage, compressContext } from '../services/chat'
+import { getAuthTokenFromStorage } from '../services/token_storage'
+import { countTokens } from '../utils/token_counter'
 import type { Conversation, SearchMode } from '../types/chat'
 
 interface Message {
@@ -212,6 +243,7 @@ interface ChatHistoryItem {
 
 interface ChatSettings {
   user: string
+  userId?: string
   search: SearchMode
 }
 
@@ -226,9 +258,10 @@ interface BackendMessageRecord {
 const inputMessage = ref('')
 const messages = ref<Message[]>([])
 const isLoading = ref(false)
+const isUnmounted = ref(false)
 const messageListRef = ref<HTMLElement | null>(null)
 const historyMessageListRef = ref<{ deleteConversation: (chatId: string) => Promise<boolean> } | null>(null)
-const historyCollapsed = ref(false)
+const isMounted = ref(false)
 const showDeleteDialog = ref(false)
 const chatToDelete = ref<string | null>(null)
 const editingChatId = ref<string | null>(null)
@@ -242,12 +275,97 @@ const chatHistory = ref<ChatHistoryItem[]>([
 ])
 const currentConversationId = ref<string | undefined>(undefined)
 const currentTaskId = ref<string | undefined>(undefined)
+const activeGenerationId = ref(0)
+const tokenUsage = ref<number>(0)
+const isCompressing = ref(false)
+const chatBackgrounds = ref<Record<string, string>>({})
+
+const BACKGROUND_STORAGE_KEY_PREFIX = 'yamato_chat_background_'
+
+const getConversationBackgroundKey = (conversationId: string, userId: string): string => {
+  return `${BACKGROUND_STORAGE_KEY_PREFIX}${userId}_${conversationId}`
+}
+
+const loadBackground = (conversationId: string): string => {
+  if (!conversationId || conversationId.startsWith('new-') || conversationId.startsWith('temp-')) {
+    return ''
+  }
+  const normalizedUser = String(chatSettings.value.userId || chatSettings.value.user || 'user').trim()
+  const key = getConversationBackgroundKey(conversationId, normalizedUser)
+  try {
+    return localStorage.getItem(key) || ''
+  } catch {
+    return ''
+  }
+}
+
+const saveBackground = (conversationId: string, background: string) => {
+  if (!conversationId || conversationId.startsWith('new-') || conversationId.startsWith('temp-')) {
+    return
+  }
+  const normalizedUser = String(chatSettings.value.userId || chatSettings.value.user || 'user').trim()
+  const key = getConversationBackgroundKey(conversationId, normalizedUser)
+  try {
+    localStorage.setItem(key, background)
+    chatBackgrounds.value[conversationId] = background
+  } catch (error) {
+    if (import.meta.env.DEV) {
+      console.error('保存 Background 失败:', error)
+    }
+  }
+}
+
+const TOKEN_USAGE_STORAGE_KEY_PREFIX = 'yamato_chat_token_usage_'
+
+const getConversationTokenKey = (conversationId: string, userId: string): string => {
+  return `${TOKEN_USAGE_STORAGE_KEY_PREFIX}${userId}_${conversationId}`
+}
+
+const saveTokenUsage = (conversationId: string, usage: number) => {
+  if (!conversationId || conversationId.startsWith('new-') || conversationId.startsWith('temp-')) {
+    return
+  }
+  const normalizedUser = String(chatSettings.value.userId || chatSettings.value.user || 'user').trim()
+  const key = getConversationTokenKey(conversationId, normalizedUser)
+  try {
+    localStorage.setItem(key, usage.toString())
+  } catch (error) {
+    if (import.meta.env.DEV) {
+      console.error('保存 Token 消耗失败:', error)
+    }
+  }
+}
+
+const loadTokenUsage = (conversationId: string): number => {
+  if (!conversationId || conversationId.startsWith('new-') || conversationId.startsWith('temp-')) {
+    return 0
+  }
+  const normalizedUser = String(chatSettings.value.userId || chatSettings.value.user || 'user').trim()
+  const key = getConversationTokenKey(conversationId, normalizedUser)
+  try {
+    const cached = localStorage.getItem(key)
+    return cached ? parseInt(cached, 10) : 0
+  } catch {
+    return 0
+  }
+}
+
+const tokenBarColor = computed(() => {
+  const percentage = tokenUsage.value / 32000
+  if (percentage < 0.5) return '#10b981' // 绿
+  if (percentage < 0.8) return '#f59e0b' // 橙
+  return '#ef4444' // 红
+})
 
 const SETTINGS_STORAGE_KEY = 'yamato_chat_settings'
-const chatSettings = ref<ChatSettings>({ user: '', search: '联网搜索' })
+const chatSettings = ref<ChatSettings>({ user: '', search: '本地&网络' })
 
 type CachedChatSettings = {
   user?: string | number
+  userId?: string | number
+  username?: string | number
+  userName?: string | number
+  userUUID?: string | number
   search?: SearchMode
 }
 
@@ -258,38 +376,142 @@ const isSearchMode = (value: unknown): value is SearchMode => {
 }
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
+  const rateLimitMessage = '重试次数过多，已限流，稍后重试'
+
   if (error instanceof Error && error.message) {
+    const normalized = error.message.toLowerCase()
+    const isRateLimited =
+      normalized.includes('429') ||
+      normalized.includes('too many request') ||
+      normalized.includes('rate limit') ||
+      normalized.includes('限流')
+
+    if (isRateLimited) {
+      return rateLimitMessage
+    }
     return error.message
   }
   return fallback
 }
 
+const stripThinkContent = (raw: string): string => {
+  if (!raw) {
+    return ''
+  }
+
+  // Normalize escaped think tags to raw tags so one parser can handle both.
+  const normalized = raw
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+
+  const openTagPattern = /^<\s*think\s*>/i
+  const closeTagPattern = /^<\s*\/\s*think\s*>/i
+
+  let inThinkBlock = false
+  let cursor = 0
+  let visibleText = ''
+
+  while (cursor < normalized.length) {
+    const tail = normalized.slice(cursor)
+    const openMatch = openTagPattern.exec(tail)
+    const closeMatch = closeTagPattern.exec(tail)
+
+    if (!inThinkBlock && openMatch) {
+      inThinkBlock = true
+      cursor += openMatch[0].length
+      continue
+    }
+
+    if (closeMatch) {
+      inThinkBlock = false
+      cursor += closeMatch[0].length
+      continue
+    }
+
+    if (!inThinkBlock) {
+      visibleText += normalized[cursor]
+    }
+    cursor += 1
+  }
+
+  return visibleText
+}
+
 const showSearchDropdown = ref(false)
 const searchDropdownRef = ref<HTMLElement | null>(null)
-const searchDropdownStyle = ref<Record<string, string>>({ bottom: '0px', left: '0px' })
+const searchDropdownStyle = ref<Record<string, string>>({ top: '0px', left: '0px' })
 
 const searchModeLabel = computed(() => {
   return chatSettings.value.search
 })
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
 const summaryUserId = computed(() => {
-  return String(chatSettings.value.user ?? '').trim() || 'user'
+  const candidate = String(chatSettings.value.userId ?? '').trim()
+  if (candidate && !UUID_PATTERN.test(candidate)) {
+    return candidate
+  }
+
+  const fallback = String(chatSettings.value.user ?? '').trim()
+  return fallback
+})
+
+const authToken = computed(() => {
+  return getAuthTokenFromStorage() || ''
 })
 
 const { showSuccess, showError } = useToast()
 const { archiveConversation } = useChatSummary({
   apiBaseUrl: config.apiBaseUrl,
-  apiToken: config.chatApiKey,
+  apiToken: authToken.value,
 })
 
 let streamingAbortController: AbortController | null = null
+const currentStreamRendererStopper = ref<(() => void) | null>(null)
+const knowledgeUploadInputRef = ref<HTMLInputElement | null>(null)
+const isUploadingKnowledge = ref(false)
+const activeKnowledgeTaskId = ref<string | null>(null)
+let knowledgeStatusPollTimer: number | null = null
+let knowledgeStatusAbortController: AbortController | null = null
+
+const WELCOME_TEXT = '有什么我能帮您的吗😊'
+const welcomeDisplayText = ref('')
+let welcomeTypingTimer: number | null = null
+
+const stopWelcomeTyping = () => {
+  if (welcomeTypingTimer !== null) {
+    window.clearInterval(welcomeTypingTimer)
+    welcomeTypingTimer = null
+  }
+}
+
+const startWelcomeTyping = () => {
+  stopWelcomeTyping()
+  welcomeDisplayText.value = ''
+
+  let cursor = 0
+  welcomeTypingTimer = window.setInterval(() => {
+    cursor += 1
+    welcomeDisplayText.value = WELCOME_TEXT.slice(0, cursor)
+
+    if (cursor >= WELCOME_TEXT.length) {
+      stopWelcomeTyping()
+    }
+  }, 45)
+}
 
 const saveCachedSettings = () => {
   try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY)
+    const existing = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+
     localStorage.setItem(
       SETTINGS_STORAGE_KEY,
       JSON.stringify({
+        ...existing,
         user: chatSettings.value.user,
+        userId: chatSettings.value.userId,
         search: chatSettings.value.search,
       })
     )
@@ -303,8 +525,16 @@ const loadCachedSettings = () => {
     const cached = localStorage.getItem(SETTINGS_STORAGE_KEY)
     if (cached) {
       const parsed = JSON.parse(cached) as CachedChatSettings
+      const cachedUser = String(parsed.user ?? parsed.username ?? parsed.userName ?? '').trim()
+      const cachedUserId = String(parsed.userId ?? '').trim()
+      const normalizedUserId =
+        cachedUserId && !UUID_PATTERN.test(cachedUserId)
+          ? cachedUserId
+          : cachedUser || undefined
+
       chatSettings.value = {
-        user: String(parsed.user ?? ''),
+        user: cachedUser || cachedUserId,
+        userId: normalizedUserId,
         search: isSearchMode(parsed.search) ? parsed.search : '联网搜索',
       }
     }
@@ -333,6 +563,168 @@ const setSearchMode = (mode: SearchMode) => {
   chatSettings.value.search = mode
   showSearchDropdown.value = false
   saveCachedSettings()
+}
+
+const openKnowledgeUpload = () => {
+  if (isUploadingKnowledge.value) {
+    return
+  }
+  knowledgeUploadInputRef.value?.click()
+}
+
+const getUploadAuthorization = (): string => {
+  const token = getAuthTokenFromStorage()
+  if (token) {
+    return `Bearer ${token}`
+  }
+  throw new Error('未登录或登录态已失效，请重新登录')
+}
+
+const clearKnowledgeTaskPolling = () => {
+  if (knowledgeStatusPollTimer !== null) {
+    window.clearTimeout(knowledgeStatusPollTimer)
+    knowledgeStatusPollTimer = null
+  }
+  if (knowledgeStatusAbortController) {
+    knowledgeStatusAbortController.abort()
+    knowledgeStatusAbortController = null
+  }
+}
+
+const finishKnowledgeTask = () => {
+  clearKnowledgeTaskPolling()
+  activeKnowledgeTaskId.value = null
+  isUploadingKnowledge.value = false
+}
+
+const pollKnowledgeTaskStatus = async (taskId: string) => {
+  if (isUnmounted.value || activeKnowledgeTaskId.value !== taskId) {
+    return
+  }
+
+  const abortController = new AbortController()
+  if (knowledgeStatusAbortController) {
+    knowledgeStatusAbortController.abort()
+  }
+  knowledgeStatusAbortController = abortController
+
+  try {
+    const response = await fetch(`${config.apiBaseUrl}/docs/status/${encodeURIComponent(taskId)}`, {
+      method: 'GET',
+      headers: {
+        Authorization: getUploadAuthorization(),
+      },
+      signal: abortController.signal,
+    })
+
+    if (!response.ok) {
+      throw new Error('知识上传状态查询失败')
+    }
+
+    const result = (await response.json()) as {
+      status?: string
+      progress?: number
+      message?: string
+      error?: string
+    }
+
+    const status = String(result.status ?? '').toLowerCase()
+
+    if (status === 'completed') {
+      showSuccess('知识上传处理完成')
+      finishKnowledgeTask()
+      return
+    }
+
+    if (status === 'failed' || status === 'cancelled') {
+      showError(result.error || result.message || '知识上传处理失败')
+      finishKnowledgeTask()
+      return
+    }
+
+    if (isUnmounted.value || activeKnowledgeTaskId.value !== taskId) {
+      return
+    }
+
+    knowledgeStatusPollTimer = window.setTimeout(() => {
+      if (isUnmounted.value || activeKnowledgeTaskId.value !== taskId) {
+        return
+      }
+      void pollKnowledgeTaskStatus(taskId)
+    }, 1500)
+  } catch (error: unknown) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return
+    }
+    showError(getErrorMessage(error, '知识上传状态查询失败'))
+    finishKnowledgeTask()
+  } finally {
+    if (knowledgeStatusAbortController === abortController) {
+      knowledgeStatusAbortController = null
+    }
+  }
+}
+
+const handleKnowledgeUploadChange = async (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const selectedFiles = target.files ? Array.from(target.files) : []
+
+  if (selectedFiles.length === 0 || isUploadingKnowledge.value) {
+    return
+  }
+
+  const formData = new FormData()
+  for (const file of selectedFiles) {
+    formData.append('files', file)
+  }
+
+  const uploader = String(chatSettings.value.user ?? '').trim() || 'user'
+
+  let keepUploadingState = false
+  isUploadingKnowledge.value = true
+
+  try {
+    const query = new URLSearchParams({
+      instance_id: '2',
+      uploader,
+    })
+
+    const response = await fetch(`${config.apiBaseUrl}/docs/process?${query.toString()}`, {
+      method: 'POST',
+      headers: {
+        Authorization: getUploadAuthorization(),
+      },
+      body: formData,
+    })
+
+    if (!response.ok) {
+      const errorPayload = (await response.json().catch(() => null)) as
+        | { detail?: string; message?: string }
+        | null
+      const message = errorPayload?.detail || errorPayload?.message || '知识上传失败'
+      throw new Error(message)
+    }
+
+    const result = (await response.json()) as { task_id?: string; files_count?: number }
+    const uploadedCount = result.files_count ?? selectedFiles.length
+    const taskId = typeof result.task_id === 'string' ? result.task_id.trim() : ''
+
+    showSuccess(`知识上传任务已创建（${uploadedCount} 个文件）`)
+
+    if (taskId) {
+      keepUploadingState = true
+      activeKnowledgeTaskId.value = taskId
+      clearKnowledgeTaskPolling()
+      void pollKnowledgeTaskStatus(taskId)
+    }
+  } catch (error: unknown) {
+    showError(getErrorMessage(error, '知识上传失败'))
+  } finally {
+    if (!keepUploadingState) {
+      isUploadingKnowledge.value = false
+    }
+    target.value = ''
+  }
 }
 
 const formatTime = (): string => {
@@ -386,7 +778,20 @@ const scrollToBottom = async () => {
   }
 }
 
+const invalidateActiveGeneration = () => {
+  activeGenerationId.value += 1
+  if (streamingAbortController) {
+    streamingAbortController.abort()
+    streamingAbortController = null
+  }
+}
+
 const stopGeneration = async () => {
+  invalidateActiveGeneration()
+  if (currentStreamRendererStopper.value) {
+    currentStreamRendererStopper.value()
+    currentStreamRendererStopper.value = null
+  }
   if (currentTaskId.value) {
     try {
       await stopChatMessage(currentTaskId.value)
@@ -396,18 +801,19 @@ const stopGeneration = async () => {
       }
     }
   }
-  if (streamingAbortController) {
-    streamingAbortController.abort()
-    streamingAbortController = null
-  }
   isLoading.value = false
   currentTaskId.value = undefined
 }
 
 const sendMessage = async () => {
-  if (!inputMessage.value.trim() || isLoading.value) {
+  if (!inputMessage.value.trim() || isLoading.value || isCompressing.value) {
     return
   }
+
+  stopWelcomeTyping()
+  const generationId = activeGenerationId.value + 1
+  activeGenerationId.value = generationId
+  const isGenerationStale = () => generationId !== activeGenerationId.value
 
   const userMessage: Message = {
     role: 'user',
@@ -421,15 +827,72 @@ const sendMessage = async () => {
   const existingConversationId = currentConversationId.value
   let tempConversationId: string | null = null
 
-  if (existingConversationId) {
+  if (existingConversationId && !existingConversationId.startsWith('new-') && !existingConversationId.startsWith('temp-')) {
     upsertChatHistoryToTop(existingConversationId)
+    // 确保列表引用更新，这样侧边栏能反映位置变化（置顶）
+    chatHistory.value = [...chatHistory.value]
   } else {
-    tempConversationId = `temp-${Date.now()}`
+    if (existingConversationId && (existingConversationId.startsWith('new-') || existingConversationId.startsWith('temp-'))) {
+      tempConversationId = existingConversationId
+    } else {
+      tempConversationId = `temp-${Date.now()}`
+    }
+    
     upsertChatHistoryToTop(tempConversationId, optimisticTitle)
+    chatHistory.value = [...chatHistory.value]
+    currentConversationId.value = tempConversationId
+  }
+
+  const currentMsg = inputMessage.value
+
+  if (tokenUsage.value > 28000) {
+    inputMessage.value = ''
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '正在压缩上下文，请等候',
+      timestamp: formatTime(),
+    }
+    messages.value.push(assistantMessage)
+    const reactiveAssistantMessage = messages.value[messages.value.length - 1]
+
+    isCompressing.value = true
+    await scrollToBottom()
+
+    try {
+      const userId = summaryUserId.value
+      const convId = currentConversationId.value
+      if (!convId) throw new Error('No conversation ID')
+
+      const response = await compressContext(userId, convId)
+      const compressedText = response.data.compressed_context
+
+      if (import.meta.env.DEV) {
+        console.debug('[context-compression] compressed context:', {
+          conversationId: convId,
+          length: compressedText.length,
+          content: compressedText,
+        })
+      }
+
+      saveBackground(convId, compressedText)
+      const estimatedTokens = Math.ceil(compressedText.length * 1.2)
+      tokenUsage.value = estimatedTokens
+      saveTokenUsage(convId, estimatedTokens)
+
+      reactiveAssistantMessage.content = '压缩完成，请继续对话'
+    } catch (error: unknown) {
+      showError(getErrorMessage(error, '压缩上下文失败'))
+      reactiveAssistantMessage.content = '压缩上下文失败，请重试'
+    } finally {
+      isCompressing.value = false
+      await scrollToBottom()
+      // Restore input text after compression ends
+      inputMessage.value = currentMsg
+    }
+    return
   }
 
   inputMessage.value = ''
-
   isLoading.value = true
   streamingAbortController = new AbortController()
 
@@ -460,10 +923,19 @@ const sendMessage = async () => {
   }
 
   const flushRenderImmediately = () => {
-    stopStreamRenderer()
+    stopStreamRendererAndRelease()
     renderedContent = targetContent
     reactiveAssistantMessage.content = renderedContent
   }
+
+  const stopStreamRendererAndRelease = () => {
+    stopStreamRenderer()
+    if (currentStreamRendererStopper.value === stopStreamRendererAndRelease) {
+      currentStreamRendererStopper.value = null
+    }
+  }
+
+  currentStreamRendererStopper.value = stopStreamRendererAndRelease
 
   const startStreamRenderer = () => {
     if (streamRenderTimer !== undefined) {
@@ -472,7 +944,7 @@ const sendMessage = async () => {
 
     streamRenderTimer = window.setInterval(() => {
       if (renderedContent === targetContent) {
-        stopStreamRenderer()
+        stopStreamRendererAndRelease()
         return
       }
 
@@ -486,22 +958,39 @@ const sendMessage = async () => {
   }
 
   try {
+    if (isGenerationStale()) {
+      return
+    }
     const normalizedUser = String(chatSettings.value.user ?? '').trim()
 
     // 调用 API
+    const currentBg = currentConversationId.value ? (chatBackgrounds.value[currentConversationId.value] || loadBackground(currentConversationId.value)) : ''
+    
+    // 如果存在背景信息，使用后立即清空，确保只发送一次
+    if (currentConversationId.value && currentBg) {
+      saveBackground(currentConversationId.value, '')
+    }
+
     const result = await sendChatMessage(
       currentInput,
       currentConversationId.value,
       {
         user: normalizedUser,
         search: chatSettings.value.search,
+        background: currentBg,
       },
       {
         onMessage: (content: string) => {
+          if (isGenerationStale()) {
+            return
+          }
           targetContent = content
           startStreamRenderer()
         },
         onEnd: (data) => {
+          if (isGenerationStale()) {
+            return
+          }
           // If the animation timer is not running, flush immediately.
           // If it is running, let it animate to completion naturally — do not
           // cancel it here, otherwise all buffered SSE events (which arrive in a
@@ -509,6 +998,21 @@ const sendMessage = async () => {
           if (streamRenderTimer === undefined) {
             flushRenderImmediately()
           }
+          
+          // Token统计仅计入可见回答文本，不计入 <think>...</think> 思考内容。
+          // 流式场景下后端 usage 往往包含 think token，前端无法稳定精确扣减，
+          // 因此统一采用前端可见文本估算，保证口径一致。
+          const cleanAiText = stripThinkContent(targetContent)
+          const aiTokens = countTokens(cleanAiText)
+          const userTokens = countTokens(currentInput)
+          const increment = aiTokens + userTokens
+
+          tokenUsage.value += increment
+
+          if (currentConversationId.value) {
+            saveTokenUsage(currentConversationId.value, tokenUsage.value)
+          }
+
           const conversationId =
             typeof (data as { conversation_id?: unknown }).conversation_id === 'string'
               ? (data as { conversation_id: string }).conversation_id
@@ -516,25 +1020,49 @@ const sendMessage = async () => {
           if (conversationId) {
             currentConversationId.value = conversationId
           }
+          streamingAbortController = null
           isLoading.value = false
           currentTaskId.value = undefined
         },
         onError: (error) => {
-          stopStreamRenderer()
-          reactiveAssistantMessage.content = `错误: ${error.message}`
+          if (isGenerationStale()) {
+            return
+          }
+          stopStreamRendererAndRelease()
+          reactiveAssistantMessage.content = getErrorMessage(error, '发送消息失败')
+          streamingAbortController = null
           isLoading.value = false
           currentTaskId.value = undefined
           if (import.meta.env.DEV) {
             console.error('发送消息失败:', error)
           }
+          // 如果发送失败，恢复背景信息以便下次重试
+          if (currentConversationId.value && currentBg) {
+            saveBackground(currentConversationId.value, currentBg)
+          }
         },
-      }
+      },
+      streamingAbortController.signal
     )
+
+    if (isGenerationStale()) {
+      stopStreamRendererAndRelease()
+      return
+    }
 
     // 保存 task_id 和 conversation_id
     currentTaskId.value = result.taskId
     if (result.conversationId) {
+      const oldId = currentConversationId.value
       currentConversationId.value = result.conversationId
+      // 如果分配了新会话ID，且当前有token或bg缓存，需要转移到新ID下
+      if (oldId && (oldId.startsWith('temp-') || oldId.startsWith('new-'))) {
+         if (tokenUsage.value > 0) saveTokenUsage(result.conversationId, tokenUsage.value)
+         if (chatBackgrounds.value[oldId]) {
+           saveBackground(result.conversationId, chatBackgrounds.value[oldId])
+           delete chatBackgrounds.value[oldId]
+         }
+      }
     }
 
     const resolvedConversationId = result.conversationId || currentConversationId.value
@@ -543,16 +1071,27 @@ const sendMessage = async () => {
         removeChatHistoryItem(tempConversationId)
       }
       upsertChatHistoryToTop(resolvedConversationId, optimisticTitle)
+      // 最终确认一次激活 ID 稳定在真实 ID 上
+      currentConversationId.value = resolvedConversationId
+      // 再次同步列表引用，确保 temp 被替换为真实 ID 后 UI 刷新
+      chatHistory.value = [...chatHistory.value]
     }
   } catch (error: unknown) {
+    streamingAbortController = null
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      stopStreamRendererAndRelease()
+      isLoading.value = false
+      currentTaskId.value = undefined
+      return
+    }
     if (tempConversationId) {
       removeChatHistoryItem(tempConversationId)
       if (currentConversationId.value === tempConversationId) {
         currentConversationId.value = undefined
       }
     }
-    stopStreamRenderer()
-    assistantMessage.content = `错误: ${getErrorMessage(error, '发送消息失败')}`
+    stopStreamRendererAndRelease()
+    reactiveAssistantMessage.content = getErrorMessage(error, '发送消息失败')
     isLoading.value = false
     currentTaskId.value = undefined
     if (import.meta.env.DEV) {
@@ -561,29 +1100,47 @@ const sendMessage = async () => {
   }
 }
 
-const createNewChat = () => {
+const createNewChat = (tempId?: string) => {
+  invalidateActiveGeneration()
   // 清空当前消息和会话 ID
   messages.value = []
-  currentConversationId.value = undefined
-  currentTaskId.value = undefined
+  
+  // 关键：为新空对话提供一个默认识别 ID，而不是 undefined
+  // 否则 MessageList 在判断 activeItemId 变化时不会跟踪新节点
+  const newId = tempId && typeof tempId === 'string' ? tempId : `new-${Date.now()}`
+  currentConversationId.value = newId
+  
+  // 往历史列表的头部占位一个"新对话"
+  upsertChatHistoryToTop(newId, '新对话')
+  // 强制同步一次历史列表引用，确保 UI 能够正确反映新添加的项
+  chatHistory.value = [...chatHistory.value]
 
-  // 添加欢迎消息
-  const welcomeMessage: Message = {
-    role: 'assistant',
-    content: '您好！我是 AI 助手，有什么可以帮助您的吗？',
-    timestamp: formatTime(),
-  }
-  messages.value.push(welcomeMessage)
+  currentTaskId.value = undefined
+  tokenUsage.value = 0 // 重置 Token 消耗
+  
+  // 显示新对话引导语打字效果
+  startWelcomeTyping()
 }
 
 const loadChat = async (chatId: string) => {
+  invalidateActiveGeneration()
+  // 临时生成的 ID 不应请求后端
+  if (chatId.startsWith('new-') || chatId.startsWith('temp-')) {
+    messages.value = []
+    tokenUsage.value = 0
+    currentConversationId.value = chatId
+    currentTaskId.value = undefined
+    return
+  }
+
   try {
     const normalizedUser = String(chatSettings.value.user ?? '').trim() || 'user'
     // 加载会话消息
     const response = await getMessages(normalizedUser, chatId)
     
-    // 清空当前消息
+    // 清空当前消息并重置 Token
     messages.value = []
+    tokenUsage.value = 0
     
     // 转换并加载消息
     if (response.data && response.data.length > 0) {
@@ -643,6 +1200,10 @@ const loadChat = async (chatId: string) => {
     currentConversationId.value = chatId
     currentTaskId.value = undefined
     
+    // 恢复该会话的 Token 计数和 Background
+    tokenUsage.value = loadTokenUsage(chatId)
+    chatBackgrounds.value[chatId] = loadBackground(chatId)
+    
     await scrollToBottom()
   } catch (error: unknown) {
     if (import.meta.env.DEV) {
@@ -652,9 +1213,6 @@ const loadChat = async (chatId: string) => {
   }
 }
 
-const toggleHistory = () => {
-  historyCollapsed.value = !historyCollapsed.value
-}
 
 const renameChat = (chatId: string) => {
   const chat = chatHistory.value.find((c) => c.id === chatId)
@@ -681,6 +1239,38 @@ const cancelRename = () => {
 const handleRenameError = (_chatId: string, errorMessage: string) => {
   if (import.meta.env.DEV) {
     console.error('重命名失败:', errorMessage)
+  }
+}
+
+const handleCompressContext = async () => {
+  if (!currentConversationId.value || isCompressing.value) return
+  
+  const conversationId = currentConversationId.value
+  if (conversationId.startsWith('new-') || conversationId.startsWith('temp-')) {
+    showError('新对话暂不支持压缩，请先发送至少一条消息')
+    return
+  }
+
+  isCompressing.value = true
+  try {
+    const userId = summaryUserId.value
+    const response = await compressContext(userId, conversationId)
+    const compressedText = response.data.compressed_context
+    
+    // 将压缩后的上下文保存为 background
+    saveBackground(conversationId, compressedText)
+    
+    // 清除 Token 计数并根据回传信息估算初始 Token
+    // 简单估算：中文字符数 + 英文单词数 * 1.2 (这是一个粗略的估算)
+    const estimatedTokens = Math.ceil(compressedText.length * 1.2)
+    tokenUsage.value = estimatedTokens
+    saveTokenUsage(conversationId, estimatedTokens)
+    
+    showSuccess('上下文已压缩并更新到背景记忆中')
+  } catch (error: unknown) {
+    showError(getErrorMessage(error, '压缩上下文失败'))
+  } finally {
+    isCompressing.value = false
   }
 }
 
@@ -740,16 +1330,14 @@ const handleDocumentClick = () => {
 }
 
 onMounted(async () => {
+  isUnmounted.value = false
+  isMounted.value = true
+
   // 加载缓存设置
   loadCachedSettings()
 
-  // 初始化欢迎消息
-  const welcomeMessage: Message = {
-    role: 'assistant',
-    content: '您好！我是 AI 助手，有什么可以帮助您的吗？',
-    timestamp: formatTime(),
-  }
-  messages.value.push(welcomeMessage)
+  // 初始化新对话引导语打字效果
+  startWelcomeTyping()
 
   // 加载会话历史
   try {
@@ -772,7 +1360,15 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  isUnmounted.value = true
+  invalidateActiveGeneration()
   document.removeEventListener('click', handleDocumentClick)
+  clearKnowledgeTaskPolling()
+  if (currentStreamRendererStopper.value) {
+    currentStreamRendererStopper.value()
+    currentStreamRendererStopper.value = null
+  }
+  stopWelcomeTyping()
 })
 </script>
 
@@ -835,32 +1431,79 @@ onBeforeUnmount(() => {
 .chat-input-wrapper {
   position: relative;
   margin-bottom: 8px;
-  width: min(960px, 90%);
-  min-width: 480px;
-  max-width: 1100px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.chat-input-side {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 180px;
-}
-
-.chat-input-side--left {
-  justify-content: flex-end;
-}
-
-.chat-input-side--right {
-  justify-content: flex-start;
+  width: min(1020px, 90%);
+  min-width: 560px;
+  max-width: 1120px;
 }
 
 .chat-input {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
+
+  :deep(.input) {
+    border: 1px solid #b8cff8;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(66, 133, 244, 0.05);
+    border-radius: 22px;
+    padding: 14px 54px 58px 18px;
+    min-height: 96px;
+  }
+
+  :deep(.input:focus) {
+    border-color: #8ab4f8;
+    box-shadow: 0 0 0 3px rgba(138, 180, 248, 0.2);
+  }
+}
+
+.chat-input-overlay {
+  position: absolute;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-input-overlay--left {
+  left: 10px;
+}
+
+.token-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.compress-context-btn {
+  position: static;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  background: #f7f9fc;
+  border: 1px solid #d7e3f8;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #2b5fb8;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 1;
+  pointer-events: auto;
+  transition: all 0.2s ease;
+
+  &:hover:not(:disabled) {
+    background: #eef3fb;
+    border-color: #8ab4f8;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    color: #9aa0a6;
+    opacity: 0.7;
+  }
+}
+
+.chat-input-overlay--right {
+  right: 10px;
 }
 
 .chat-send-btn {
@@ -909,6 +1552,26 @@ onBeforeUnmount(() => {
   overflow-x: hidden;
 }
 
+.chat-welcome {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  transform: translateY(-48px);
+}
+
+.chat-welcome__text {
+  margin: 0;
+  font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #202124;
+  letter-spacing: 1px;
+  text-align: center;
+}
+
 .loading-indicator {
   display: flex;
   justify-content: flex-start;
@@ -953,30 +1616,135 @@ onBeforeUnmount(() => {
 }
 
 .search-mode-btn {
-  height: 36px;
+  height: 30px;
   padding: 0 10px;
-  border: 1px solid #dadce0;
-  border-radius: 18px;
-  background: transparent;
-  color: #5f6368;
+  border: 1px solid #d7e3f8;
+  border-radius: 14px;
+  background: rgba(247, 249, 252, 0.95);
+  color: #202124;
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   white-space: nowrap;
   transition: all 0.2s ease;
 
   &:hover {
-    background: #f1f3f4;
-    border-color: #bdc1c6;
+    background: #eef3fb;
+    border-color: #8ab4f8;
     color: #202124;
   }
 }
 
 .search-mode-label {
   line-height: 1;
+}
+
+.knowledge-upload-btn {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #d7e3f8;
+  border-radius: 14px;
+  background: rgba(247, 249, 252, 0.95);
+  color: #202124;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+
+  &:hover:not(:disabled) {
+    background: #eef3fb;
+    border-color: #8ab4f8;
+    color: #202124;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+  }
+}
+
+.knowledge-upload-btn__spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: knowledge-upload-spin 0.9s linear infinite;
+}
+
+.knowledge-upload-btn--uploading {
+  border-color: #1a73e8;
+  background: linear-gradient(90deg, #1a73e8 0%, #4285f4 100%);
+  color: #ffffff;
+  box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.2);
+  animation: knowledge-upload-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes knowledge-upload-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes knowledge-upload-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(66, 133, 244, 0.28);
+  }
+}
+
+.token-indicator {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #d7e3f8;
+  border-radius: 14px;
+  background: rgba(247, 249, 252, 0.95);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+
+  .token-indicator-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #5f6368;
+    white-space: nowrap;
+  }
+
+  .token-indicator-progress {
+    width: 34px;
+    height: 4px;
+    background-color: #e8eaed;
+    border-radius: 2px;
+    overflow: hidden;
+
+    .token-indicator-bar {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.3s ease, background-color 0.3s ease;
+    }
+  }
+}
+
+.knowledge-upload-input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .search-mode-menu {

@@ -1,6 +1,7 @@
 """
 缓存中间件：命中 Redis 直接返回，未命中则写入缓存
 """
+import hashlib
 import json
 from typing import Callable, Optional
 
@@ -48,6 +49,9 @@ class CacheMiddleware(BaseHTTPMiddleware):
             return False
         if request.url.path in EXCLUDED_PATHS:
             return False
+        # Never cache authenticated responses to avoid cross-user data leakage.
+        if request.headers.get("Authorization"):
+            return False
         cache_control = request.headers.get("Cache-Control", "")
         return not any(flag in cache_control for flag in ("no-cache", "no-store"))
 
@@ -55,6 +59,10 @@ class CacheMiddleware(BaseHTTPMiddleware):
         key_parts = [request.url.path]
         if request.query_params:
             key_parts.append(str(request.query_params))
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header:
+            auth_fingerprint = hashlib.sha256(auth_header.encode("utf-8")).hexdigest()[:12]
+            key_parts.append(f"auth:{auth_fingerprint}")
         return f"cache:{':'.join(key_parts)}"
 
     async def _get_cached_response(self, cache_key: str) -> Optional[Response]:

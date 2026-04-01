@@ -13,6 +13,15 @@ from app.integrations.monitoring.prometheus import metrics
 logger = get_logger("monitoring")
 
 
+def _normalize_endpoint(request: Request) -> str:
+    """Use route template to avoid high-cardinality metric labels."""
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None)
+    if isinstance(route_path, str) and route_path:
+        return route_path
+    return request.url.path
+
+
 class MonitoringMiddleware(BaseHTTPMiddleware):
     """记录请求耗时、状态并写入 metrics。"""
 
@@ -25,7 +34,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
             logger.exception("Request failed: %s %s", request.method, request.url.path)
             metrics.record_request(
                 method=request.method,
-                endpoint=request.url.path,
+                endpoint=_normalize_endpoint(request),
                 status_code=500,
                 duration=duration,
             )
@@ -34,7 +43,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
         duration = time.perf_counter() - start_time
         metrics.record_request(
             method=request.method,
-            endpoint=request.url.path,
+            endpoint=_normalize_endpoint(request),
             status_code=response.status_code,
             duration=duration,
         )

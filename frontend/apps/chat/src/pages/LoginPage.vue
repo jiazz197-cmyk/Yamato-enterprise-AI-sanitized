@@ -34,16 +34,22 @@
           {{ submitting ? '登录中...' : '登录' }}
         </button>
       </form>
+
+      <p class="login-card__footer">
+        没有账号？
+        <RouterLink class="login-card__link" to="/register">去注册</RouterLink>
+      </p>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { Input, useToast } from '@yamato/components'
 import { config } from '../config'
-import { login, getMe } from '../services/auth'
+import { login, getMe, saveUserRole } from '../services/auth'
+import { setAuthTokenToStorage } from '../services/token_storage'
 
 const router = useRouter()
 const { showSuccess, showError } = useToast()
@@ -62,25 +68,28 @@ const handleSubmit = async () => {
       password: password.value,
     })
 
-    try {
-      localStorage.setItem(config.authTokenStorageKey, result.access_token)
-    } catch {
-      // ignore storage error
-    }
+    setAuthTokenToStorage(result.access_token)
 
     try {
       const me = await getMe()
       const existing = JSON.parse(localStorage.getItem(config.settingsStorageKey) || '{}')
+      const loginUserId = String(me.id || '').trim()
       const loginUser = String(me.username || me.id || '').trim()
+      const loginUserName = String((me as any).name || me.username || me.id || '').trim()
       localStorage.setItem(
         config.settingsStorageKey,
         JSON.stringify({
           ...existing,
           userId: loginUser,
+          userUUID: loginUserId,
           user: loginUser,
+          userName: loginUserName,
+          username: loginUser,
+          role: me.role || '',
           search: existing.search || '联网搜索',
         })
       )
+      saveUserRole(me.role || '')
     } catch {
       // ignore: user info is best-effort
     }
@@ -147,6 +156,23 @@ const handleSubmit = async () => {
 
 .login-form__input {
   width: 100%;
+}
+
+.login-card__footer {
+  margin: 20px 0 0;
+  font-size: 13px;
+  color: #5f6368;
+  text-align: center;
+}
+
+.login-card__link {
+  color: #1a73e8;
+  text-decoration: none;
+  font-weight: 500;
+
+  &:hover {
+    text-decoration: underline;
+  }
 }
 
 .login-form__submit {

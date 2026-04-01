@@ -14,6 +14,10 @@ export default defineConfig(({ mode }) => {
   if (!env.VITE_DIFY_TARGET) throw new Error('VITE_DIFY_TARGET is required in .env file')
   if (!env.VITE_API_BASE_URL) throw new Error('VITE_API_BASE_URL is required in .env file')
   if (!env.VITE_DIFY_API_PREFIX) throw new Error('VITE_DIFY_API_PREFIX is required in .env file')
+  const chatProxyApiKey = env.CHAT_PROXY_API_KEY || env.CHAT_API_KEY || env.VITE_CHAT_API_KEY
+  if (!chatProxyApiKey) {
+    throw new Error('CHAT_PROXY_API_KEY (or CHAT_API_KEY) is required in .env file')
+  }
 
   const port = Number(env.VITE_PORT)
   if (isNaN(port) || port <= 0) throw new Error('VITE_PORT must be a valid positive number')
@@ -23,11 +27,16 @@ export default defineConfig(({ mode }) => {
 
   const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-  const makeProxy = (target: string) => ({
+  const makeProxy = (target: string, injectedApiKey?: string) => ({
     target,
     changeOrigin: true,
     secure: false,
     configure: (proxy: any) => {
+      if (injectedApiKey) {
+        proxy.on('proxyReq', (proxyReq: any) => {
+          proxyReq.setHeader('Authorization', `Bearer ${injectedApiKey}`)
+        })
+      }
       proxy.on('error', (err: Error, _req: any, res: any) => {
         if (res?.writeHead) {
           res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' })
@@ -64,9 +73,13 @@ export default defineConfig(({ mode }) => {
         [`${apiBase}/chat-summary`]: makeProxy(env.VITE_BACKEND_TARGET),
         // 填表接口属于后端业务服务，不应走 Dify
         [`${apiBase}/closing-form`]: makeProxy(env.VITE_BACKEND_TARGET),
+        // 文档处理接口属于后端业务服务，不应走 Dify
+        [`${apiBase}/docs`]: makeProxy(env.VITE_BACKEND_TARGET),
+        // 上下文压缩接口属于后端业务服务，不应走 Dify
+        [`${apiBase}/context-compression`]: makeProxy(env.VITE_BACKEND_TARGET),
         // 其余 /api/v1/* → Dify 聊天服务 60086
         [apiBase]: {
-          ...makeProxy(env.VITE_DIFY_TARGET),
+          ...makeProxy(env.VITE_DIFY_TARGET, chatProxyApiKey),
           // 通过环境变量控制前缀改写，避免在代码中硬编码 /v1
           rewrite: (path) => path.replace(new RegExp(`^${escapeRegExp(apiBase)}`), difyApiPrefix),
         },

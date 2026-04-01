@@ -51,9 +51,10 @@ from app.ragsystem.RAGretriever import create_rag_retriever_system
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.api.v1 import api_router
 from app.core.cache import redis_manager
 from app.core.config import settings
@@ -63,8 +64,20 @@ from app.core.middleware.middleware_cache import CacheMiddleware
 from app.core.middleware.monitoring import MonitoringMiddleware
 from app.core.middleware.rate_limit import RateLimitMiddleware
 from app.core.middleware.request_size import RequestSizeMiddleware
+from app.core.middleware.security_headers import SecurityHeadersMiddleware
 from app.integrations.monitoring.health_check import health_service
 from app.integrations.monitoring.prometheus import metrics as prometheus_metrics
+
+
+def require_metrics_access(x_api_key: str | None = Header(default=None, alias="X-API-KEY")) -> None:
+    """Protect metrics endpoint from anonymous scraping in non-internal networks."""
+    if not settings.METRICS_REQUIRE_API_KEY:
+        return
+    if x_api_key != settings.INTERNAL_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid API Key",
+        )
 
 
 @asynccontextmanager
@@ -113,6 +126,7 @@ async def lifespan(app: FastAPI):
         # 注册 WebSocket 推送观察者（实时推送给客户端）
         ws_observer = WebSocketTaskObserver(ws_manager)
         await task_manager.register_observer(ws_observer)
+        task_manager.set_notify_loop(asyncio.get_running_loop())
         
         print("✅ 任务观察者注册完成")
         observer_stats = task_manager.get_observer_stats()
@@ -234,30 +248,41 @@ async def lifespan(app: FastAPI):
         print("🛑 关闭完成\n")
 
 def create_app() -> FastAPI:
+    is_production = str(settings.ENVIRONMENT).strip().lower() in {"production", "prod"}
+    docs_url = None if is_production else f"{settings.API_V1_STR}/docs"
+    redoc_url = None if is_production else f"{settings.API_V1_STR}/redoc"
+    openapi_url = None if is_production else f"{settings.API_V1_STR}/openapi.json"
+
     app = FastAPI(
         title=settings.PROJECT_NAME,
         description=settings.DESCRIPTION,
         version=settings.VERSION,
         debug=settings.DEBUG,
-        docs_url=f"{settings.API_V1_STR}/docs",
-        redoc_url=f"{settings.API_V1_STR}/redoc",
-        openapi_url=f"{settings.API_V1_STR}/openapi.json",
+        docs_url=docs_url,
+        redoc_url=redoc_url,
+        openapi_url=openapi_url,
         lifespan=lifespan,
     )
 
     app.state.settings = settings
     app.state.redis = redis_manager.redis_client
 
-    cors_origins = settings.BACKEND_CORS_ORIGINS or ["*"]
+    cors_origins = settings.BACKEND_CORS_ORIGINS or []
+    allow_credentials = "*" not in cors_origins
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_credentials=True,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
+    allowed_hosts = settings.ALLOWED_HOSTS or ["localhost", "127.0.0.1"]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
     app.add_middleware(MonitoringMiddleware)
+    if settings.ENABLE_SECURITY_HEADERS:
+        app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RequestSizeMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(CacheMiddleware)
@@ -274,7 +299,7 @@ def create_app() -> FastAPI:
 
     # Prometheus metrics endpoint
     @app.get(f"{settings.API_V1_STR}/metrics", include_in_schema=False)
-    async def metrics_endpoint():
+    async def metrics_endpoint(_: None = Depends(require_metrics_access)):
         # return Prometheus metrics in text format
         data = prometheus_metrics.get_metrics()
         return Response(content=data, media_type="text/plain")

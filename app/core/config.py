@@ -4,10 +4,10 @@
 import os
 import secrets
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Any
 import threading
 
-from pydantic import Field, validator
+from pydantic import Field, validator, field_validator, ValidationInfo
 from pydantic_settings import BaseSettings
 from pydantic._internal._model_construction import ModelMetaclass
 
@@ -27,6 +27,44 @@ def _split_comma_separated(value: Union[str, List[str]]) -> List[str]:
             return ["*"]
         return [item.strip() for item in value.split(",") if item.strip()]
     return value
+
+
+def _is_insecure_value(value: Any) -> bool:
+    """判断敏感配置是否仍为占位符或弱默认值。"""
+    if not isinstance(value, str):
+        return False
+
+    normalized = value.strip().lower()
+    if not normalized:
+        return True
+
+    insecure_keywords = (
+        "change-me",
+        "changeme",
+        "your_",
+        "your-",
+        "placeholder",
+        "example",
+        "demo",
+        "default",
+        "minioadmin",
+        "change_me_super_pass",
+        "app-change_me_chat_api_key",
+    )
+
+    return any(keyword in normalized for keyword in insecure_keywords)
+
+
+def _is_production_env(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"production", "prod"}
+
+
+def _contains_wildcard(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip() == "*"
+    if isinstance(value, list):
+        return "*" in [str(item).strip() for item in value]
+    return False
 
 
 class SingletonModelMeta(ModelMetaclass):
@@ -60,12 +98,27 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     DESCRIPTION: str = Field("AI数据工具后端API服务", env="DESCRIPTION")
     ENVIRONMENT: str = Field("development", env="ENVIRONMENT")
     DEBUG: bool = Field(True, env="DEBUG")
+    @validator("DEBUG", pre=True)
+    def parse_debug_flag(cls, v: Any):
+        """Allow common string aliases like release/prod/debug/dev."""
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            normalized = v.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "debug", "dev", "development"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "release", "prod", "production"}:
+                return False
+        return v
+
     API_V1_STR: str = Field("/api/v1", env="API_V1_STR")
 
     # 服务端网络
     HOST: str = Field("0.0.0.0", env="HOST")
     PORT: int = Field(8000, env="PORT")
     ALLOWED_HOSTS: List[str] = Field(default_factory=lambda: ["*"], env="ALLOWED_HOSTS")
+    TRUST_PROXY_HEADERS: bool = Field(False, env="TRUST_PROXY_HEADERS")
+    TRUSTED_PROXIES: List[str] = Field(default_factory=list, env="TRUSTED_PROXIES")
 
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = Field(default_factory=lambda: ["*"], env="BACKEND_CORS_ORIGINS")
@@ -82,11 +135,39 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     def split_allowed_hosts(cls, v: Union[str, List[str]]) -> List[str]:
         return _split_comma_separated(v)
 
+    @validator("TRUSTED_PROXIES", pre=True)
+    def split_trusted_proxies(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str):
+            if not v.strip():
+                return []
+            return [item.strip() for item in v.split(",") if item.strip()]
+        return v
+
+    @validator("ALLOWED_HOSTS")
+    def validate_allowed_hosts_for_production(cls, v: List[str], values):
+        if _is_production_env(values.get("ENVIRONMENT")) and _contains_wildcard(v):
+            raise ValueError("生产环境禁止使用 ALLOWED_HOSTS=[\"*\"]，请配置明确域名")
+        return v
+
+    @validator("BACKEND_CORS_ORIGINS")
+    def validate_cors_origins_for_production(cls, v: List[str], values):
+        if _is_production_env(values.get("ENVIRONMENT")) and _contains_wildcard(v):
+            raise ValueError("生产环境禁止使用 BACKEND_CORS_ORIGINS=[\"*\"]，请配置明确来源")
+        return v
+
+    @validator("RETRIEVER_ALLOWED_COLLECTIONS", pre=True)
+    def split_retriever_allowed_collections(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str):
+            if not v.strip():
+                return []
+            return [item.strip() for item in v.split(",") if item.strip()]
+        return v
+
     # 数据库
-    POSTGRES_SERVER: str = Field("localhost", env="POSTGRES_SERVER")
-    POSTGRES_USER: str = Field("postgres", env="POSTGRES_USER")
-    POSTGRES_PASSWORD: str = Field("change_me_pg_password", env="POSTGRES_PASSWORD")
-    POSTGRES_DB: str = Field("postgres", env="POSTGRES_DB")
+    POSTGRES_SERVER: str = Field("127.0.0.1", env="POSTGRES_SERVER")
+    POSTGRES_USER: str = Field("pguser", env="POSTGRES_USER")
+    POSTGRES_PASSWORD: str = Field("change_me_postgres_password", env="POSTGRES_PASSWORD")
+    POSTGRES_DB: str = Field("pgdb", env="POSTGRES_DB")
     POSTGRES_PORT: int = Field(5432, env="POSTGRES_PORT")
 
     @property
@@ -101,7 +182,7 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
         )
 
     # Redis
-    REDIS_HOST: str = Field("localhost", env="REDIS_HOST")
+    REDIS_HOST: str = Field("127.0.0.1", env="REDIS_HOST")
     REDIS_PORT: int = Field(6379, env="REDIS_PORT")
     REDIS_DB: int = Field(0, env="REDIS_DB")
     REDIS_PASSWORD: Optional[str] = Field(default=None, env="REDIS_PASSWORD")
@@ -113,25 +194,37 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
         return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
     # MinIO
-    MINIO_ENDPOINT: str = Field("localhost:9000", env="MINIO_ENDPOINT")
-    MINIO_ACCESS_KEY: str = Field("minioadmin", env="MINIO_ACCESS_KEY")
-    MINIO_SECRET_KEY: str = Field("minioadmin", env="MINIO_SECRET_KEY")
+    MINIO_ENDPOINT: str = Field("127.0.0.1:9000", env="MINIO_ENDPOINT")
+    MINIO_ACCESS_KEY: str = Field("change_me_minio_access_key", env="MINIO_ACCESS_KEY")
+    MINIO_SECRET_KEY: str = Field("change_me_minio_secret_key", env="MINIO_SECRET_KEY")
     MINIO_SECURE: bool = Field(False, env="MINIO_SECURE")
-    MINIO_BUCKET_NAME: str = Field("imagebed", env="MINIO_BUCKET_NAME")
+    MINIO_BUCKET_NAME: str = Field("yamatodev", env="MINIO_BUCKET_NAME")
 
     # 安全
     SECRET_KEY: str = Field(default_factory=lambda: secrets.token_urlsafe(32), env="SECRET_KEY")
     ALGORITHM: str = Field("HS256", env="ALGORITHM")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(60, env="ACCESS_TOKEN_EXPIRE_MINUTES")
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(7, env="REFRESH_TOKEN_EXPIRE_DAYS")
-    INTERNAL_API_KEY: str = Field("your-internal-api-key-change-in-production", env="INTERNAL_API_KEY")
+    INTERNAL_API_KEY: str = Field("change_me_internal_api_key", env="INTERNAL_API_KEY")
+    RETRIEVER_ALLOWED_COLLECTIONS: List[str] = Field(default_factory=list, env="RETRIEVER_ALLOWED_COLLECTIONS")
+
+    # 启动引导账号（仅建议开发环境使用）
+    BOOTSTRAP_SUPERUSER_USERNAME: Optional[str] = Field(default=None, env="BOOTSTRAP_SUPERUSER_USERNAME")
+    BOOTSTRAP_SUPERUSER_EMAIL: Optional[str] = Field(default=None, env="BOOTSTRAP_SUPERUSER_EMAIL")
+    BOOTSTRAP_SUPERUSER_PASSWORD: Optional[str] = Field(default=None, env="BOOTSTRAP_SUPERUSER_PASSWORD")
 
     # 限流
     RATE_LIMIT_REQUESTS_PER_MINUTE: int = Field(100, env="RATE_LIMIT_REQUESTS_PER_MINUTE")
     RATE_LIMIT_REQUESTS_PER_HOUR: int = Field(1000, env="RATE_LIMIT_REQUESTS_PER_HOUR")
     RATE_LIMIT_AUTH: int = Field(100, env="RATE_LIMIT_AUTH")
     RATE_LIMIT_ANON: int = Field(20, env="RATE_LIMIT_ANON")
+    RATE_LIMIT_EXPENSIVE_AUTH: int = Field(20, env="RATE_LIMIT_EXPENSIVE_AUTH")
+    RATE_LIMIT_EXPENSIVE_ANON: int = Field(5, env="RATE_LIMIT_EXPENSIVE_ANON")
     RATE_LIMIT_WINDOW: int = Field(60, env="RATE_LIMIT_WINDOW")
+    RATE_LIMIT_FAIL_OPEN: bool = Field(True, env="RATE_LIMIT_FAIL_OPEN")
+    RATE_LIMIT_REDIS_ERROR_STATUS: int = Field(503, env="RATE_LIMIT_REDIS_ERROR_STATUS")
+    WS_MAX_CONNECTIONS_PER_IP: int = Field(20, env="WS_MAX_CONNECTIONS_PER_IP")
+    WS_MAX_MESSAGES_PER_MINUTE: int = Field(120, env="WS_MAX_MESSAGES_PER_MINUTE")
 
     # 中间件开关
     ENABLE_RATE_LIMIT: bool = Field(False, env="ENABLE_RATE_LIMIT")
@@ -179,12 +272,16 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     LOCAL_MODEL_GPU_DEVICE: int = Field(3, env="LOCAL_MODEL_GPU_DEVICE")
 
     # ==================== 外部服务（暂未启用） ====================
+    # Qwen3-8B API
+    QWEN3_8B_API_URL: str = Field("http://localhost:80/llm/qwen8b/v1", env="QWEN3_8B_API_URL")
+    QWEN3_5_27B_API_URL: str = Field("http://localhost:80/llm/qwen35b/v1", env="QWEN3_5_27B_API_URL")
+
     # N8N 工作流引擎
     N8N_BASE_URL: str = Field("http://localhost:5678", env="N8N_BASE_URL")
     N8N_API_KEY: Optional[str] = Field(default=None, env="N8N_API_KEY")
     
     # Dify AI 平台
-    DIFY_BASE_URL: str = Field("http://localhost:3000", env="DIFY_BASE_URL")
+    DIFY_BASE_URL: str = Field("http://localhost:80", env="DIFY_BASE_URL")
     DIFY_API_KEY: Optional[str] = Field(default=None, env="DIFY_API_KEY")
     
     # RAGFlow 知识库
@@ -217,8 +314,57 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     MONITORING_INTERVAL: int = Field(60, env="MONITORING_INTERVAL")
     ENABLE_PROMETHEUS: bool = Field(True, env="ENABLE_PROMETHEUS")
     ENABLE_HEALTH_CHECK: bool = Field(True, env="ENABLE_HEALTH_CHECK")
+    METRICS_REQUIRE_API_KEY: bool = Field(True, env="METRICS_REQUIRE_API_KEY")
+    ENABLE_SECURITY_HEADERS: bool = Field(True, env="ENABLE_SECURITY_HEADERS")
+    ENABLE_HSTS: bool = Field(True, env="ENABLE_HSTS")
+    HSTS_MAX_AGE: int = Field(31536000, env="HSTS_MAX_AGE")
 
-    CHAT_API_KEY: str = Field("app-change_me_chat_api_key", env="CHAT_API_KEY")
+    CHAT_API_KEY: str = Field("change_me_chat_api_key", env="CHAT_API_KEY")
+
+    @field_validator(
+        "SECRET_KEY",
+        "INTERNAL_API_KEY",
+        "CHAT_API_KEY",
+        "POSTGRES_PASSWORD",
+        "MINIO_ACCESS_KEY",
+        "MINIO_SECRET_KEY",
+        mode="after",
+    )
+    def validate_sensitive_values(cls, v: str, info: ValidationInfo):
+        """生产环境下禁止使用占位符或弱默认敏感配置。"""
+        env = str((info.data or {}).get("ENVIRONMENT", "development")).lower()
+        field_name = getattr(info, "field_name", "敏感配置")
+
+        if not v or not str(v).strip():
+            raise ValueError(f"{field_name} 不能为空")
+
+        if env in {"production", "prod"} and _is_insecure_value(v):
+            raise ValueError(f"{field_name} 使用了不安全默认值，请通过环境变量覆盖")
+
+        return v
+
+    @validator("BOOTSTRAP_SUPERUSER_PASSWORD")
+    def validate_bootstrap_superuser_password(cls, v: Optional[str], values):
+        """生产环境禁用弱引导密码。"""
+        if v is None:
+            return v
+
+        env = str(values.get("ENVIRONMENT", "development")).lower()
+        if env in {"production", "prod"} and _is_insecure_value(v):
+            raise ValueError("BOOTSTRAP_SUPERUSER_PASSWORD 使用了不安全默认值")
+        return v
+
+    @validator("ENABLE_RATE_LIMIT")
+    def validate_rate_limit_required_in_production(cls, v: bool, values):
+        if _is_production_env(values.get("ENVIRONMENT")) and not v:
+            raise ValueError("生产环境必须启用 ENABLE_RATE_LIMIT")
+        return v
+
+    @validator("RATE_LIMIT_REDIS_ERROR_STATUS")
+    def validate_rate_limit_redis_error_status(cls, v: int):
+        if v not in {429, 503}:
+            raise ValueError("RATE_LIMIT_REDIS_ERROR_STATUS 仅支持 429 或 503")
+        return v
 
     # 开发模式
     RELOAD: bool = Field(False, env="RELOAD")

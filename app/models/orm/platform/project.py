@@ -1,6 +1,7 @@
 import enum
 
 from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, ForeignKey, Enum
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -34,7 +35,7 @@ class ProjectSpace(Base):
     name = Column(String(100), nullable=False, comment="项目空间名称")
     description = Column(Text, comment="项目空间描述")
     status = Column(Enum(ProjectStatus), default=ProjectStatus.ACTIVE, comment="项目状态")
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=False, comment="创建者ID")
+    created_by = Column(PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, comment="创建者ID")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), comment="更新时间")
 
@@ -54,7 +55,7 @@ class ProjectMember(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("project_spaces.id"), nullable=False, comment="项目空间ID")
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, comment="用户ID")
+    user_id = Column(PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, comment="用户ID")
     role = Column(String(50), nullable=False, comment="成员角色")
     joined_at = Column(DateTime(timezone=True), server_default=func.now(), comment="加入时间")
     is_active = Column(Boolean, default=True, comment="是否活跃")
@@ -72,8 +73,8 @@ class ProjectTask(Base):
     project_id = Column(Integer, ForeignKey("project_spaces.id"), nullable=False, comment="项目空间ID")
     title = Column(String(200), nullable=False, comment="任务标题")
     description = Column(Text, comment="任务描述")
-    assigned_to = Column(Integer, ForeignKey("users.id"), comment="指派给的用户ID")
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=False, comment="创建者ID")
+    assigned_to = Column(PgUUID(as_uuid=True), ForeignKey("users.id"), comment="指派给的用户ID")
+    created_by = Column(PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, comment="创建者ID")
     status = Column(Enum(TaskStatus), default=TaskStatus.TODO, comment="任务状态")
     priority = Column(Enum(TaskPriority), default=TaskPriority.MEDIUM, comment="任务优先级")
     due_date = Column(DateTime(timezone=True), comment="截止日期")
@@ -98,8 +99,8 @@ class DataShare(Base):
     resource_name = Column(String(200), nullable=False, comment="资源名称")
     request_reason = Column(Text, comment="申请原因")
     status = Column(String(20), default="pending", comment="申请状态：pending/approved/rejected")
-    requested_by = Column(Integer, ForeignKey("users.id"), nullable=False, comment="申请人ID")
-    reviewed_by = Column(Integer, ForeignKey("users.id"), comment="审核人ID")
+    requested_by = Column(PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, comment="申请人ID")
+    reviewed_by = Column(PgUUID(as_uuid=True), ForeignKey("users.id"), comment="审核人ID")
     reviewed_at = Column(DateTime(timezone=True), comment="审核时间")
     review_comment = Column(Text, comment="审核意见")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="申请时间")

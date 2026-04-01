@@ -1,4 +1,9 @@
 /// <reference types="vite/client" />
+declare module '*.vue' {
+  import type { DefineComponent } from 'vue'
+  const component: DefineComponent<Record<string, unknown>, Record<string, unknown>, unknown>
+  export default component
+}
 
 interface ImportMetaEnv {
   readonly VITE_PORT: string
@@ -6,7 +11,6 @@ interface ImportMetaEnv {
   readonly VITE_DIFY_TARGET: string
   readonly VITE_DIFY_API_PREFIX: string
   readonly VITE_BACKEND_TARGET: string
-  readonly VITE_CHAT_API_KEY: string
   readonly VITE_ENV?: string
   readonly VITE_LOGIN_ENDPOINT: string
   readonly VITE_ME_ENDPOINT: string

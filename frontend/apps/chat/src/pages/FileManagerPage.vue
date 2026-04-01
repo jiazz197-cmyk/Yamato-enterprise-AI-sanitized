@@ -1,18 +1,22 @@
 <template>
-  <div class="page">
-    <PageHeader title="文件管理" subtitle="上传、浏览与管理你的文件" />
-
-    <div class="page__content">
-      <div class="toolbar">
-        <Button variant="primary" @click="handleUpload">上传文件</Button>
-        <div class="toolbar__right">
-          <div class="ws-metric">
-            <div class="ws-metric__label">WebSocket 连接数</div>
-            <div class="ws-metric__value">{{ wsConnections }}</div>
-          </div>
-        </div>
+  <div class="file-manager-page">
+    <div class="file-manager-header">
+      <div class="file-manager-header__left">
+        <h1 class="file-manager-header__title">文件管理</h1>
+        <span class="file-manager-header__count">共 {{ tasks.length }} 个任务</span>
       </div>
+      <div class="header-actions">
+        <div class="ws-metric">
+          <span class="ws-metric__label">WebSocket 连接数:</span>
+          <span class="ws-metric__value">{{ wsConnections }}</span>
+        </div>
+        <button class="upload-btn" @click="handleUpload">
+          上传文件
+        </button>
+      </div>
+    </div>
 
+    <div class="file-manager-content">
       <div class="task-list">
         <TaskCard
           v-for="task in sortedTasks"
@@ -31,7 +35,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Button, TaskCard, PageHeader } from '@yamato/components'
+import { TaskCard } from '@yamato/components'
 
 type TaskStatus = 'in_progress' | 'cancelled' | 'completed'
 
@@ -132,52 +136,88 @@ onUnmounted(() => {
 </script>
 
 <style scoped lang="scss">
-.page {
-  height: 100%;
+.file-manager-page {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-}
-
-.page__content {
-  flex: 1;
+  height: 100%;
+  padding: 32px 32px 24px;
+  box-sizing: border-box;
   overflow: auto;
-  padding: 24px 32px;
-  background: #ffffff;
 }
 
-.toolbar {
+.file-manager-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 24px;
+  flex-shrink: 0;
 }
 
-.toolbar__right {
+.file-manager-header__left {
   display: flex;
-  align-items: center;
-  justify-content: flex-end;
+  align-items: baseline;
   gap: 12px;
 }
 
+.file-manager-header__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #202124;
+}
+
+.file-manager-header__count {
+  font-size: 13px;
+  color: #9aa0a6;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
 .ws-metric {
-  text-align: right;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   user-select: none;
 }
 
 .ws-metric__label {
   font-size: 12px;
   color: #5f6368;
-  line-height: 1.2;
 }
 
 .ws-metric__value {
-  margin-top: 2px;
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 600;
   color: #202124;
-  line-height: 1.2;
+}
+
+.upload-btn {
+  height: 36px;
+  padding: 0 16px;
+  background: #1a73e8;
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s ease;
+
+  &:hover {
+    background: #1765cf;
+  }
+}
+
+.file-manager-content {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+  padding: 24px;
+  flex: 1;
 }
 
 .task-list {

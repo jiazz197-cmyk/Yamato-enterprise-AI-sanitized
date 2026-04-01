@@ -1,5 +1,6 @@
 import { config } from '../config'
 import { createChatHeaders } from './api'
+import { getAuthTokenFromStorage } from './token_storage'
 import type {
   SearchMode,
   SSEEvent,
@@ -16,6 +17,13 @@ export interface SSECallbacks {
   onMessage?: (content: string, data: SSEEvent) => void
   onEnd?: (data: SSEEvent) => void
   onError?: (error: Error) => void
+}
+
+export interface CompressContextResponse {
+  data: {
+    compressed_context: string
+  }
+  message: string
 }
 
 interface ParsedSSEBlock {
@@ -163,14 +171,34 @@ const isUUID = (value: string | undefined): value is string => {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 }
 
+const getAuthToken = (): string => {
+  return getAuthTokenFromStorage() || ''
+}
+
+const parseErrorResponseMessage = async (response: Response): Promise<string | undefined> => {
+  const contentType = response.headers.get('content-type') || ''
+  const isJsonResponse = contentType.toLowerCase().includes('application/json')
+
+  if (isJsonResponse) {
+    const payload = (await response.json().catch(() => null)) as
+      | { message?: unknown; detail?: unknown; error?: unknown }
+      | null
+    return pickFirstString([payload?.message, payload?.detail, payload?.error])
+  }
+
+  const rawText = await response.text().catch(() => '')
+  return rawText.trim() || undefined
+}
+
 /**
  * 发送聊天消息（SSE 流式响应）
  */
 export const sendChatMessage = async (
   query: string,
   conversationId: string | undefined,
-  settings: { user: string; search: SearchMode },
-  callbacks: SSECallbacks
+  settings: { user: string; search: SearchMode; background?: string },
+  callbacks: SSECallbacks,
+  signal?: AbortSignal
 ): Promise<{ taskId: string; conversationId: string }> => {
   const url = `${config.apiBaseUrl}/chat-messages`
   const user = settings.user.trim()
@@ -181,14 +209,19 @@ export const sendChatMessage = async (
 
   const normalizedConversationId = isUUID(conversationId) ? conversationId : undefined
 
+  const token = getAuthToken()
+
   const requestBody = {
     user,
     user_id: user,
+    token,
     search: settings.search,
     query,
     inputs: {
       search: settings.search,
       user_id: user,
+      token,
+      background: settings.background || "",
     },
     ...(normalizedConversationId ? { conversation_id: normalizedConversationId } : {}),
     response_mode: 'streaming',
@@ -198,11 +231,16 @@ export const sendChatMessage = async (
     method: 'POST',
     headers: createChatHeaders(),
     body: JSON.stringify(requestBody),
+    signal,
   })
   
   if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.message || '发送消息失败')
+    const backendMessage = await parseErrorResponseMessage(response)
+    if (response.status === 429) {
+      const rateLimitHint = backendMessage ? `429 ${backendMessage}` : '429 Too Many Requests'
+      throw new Error(rateLimitHint)
+    }
+    throw new Error(backendMessage || `HTTP ${response.status} 发送消息失败`)
   }
   
   const reader = response.body?.getReader()
@@ -219,6 +257,15 @@ export const sendChatMessage = async (
   let accumulatedContent = ''
   let hasStreamedContent = false
   let fallbackContent = ''
+  let endEventEmitted = false
+
+  const emitEndEvent = (event: RawSSEEvent) => {
+    if (endEventEmitted) {
+      return
+    }
+    endEventEmitted = true
+    callbacks.onEnd?.(event as SSEEvent)
+  }
 
   const processSSEBlock = (block: string) => {
     const parsed = parseSSEBlock(block)
@@ -285,7 +332,7 @@ export const sendChatMessage = async (
         callbacks.onMessage?.(accumulatedContent, data as SSEEvent)
         hasStreamedContent = true
       }
-      callbacks.onEnd?.(data as SSEEvent)
+      emitEndEvent(data)
     } else if (eventType === 'error') {
       callbacks.onError?.(new Error(typeof data.message === 'string' ? data.message : '请求失败'))
     }
@@ -323,7 +370,18 @@ export const sendChatMessage = async (
         event: 'message_end',
       } as SSEEvent)
     }
+
+    if (!endEventEmitted) {
+      emitEndEvent({
+        event: 'message_end',
+        task_id: taskId,
+        conversation_id: responseConversationId,
+      })
+    }
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error
+    }
     callbacks.onError?.(error as Error)
     throw error
   } finally {
@@ -334,6 +392,38 @@ export const sendChatMessage = async (
     taskId,
     conversationId: responseConversationId || '',
   }
+}
+
+/**
+ * 压缩对话上下文
+ */
+export const compressContext = async (
+  userId: string,
+  conversationId: string,
+  nRecent: number = 5
+): Promise<CompressContextResponse> => {
+  const url = `${config.apiBaseUrl}/context-compression/compress`
+  const token = getAuthToken()
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      user_id: userId,
+      conversation_id: conversationId,
+      n_recent: nRecent,
+    }),
+  })
+
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.message || error.detail || '压缩上下文失败')
+  }
+
+  return response.json()
 }
 
 /**

@@ -9,6 +9,7 @@
     ".": "./index.ts"
   },
   "dependencies": {
+    "dompurify": "^3.3.3",
     "markdown-it": "^14.1.1",
     "vue": "^3.4.0"
   },

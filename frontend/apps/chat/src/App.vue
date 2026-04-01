@@ -1,5 +1,5 @@
 <template>
-  <div v-if="isLoginPage" class="login-shell">
+  <div v-if="isShellFreePage" class="login-shell">
     <RouterView />
   </div>
   <div v-else id="app" class="app-shell">
@@ -10,7 +10,7 @@
       :user-avatar-url="userAvatarUrl"
       user-desc="在线"
       :collapsible="false"
-      :width="168"
+      :width="200"
     >
       <nav class="sidebar-nav" aria-label="主导航">
         <RouterLink class="sidebar-nav__item" active-class="is-active" to="/chat">
@@ -19,10 +19,18 @@
         <RouterLink class="sidebar-nav__item" active-class="is-active" to="/files">
           文件管理
         </RouterLink>
-        <RouterLink class="sidebar-nav__item" active-class="is-active" to="/policy">
+        <RouterLink class="sidebar-nav__item" active-class="is-active" to="/closing-form">
           报单填写
         </RouterLink>
+        <RouterLink v-if="isAdminOrSuperuser" class="sidebar-nav__item" active-class="is-active" to="/collection2">
+          知识库管理
+        </RouterLink>
+        <RouterLink v-if="isSuperuser" class="sidebar-nav__item" active-class="is-active" to="/users">
+          用户管理
+        </RouterLink>
       </nav>
+
+      <div id="sidebar-extra-slot" class="sidebar-extra"></div>
 
       <template #user-actions>
         <button class="logout-btn" type="button" @click="openLogoutDialog">
@@ -42,7 +50,7 @@
       type="warning"
       confirm-text="退出"
       cancel-text="取消"
-      @confirm="confirmLogout"
+      @confirm="doLogout"
     />
   </div>
 </template>
@@ -53,40 +61,57 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { Sidebar, ConfirmDialog } from '@yamato/components'
 import { config } from './config'
 import { useIdleTimer } from './composables/useIdleTimer'
+import { clearAuthTokenFromStorage } from './services/token_storage'
 
 const sidebarUserId = ref('')
+const sidebarUserName = ref('')
+const userRole = ref('')
 
-const readSidebarUserId = () => {
+const readSidebarState = () => {
   try {
     const raw = localStorage.getItem(config.settingsStorageKey)
     if (!raw) {
       sidebarUserId.value = ''
+      sidebarUserName.value = ''
+      userRole.value = ''
       return
     }
 
-    const parsed = JSON.parse(raw) as { userId?: unknown; user?: unknown }
-    sidebarUserId.value = String(parsed.userId ?? parsed.user ?? '').trim()
+    const parsed = JSON.parse(raw) as {
+      userId?: unknown
+      user?: unknown
+      userName?: unknown
+      username?: unknown
+      role?: unknown
+    }
+    sidebarUserId.value = String(parsed.userId ?? '').trim()
+    sidebarUserName.value = String(parsed.userName ?? parsed.user ?? parsed.username ?? '').trim()
+    userRole.value = String(parsed.role ?? '').trim()
   } catch {
     sidebarUserId.value = ''
+    sidebarUserName.value = ''
+    userRole.value = ''
   }
 }
 
-const userName = computed(() => sidebarUserId.value || config.userName || '')
+const userName = computed(() => sidebarUserName.value || sidebarUserId.value || config.userName || '')
 const userAvatarUrl = computed(() => config.userAvatarUrl || '')
+const isSuperuser = computed(() => userRole.value === 'superuser')
+const isAdminOrSuperuser = computed(() => userRole.value === 'admin' || userRole.value === 'superuser')
 
 const route = useRoute()
 const router = useRouter()
 
 const showLogoutDialog = ref(false)
 
-const isLoginPage = computed(() => route.name === 'login')
+const isShellFreePage = computed(() => route.name === 'login' || route.name === 'register')
 
-readSidebarUserId()
+readSidebarState()
 
 watch(
   () => route.fullPath,
   () => {
-    readSidebarUserId()
+    readSidebarState()
   }
 )
 
@@ -94,9 +119,10 @@ const openLogoutDialog = () => {
   showLogoutDialog.value = true
 }
 
-const confirmLogout = async () => {
+const doLogout = async () => {
+  clearAuthTokenFromStorage()
   try {
-    localStorage.removeItem(config.authTokenStorageKey)
+    localStorage.removeItem(config.settingsStorageKey)
   } catch {
     // ignore
   }
@@ -105,25 +131,16 @@ const confirmLogout = async () => {
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000
 
-const autoLogout = async () => {
-  try {
-    localStorage.removeItem(config.authTokenStorageKey)
-  } catch {
-    // ignore
-  }
-  await router.push('/login')
-}
-
 const { start: startIdleTimer, stop: stopIdleTimer } = useIdleTimer(IDLE_TIMEOUT_MS, () => {
-  void autoLogout()
+  void doLogout()
 })
 
-if (!isLoginPage.value) {
+if (!isShellFreePage.value) {
   startIdleTimer()
 }
 
-watch(isLoginPage, (onLoginPage) => {
-  if (onLoginPage) {
+watch(isShellFreePage, (onShellFreePage) => {
+  if (onShellFreePage) {
     stopIdleTimer()
   } else {
     startIdleTimer()
@@ -136,6 +153,7 @@ watch(isLoginPage, (onLoginPage) => {
   width: 100%;
   height: 100vh;
   overflow: hidden;
+  background: #f8f9fa;
 }
 
 .login-shell {
@@ -146,9 +164,17 @@ watch(isLoginPage, (onLoginPage) => {
 
 .app-main {
   height: 100%;
-  padding-left: 168px;
+  padding-left: 212px;
   overflow: hidden;
-  background: #ffffff;
+  background: #f8f9fa;
+}
+
+.sidebar-extra {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0 8px;
 }
 
 .sidebar-nav {

@@ -3,11 +3,13 @@ import uuid
 import logging
 from typing import Dict, Any, Optional
 
-from fastapi import APIRouter, HTTPException, File, UploadFile
+from fastapi import APIRouter, HTTPException, File, UploadFile, Depends, status
 from pydantic import BaseModel
 
 from app.integrations.ocr.image2url import upload_file_to_minio
 from app.core.executor import executor_manager, CancellationToken
+from app.core.security import get_current_user
+from app.models.orm.platform.user import User, UserRole
 
 router = APIRouter()
 
@@ -120,7 +122,8 @@ def background_image_upload_task(
 @router.post("/image/upload", response_model=ImageUploadResponse)
 async def upload_image(
     file: UploadFile = File(...),
-    request: ImageUploadRequest = ImageUploadRequest()
+    request: ImageUploadRequest = ImageUploadRequest(),
+    current_user: User = Depends(get_current_user),
 ) -> ImageUploadResponse:
     """
     异步上传图片至MinIO并返回访问URL（使用 ExecutorManager）
@@ -159,6 +162,9 @@ async def upload_image(
             file.content_type,
             request.file_name_prefix
         )
+
+        # 记录任务归属，用于后续状态查询鉴权
+        executor_manager.set_task_owner(task_id, str(current_user.id))
         
         logger.info(f"启动图片上传任务: {task_id}")
         return ImageUploadResponse(
@@ -171,10 +177,13 @@ async def upload_image(
         raise
     except Exception as e:
         logger.error(f"启动图片上传任务失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"启动上传任务失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="启动上传任务失败")
 
 @router.get("/image/task/{task_id}")
-async def get_image_upload_task_status(task_id: str) -> Dict[str, Any]:
+async def get_image_upload_task_status(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
     """
     获取图片上传任务状态（使用 ExecutorManager）
     
@@ -190,6 +199,10 @@ async def get_image_upload_task_status(task_id: str) -> Dict[str, Any]:
         future = executor_manager.get_task_future(task_id)
         if not future:
             raise HTTPException(status_code=404, detail="任务不存在")
+
+        owner_id = executor_manager.get_task_owner(task_id)
+        if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该任务")
         
         # 检查任务状态
         if not future.done():
@@ -243,10 +256,13 @@ async def get_image_upload_task_status(task_id: str) -> Dict[str, Any]:
         raise
     except Exception as e:
         logger.error(f"获取图片上传任务状态失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"获取任务状态失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取任务状态失败")
 
 @router.get("/image/task/{task_id}/result")
-async def get_image_upload_task_result(task_id: str) -> Dict[str, Any]:
+async def get_image_upload_task_result(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
     """
     获取图片上传任务结果（仅限已完成任务，使用 ExecutorManager）
     
@@ -260,6 +276,10 @@ async def get_image_upload_task_result(task_id: str) -> Dict[str, Any]:
         future = executor_manager.get_task_future(task_id)
         if not future:
             raise HTTPException(status_code=404, detail="任务不存在")
+
+        owner_id = executor_manager.get_task_owner(task_id)
+        if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该任务结果")
         
         if not future.done():
             raise HTTPException(
@@ -297,17 +317,20 @@ async def get_image_upload_task_result(task_id: str) -> Dict[str, Any]:
             logger.error(f"任务 {task_id} 执行失败: {e}")
             raise HTTPException(
                 status_code=500,
-                detail=f"任务执行失败: {str(e)}"
+                detail="任务执行失败"
             )
     
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"获取图片上传任务结果失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"获取任务结果失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取任务结果失败")
 
 @router.delete("/image/task/{task_id}")
-async def cancel_image_upload_task(task_id: str) -> Dict[str, Any]:
+async def cancel_image_upload_task(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
     """
     取消图片上传任务（使用 ExecutorManager 协作式取消）
     
@@ -321,6 +344,10 @@ async def cancel_image_upload_task(task_id: str) -> Dict[str, Any]:
         future = executor_manager.get_task_future(task_id)
         if not future:
             raise HTTPException(status_code=404, detail="任务不存在")
+
+        owner_id = executor_manager.get_task_owner(task_id)
+        if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权取消该任务")
         
         if future.done():
             raise HTTPException(status_code=400, detail="任务已完成，无法取消")
@@ -341,10 +368,12 @@ async def cancel_image_upload_task(task_id: str) -> Dict[str, Any]:
         raise
     except Exception as e:
         logger.error(f"取消图片上传任务失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"取消任务失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="取消任务失败")
 
 @router.get("/image/tasks/stats")
-async def get_image_upload_tasks_stats() -> Dict[str, Any]:
+async def get_image_upload_tasks_stats(
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
     """
     获取图片上传任务统计信息（使用 ExecutorManager）
     
@@ -352,6 +381,9 @@ async def get_image_upload_tasks_stats() -> Dict[str, Any]:
         任务统计信息
     """
     try:
+        if current_user.role != UserRole.superuser:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅超级管理员可查看任务统计")
+
         active_count = executor_manager.get_active_task_count()
         running_count = executor_manager.get_running_task_count()
         
@@ -364,4 +396,4 @@ async def get_image_upload_tasks_stats() -> Dict[str, Any]:
     
     except Exception as e:
         logger.error(f"获取任务统计信息失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"获取统计信息失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取统计信息失败")

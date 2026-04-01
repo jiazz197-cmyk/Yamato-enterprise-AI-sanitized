@@ -94,13 +94,14 @@ const toggle = () => {
 
 <style lang="scss" scoped>
 .sidebar {
-  height: 100vh;
+  height: calc(100vh - 24px);
   position: fixed;
-  top: 0;
-  left: 0;
+  top: 12px;
+  left: 12px;
   z-index: 10;
-  background: #f8f9fa;
-  border-right: 1px solid #e8eaed;
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
   transition: width 0.3s ease;
   display: flex;
   flex-direction: column;
@@ -222,9 +223,11 @@ const toggle = () => {
 
   &__meta {
     max-width: 160px;
+    min-width: 0;
     overflow: hidden;
     opacity: 1;
     transition: opacity 0.2s ease;
+    flex: 1;
   }
 
   &__name {
@@ -232,6 +235,11 @@ const toggle = () => {
     font-weight: 500;
     color: #202124;
     line-height: 1.2;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
   }
 
   &__top-row {
@@ -239,6 +247,7 @@ const toggle = () => {
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    min-width: 0;
   }
 
   &__desc {

@@ -67,6 +67,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
+import DOMPurify from 'dompurify'
 
 interface Props {
   role: 'user' | 'assistant'
@@ -134,10 +135,16 @@ const hasThought = computed(() => parsedAssistantContent.value.thought.length > 
 const hasAnswer = computed(() => parsedAssistantContent.value.answer.trim().length > 0)
 const clampThoughtDuringAnswer = computed(() => Boolean(props.isStreaming && hasAnswer.value))
 const renderedThoughtMarkdown = computed(() =>
-  wrapTableScrollContainer(md.render(parsedAssistantContent.value.thought || ''))
+  DOMPurify.sanitize(
+    wrapTableScrollContainer(md.render(parsedAssistantContent.value.thought || '')),
+    { USE_PROFILES: { html: true } }
+  )
 )
 const renderedAnswerMarkdown = computed(() =>
-  wrapTableScrollContainer(md.render(parsedAssistantContent.value.answer || ''))
+  DOMPurify.sanitize(
+    wrapTableScrollContainer(md.render(parsedAssistantContent.value.answer || '')),
+    { USE_PROFILES: { html: true } }
+  )
 )
 
 const thoughtExpanded = ref(true)
