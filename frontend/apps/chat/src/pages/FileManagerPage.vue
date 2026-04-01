@@ -35,7 +35,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Button, TaskCard, PageHeader } from '@yamato/components'
+import { TaskCard } from '@yamato/components'
 
 type TaskStatus = 'in_progress' | 'cancelled' | 'completed'
 
