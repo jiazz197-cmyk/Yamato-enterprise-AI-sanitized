@@ -14,6 +14,9 @@ dist/
 build/
 index_storage/
 
+# Generated nginx config (from nginx/nginx.conf.template; see scripts/render_nginx_conf.sh)
+nginx/nginx.conf
+
 # Environment variables
 .env
 .env.local
