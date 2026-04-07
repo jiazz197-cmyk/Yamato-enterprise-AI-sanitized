@@ -49,6 +49,7 @@ else:
 
 from app.ragsystem.RAGretriever import create_rag_retriever_system
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
@@ -179,7 +180,6 @@ async def lifespan(app: FastAPI):
     yield  # 应用运行中
     
     # === Shutdown ===
-    import asyncio
     import signal
     import sys
     
