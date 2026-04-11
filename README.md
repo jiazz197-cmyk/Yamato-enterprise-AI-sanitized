@@ -88,16 +88,19 @@ Yamato AI 助手平台是专为**大和计量设备（上海）团队**打造的
 
 ## 前端页面
 
-平台包含四个主要功能页面，登录后即可使用：
+前端 Monorepo 主应用为 [`frontend/apps/chat`](frontend/apps/chat)。登录后可使用核心业务页面；另有注册页与按角色开放的管理页：
 
-| 页面 | 路径 | 功能 |
-|------|------|------|
-| 登录页 | `/login` | 账号密码登录，获取访问权限 |
-| AI 对话页 | `/chat` | 与 AI 助手对话，访问企业知识库 |
-| 文件管理页 | `/files` | 上传文档、跟踪处理进度、管理文件 |
-| 报单填写页 | `/policy` | 填写并提交智能组合秤订单报单 |
+| 页面 | 路径 | 访问说明 |
+|------|------|----------|
+| 登录页 | `/login` | 公开；已登录访问将跳转对话页 |
+| 注册页 | `/register` | 公开；已登录访问将跳转对话页 |
+| AI 对话页 | `/chat` | 需登录 |
+| 文件管理页 | `/files` | 需登录 |
+| 报单填写页 | `/closing-form` | 需登录；填写并提交智能组合秤订单报单 |
+| 用户管理页 | `/users` | 需登录且角色为 **superuser** |
+| 知识库管理页 | `/collection2` | 需登录且角色为 **admin** 或 **superuser** |
 
-> 未登录用户访问任意页面将自动跳转至登录页。
+> 未登录用户访问除 `/login`、`/register` 外的路由将跳转至登录页。无相应角色访问管理页时将被重定向至对话页。
 
 ---
 
@@ -138,6 +141,8 @@ python main.py
 
 ### 前端启动
 
+前端使用 **pnpm workspace** 与 **Turbo**（`pnpm dev` 等价于 `turbo run dev`）。建议使用与仓库一致的 **pnpm 8.x**（见 [`frontend/package.json`](frontend/package.json) 中 `packageManager`），以减少安装与脚本行为差异。
+
 ```bash
 cd frontend
 
@@ -167,6 +172,10 @@ pnpm dev
 ---
 
 ## 更新日志
+
+### v0.2.1（2026-04）
+
+- 文档：同步前端路由（含 `/closing-form`、注册与用户/知识库管理页及权限说明）、Monorepo（pnpm + Turbo）与 `env.example` 说明
 
 ### v0.2.0（2026-03）
 

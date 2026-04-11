@@ -6,8 +6,8 @@
 
 ```
 .
-├── apps/              # 应用目录
-│   └── chat/         # AI 聊天应用
+├── apps/              # 应用目录（当前主应用为 chat）
+│   └── chat/         # AI 聊天与业务前端（Vue 3 + Vite）
 ├── packages/          # 公共包目录
 │   └── components/   # 公共组件库
 └── rules/            # 项目规范文档
@@ -59,13 +59,19 @@ pnpm type-check
 
 ## 环境变量配置
 
-在 `apps/chat/` 目录下创建 `.env` 文件：
+在 `apps/chat/` 目录下创建 `.env` 文件（可将模板复制为本地配置）：
+
+```bash
+cp apps/chat/env.example apps/chat/.env
+```
+
+常用项示例：
 
 ```env
 VITE_PORT=8888
 ```
 
-参考 `apps/chat/.env.example` 文件获取更多配置选项。
+完整变量说明见同目录下的 `env.example`（与仓库根目录 README 中前端启动步骤一致）。
 
 ## 公共组件
 
