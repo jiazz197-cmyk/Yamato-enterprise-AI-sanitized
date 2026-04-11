@@ -474,6 +474,8 @@ const isUploadingKnowledge = ref(false)
 const activeKnowledgeTaskId = ref<string | null>(null)
 let knowledgeStatusPollTimer: number | null = null
 let knowledgeStatusAbortController: AbortController | null = null
+/** Sync guard against overlapping uploads (same tick / duplicate change). */
+let knowledgeUploadProcessing = false
 
 const WELCOME_TEXT = '有什么我能帮您的吗😊'
 const welcomeDisplayText = ref('')
@@ -669,9 +671,11 @@ const handleKnowledgeUploadChange = async (event: Event) => {
   const target = event.target as HTMLInputElement
   const selectedFiles = target.files ? Array.from(target.files) : []
 
-  if (selectedFiles.length === 0 || isUploadingKnowledge.value) {
+  if (selectedFiles.length === 0 || isUploadingKnowledge.value || knowledgeUploadProcessing) {
     return
   }
+
+  knowledgeUploadProcessing = true
 
   const formData = new FormData()
   for (const file of selectedFiles) {
@@ -720,6 +724,7 @@ const handleKnowledgeUploadChange = async (event: Event) => {
   } catch (error: unknown) {
     showError(getErrorMessage(error, '知识上传失败'))
   } finally {
+    knowledgeUploadProcessing = false
     if (!keepUploadingState) {
       isUploadingKnowledge.value = false
     }

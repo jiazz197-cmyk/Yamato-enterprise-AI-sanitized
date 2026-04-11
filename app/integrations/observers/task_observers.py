@@ -39,7 +39,11 @@ class LoggingObserver(TaskObserver):
         if event.error:
             log_msg += f" | 错误: {event.error}"
         
-        logger.info(log_msg)
+        # Progress updates are high-frequency; INFO looked like duplicate "tasks" in logs.
+        if event.event_type == TaskEventType.TASK_PROGRESS_UPDATED:
+            logger.debug(log_msg)
+        else:
+            logger.info(log_msg)
 
 
 class MetricsCollector(TaskObserver):
