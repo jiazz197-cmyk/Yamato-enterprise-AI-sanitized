@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dify 流式推理分离示例</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+            background: #f5f7fb;
+        }
+        .card {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        h1 {
+            font-size: 1.8rem;
+            color: #1e293b;
+            margin-top: 0;
+        }
+        label {
+            font-weight: 600;
+            display: block;
+            margin-top: 1rem;
+            color: #334155;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            font-size: 1rem;
+            box-sizing: border-box;
+            margin-top: 0.25rem;
+        }
+        textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 1.5rem;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #1d4ed8;
+        }
+        button:disabled {
+            background: #94a3b8;
+            cursor: not-allowed;
+        }
+        .output-area {
+            background: #f8fafc;
+            border-radius: 12px;
+            padding: 1rem;
+            border: 1px solid #e2e8f0;
+            margin-top: 1.5rem;
+        }
+        .thought-container {
+            background: #f1f5f9;
+            border-left: 4px solid #3b82f6;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+        }
+        .thought-container summary {
+            font-weight: 600;
+            color: #1e40af;
+            cursor: pointer;
+            padding: 0.25rem 0;
+        }
+        .thought-content {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 0.95rem;
+            color: #1e293b;
+            margin-top: 0.5rem;
+            line-height: 1.6;
+        }
+        .answer-container {
+            padding: 0.5rem 0;
+        }
+        .answer-content {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 1rem;
+            line-height: 1.6;
+            color: #0f172a;
+        }
+        .status {
+            color: #64748b;
+            font-style: italic;
+            margin: 1rem 0 0.5rem;
+        }
+        hr {
+            border: none;
+            border-top: 1px solid #e2e8f0;
+            margin: 1rem 0;
+        }
+        .note {
+            background: #fffbeb;
+            border-left: 4px solid #f59e0b;
+            padding: 0.75rem;
+            font-size: 0.9rem;
+            color: #92400e;
+            border-radius: 6px;
+            margin: 1rem 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🧠 Dify 流式推理分离演示</h1>
+        <p>根据你的参数，调用 Dify 流式接口，并将思考过程与答案分开显示。</p>
+        
+        <label>API 地址</label>
+        <input type="text" id="apiUrl" value="http://REDACTED_PUBLIC_IP:60086/v1/chat-messages" placeholder="例如 http://localhost/v1/chat-messages">
+        
+        <label>API 密钥 (如果不需要请留空)</label>
+        <input type="text" id="apiKey" placeholder="app-xxx 或 Bearer 后的部分" value="">
+        
+        <label>用户问题</label>
+        <textarea id="queryInput">目前市场上的工业秤在什么价位</textarea>
+        
+        <label>inputs (JSON格式，可选)</label>
+        <input type="text" id="inputs" value='{"search":"本地检索","user_id":"admin"}' placeholder='{"key":"value"}'>
+        
+        <label>用户标识 (user)</label>
+        <input type="text" id="user" value="abc-123">
+        
+        <div class="note">
+            <strong>注意：</strong> 如果 Dify 开启了“推理分离”，本页面会自动接收 <code>agent_thought</code> 和 <code>agent_message</code> 事件。<br>
+            如果未开启，页面会尝试从 <code>message</code> 事件中实时解析 <code>&lt;/think&gt;</code> 标签，手动拆分。
+        </div>
+        
+        <button id="sendBtn">发送请求 (流式)</button>
+    </div>
+
+    <!-- 输出区域 -->
+    <div class="card output-area">
+        <h2 style="margin-top:0;">📤 实时输出</h2>
+        
+        <div class="thought-container">
+            <details open>
+                <summary>💭 思考过程</summary>
+                <div id="thought" class="thought-content"></div>
+            </details>
+        </div>
+        
+        <div class="answer-container">
+            <h3 style="margin:0 0 0.5rem 0;">📌 最终答案</h3>
+            <div id="answer" class="answer-content"></div>
+        </div>
+        
+        <div id="status" class="status">就绪</div>
+    </div>
+
+    <script>
+        const sendBtn = document.getElementById('sendBtn');
+        const apiUrlInput = document.getElementById('apiUrl');
+        const apiKeyInput = document.getElementById('apiKey');
+        const queryInput = document.getElementById('queryInput');
+        const inputsInput = document.getElementById('inputs');
+        const userInput = document.getElementById('user');
+        const thoughtDiv = document.getElementById('thought');
+        const answerDiv = document.getElementById('answer');
+        const statusDiv = document.getElementById('status');
+
+        let controller = null; // 用于中止请求
+
+        sendBtn.addEventListener('click', async () => {
+            // 取消之前的请求
+            if (controller) {
+                controller.abort();
+            }
+            controller = new AbortController();
+
+            // 清空显示
+            thoughtDiv.innerText = '';
+            answerDiv.innerText = '';
+            statusDiv.innerText = '连接中...';
+
+            const apiUrl = apiUrlInput.value.trim();
+            const apiKey = apiKeyInput.value.trim();
+            const query = queryInput.value.trim();
+            const user = userInput.value.trim();
+            let inputs = {};
+            try {
+                inputs = JSON.parse(inputsInput.value.trim() || '{}');
+            } catch (e) {
+                statusDiv.innerText = '❌ inputs JSON 格式错误';
+                return;
+            }
+
+            if (!apiUrl) {
+                statusDiv.innerText = '❌ 请填写 API 地址';
+                return;
+            }
+            if (!query) {
+                statusDiv.innerText = '❌ 请输入问题';
+                return;
+            }
+
+            const requestBody = {
+                inputs: inputs,
+                query: query,
+                response_mode: 'streaming',
+                conversation_id: '',  // 可根据需要修改
+                user: user
+            };
+
+            const headers = {
+                'Content-Type': 'application/json',
+            };
+            if (apiKey) {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+            }
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify(requestBody),
+                    signal: controller.signal
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                // 手动拆分模式相关变量
+                let thoughtDone = false;        // 是否已完成思考分离（仅当未收到agent事件时使用）
+                let manualThought = '';          // 手动累积的思考内容
+                let manualAnswer = '';            // 手动累积的答案内容
+
+                statusDiv.innerText = '接收中...';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        statusDiv.innerText = '✅ 完成';
+                        break;
+                    }
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // 按行分割 SSE 数据 (data: ... 格式)
+                    const lines = buffer.split('\n');
+                    // 最后一行可能不完整，保留在 buffer 中
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const jsonStr = line.slice(6); // 去掉 'data: '
+                            try {
+                                const data = JSON.parse(jsonStr);
+                                const event = data.event;
+
+                                // ========== 情况1：收到 agent_thought 事件（推理分离开启） ==========
+                                if (event === 'agent_thought') {
+                                    const thought = data.thought || '';
+                                    // 通常 agent_thought 是增量推送，直接追加
+                                    thoughtDiv.innerText += thought;
+                                    // 滚动到最新内容（可选）
+                                    thoughtDiv.scrollTop = thoughtDiv.scrollHeight;
+                                }
+                                // ========== 情况2：收到 agent_message 事件（最终答案） ==========
+                                else if (event === 'agent_message') {
+                                    const answer = data.answer || '';
+                                    answerDiv.innerText += answer;
+                                    answerDiv.scrollTop = answerDiv.scrollHeight;
+                                }
+                                // ========== 情况3：收到普通 message 事件（未开启推理分离） ==========
+                                else if (event === 'message') {
+                                    const answerChunk = data.answer || '';
+                                    // 需要手动拆分思考和答案
+                                    // 策略：累积所有文本，实时检测第一个 </think>
+                                    // 但因为我们是在分块处理，需要维护一个全局累积字符串来检测
+                                    // 这里我们使用外部变量 manualThought, manualAnswer, thoughtDone
+                                    
+                                    // 先将新块追加到累积缓冲区（这里我们简单处理，每次都用完整累积字符串来检测）
+                                    // 为了简单，我们用一个累积字符串 fullBuffer
+                                    // 但因为我们逐行解析，可能丢失跨块的完整检测，所以最好用全局累积
+                                    // 重新设计：使用外部变量 fullBuffer，每次收到数据块时追加，并重新解析
+                                    // 但这样会导致重复解析。更合理的是在收到每个数据块时更新，并基于累积字符串更新UI。
+                                    // 为了代码清晰，我们采用一个函数来处理手动拆分。
+                                    handleManualSplit(answerChunk);
+                                }
+                                else if (event === 'message_end') {
+                                    // 结束，可以忽略
+                                }
+                                else if (event === 'error') {
+                                    statusDiv.innerText = `❌ 错误: ${data.message || '未知错误'}`;
+                                } else {
+                                    console.log('其他事件:', event, data);
+                                }
+                            } catch (e) {
+                                console.error('JSON解析失败:', e, line);
+                            }
+                        }
+                    }
+                }
+
+                // 手动拆分处理函数（针对未开启推理分离的情况）
+                function handleManualSplit(chunk) {
+                    // 如果已经分离出思考，则直接追加到答案
+                    if (thoughtDone) {
+                        manualAnswer += chunk;
+                        answerDiv.innerText = manualAnswer;
+                        answerDiv.scrollTop = answerDiv.scrollHeight;
+                        return;
+                    }
+
+                    // 尚未分离思考，将新块追加到累积字符串
+                    manualThought += chunk;
+
+                    // 查找第一个 </think> 的位置
+                    const thinkEndIndex = manualThought.indexOf('</think>');
+                    if (thinkEndIndex !== -1) {
+                        // 提取思考内容（从开头到 </think> 之前）
+                        const thoughtContent = manualThought.substring(0, thinkEndIndex).trim();
+                        // 提取答案内容（</think> 之后的部分）
+                        const answerContent = manualThought.substring(thinkEndIndex + 8); // 8是'</think>'的长度
+
+                        // 更新UI
+                        thoughtDiv.innerText = thoughtContent;
+                        answerDiv.innerText = answerContent;
+
+                        // 记录状态
+                        manualThought = thoughtContent;   // 保留思考部分（便于后续可能追加？但已分离，不会再追加）
+                        manualAnswer = answerContent;
+                        thoughtDone = true;
+
+                        // 清空累积的思考缓冲区（不再需要）
+                        // 注意：后续收到的chunk应直接加到manualAnswer
+                    } else {
+                        // 还没找到分隔符，暂时显示累积内容作为思考（但可能包含不完整的标签）
+                        // 为了避免显示 <think> 标签本身，我们可以简单显示全部，但用户通常不希望看到标签
+                        // 可以尝试去掉可能的 <think> 开头
+                        let display = manualThought;
+                        if (display.startsWith('<think>')) {
+                            display = display.substring(7);
+                        }
+                        thoughtDiv.innerText = display;
+                    }
+                    thoughtDiv.scrollTop = thoughtDiv.scrollHeight;
+                }
+
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    statusDiv.innerText = '⏹️ 请求已取消';
+                } else {
+                    statusDiv.innerText = `❌ 请求失败: ${error.message}`;
+                    console.error(error);
+                }
+            } finally {
+                controller = null;
+            }
+        });
+
+        // 支持按 Ctrl+Enter 发送
+        queryInput.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.key === 'Enter') {
+                sendBtn.click();
+            }
+        });
+    </script>
+</body>
+</html>

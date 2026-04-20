@@ -1,6 +1,5 @@
 import logging
 import math
-import os
 from pathlib import Path
 from typing import Dict, List, Optional
 import threading
@@ -13,6 +12,7 @@ from llama_index.core.schema import TextNode
 from llama_index.vector_stores.postgres import PGVectorStore
 from pydantic import Field
 
+from app.core.config import settings
 from .exceptions import EmbeddingError, VectorStoreError
 
 logger = logging.getLogger(__name__)
@@ -36,10 +36,10 @@ class BGEM3EmbeddingWrapper(BaseEmbedding):
     ):
         try:
             if api_url is None:
-                api_url = os.environ.get("BGE_M3_API_URL", "http://localhost:8002/v1/embeddings")
+                api_url = settings.BGE_M3_API_URL
             if model_name is None:
                 # 需与服务启动时的 --served-model-name 保持一致
-                model_name = os.environ.get("BGE_M3_MODEL_NAME", "BAAI/bge-m3")
+                model_name = settings.BGE_M3_MODEL_NAME
 
             # 不再本地加载模型，model 只是占位；api_url / model_name 作为字段传入
             super().__init__(model=None, api_url=api_url, model_name=model_name)
@@ -141,7 +141,9 @@ class VectorStoreManager:
     def __init__(self, db_config: Dict, table_prefix: str = "doc_collection"):
         self.db_config = db_config
         self.table_prefix = table_prefix
-        self.persist_base_dir = Path("./index_storage")
+        # 注意：PGVector 数据存储在 PostgreSQL 中，不需要本地持久化
+        # 如果需要使用本地存储（例如 FAISS），可以取消下面的注释：
+        # self.persist_base_dir = Path("./index_storage")
 
     def _build_vector_store(self, instance_id: int) -> PGVectorStore:
         collection_name = f"{self.table_prefix}_{instance_id}"
@@ -158,18 +160,27 @@ class VectorStoreManager:
         except Exception as exc:
             raise VectorStoreError(f"创建 PGVectorStore 失败: {exc}") from exc
 
-    def get_persist_dir(self, instance_id: int) -> Path:
-        persist_dir = self.persist_base_dir / f"index_storage_{self.table_prefix}_{instance_id}"
-        persist_dir.mkdir(parents=True, exist_ok=True)
-        return persist_dir
+    # 注意：PGVector 不需要本地持久化目录，数据存储在 PostgreSQL 中
+    # 如果使用本地存储（例如 FAISS），可以取消下面的注释：
+    # def get_persist_dir(self, instance_id: int) -> Path:
+    #     persist_dir = self.persist_base_dir / f"index_storage_{self.table_prefix}_{instance_id}"
+    #     persist_dir.mkdir(parents=True, exist_ok=True)
+    #     return persist_dir
 
     def upsert_chunks(self, chunks: List[TextNode], instance_id: int, embedding_model: BGEM3EmbeddingWrapper):
+        """
+        将文档块写入向量存储
+        
+        当前实现：使用 PGVector（PostgreSQL），数据直接存储在数据库中
+        """
         try:
             vector_store = self._build_vector_store(instance_id)
-            persist_dir = self.get_persist_dir(instance_id)
-
-            storage_context = StorageContext.from_defaults(vector_store=vector_store, persist_dir=persist_dir)
+            
+            # ✅ 对于 PGVector：不需要本地持久化存储，直接创建新的 StorageContext
+            # 数据已经存储在 PostgreSQL 中，不需要 docstore.json
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
             Settings.embed_model = embedding_model
+            
             index = VectorStoreIndex.from_vector_store(
                 vector_store,
                 storage_context=storage_context,
@@ -177,8 +188,34 @@ class VectorStoreManager:
                 show_progress=False,
             )
             index.insert_nodes(chunks)
-            index.storage_context.persist(persist_dir=persist_dir)
-            logger.info("成功写入 PGVector: %s 条", len(chunks))
+            
+            logger.info("成功写入 PGVector: %s 条 (instance_id=%s)", len(chunks), instance_id)
+            
         except Exception as exc:
             raise VectorStoreError(f"写入 PGVector 失败: {exc}") from exc
+        
+        # ==================== 原本地存储实现（已废弃，仅供参考）====================
+        # 如果需要使用本地持久化存储（例如 FAISS），可以参考以下代码：
+        # 
+        # try:
+        #     vector_store = self._build_vector_store(instance_id)
+        #     persist_dir = self.get_persist_dir(instance_id)
+        #
+        #     storage_context = StorageContext.from_defaults(
+        #         vector_store=vector_store, 
+        #         persist_dir=persist_dir
+        #     )
+        #     Settings.embed_model = embedding_model
+        #     index = VectorStoreIndex.from_vector_store(
+        #         vector_store,
+        #         storage_context=storage_context,
+        #         embed_model=embedding_model,
+        #         show_progress=False,
+        #     )
+        #     index.insert_nodes(chunks)
+        #     index.storage_context.persist(persist_dir=persist_dir)
+        #     logger.info("成功写入向量存储: %s 条", len(chunks))
+        # except Exception as exc:
+        #     raise VectorStoreError(f"写入向量存储失败: {exc}") from exc
+        # ====================================================================
 

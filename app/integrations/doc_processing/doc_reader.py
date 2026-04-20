@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
 import html_text
 import pandas as pd
@@ -22,14 +22,18 @@ from langchain_core.documents import Document
 import langchain_compat  # noqa: F401
 
 from .exceptions import DocumentParseError
-from .text_splitter import TagGenerator, TokenAwareTextSplitter
+from .text_splitter import TagGenerator, TokenAwareTextSplitter, ExcelHeaderPreservingSplitter
 
 logger = logging.getLogger(__name__)
 
 try:
     from paddleocr import PaddleOCR
+    import paddle
+    PADDLE_AVAILABLE = True
 except ImportError:  # pragma: no cover
     PaddleOCR = None  # type: ignore
+    paddle = None
+    PADDLE_AVAILABLE = False
 
 
 def file_to_stream(file_path: Union[str, os.PathLike], keep_filename: bool = True) -> BytesIO:
@@ -152,8 +156,56 @@ class PdfParser:
     def __init__(self, save_dir: str = "paddle_ocr_images", enable_ocr: bool = True):
         self.save_dir = save_dir
         os.makedirs(save_dir, exist_ok=True)
-        self.enable_ocr = enable_ocr and PaddleOCR is not None
-        self.ocr = PaddleOCR(use_angle_cls=True, lang="ch") if self.enable_ocr else None
+        self.enable_ocr = False
+        self.ocr = None
+        
+        # 尝试初始化 OCR（如果启用且可用）
+        if enable_ocr and PADDLE_AVAILABLE:
+            try:
+                # 从环境变量读取 GPU 设备配置
+                gpu_device = int(os.environ.get("LOCAL_MODEL_GPU_DEVICE", "0"))
+                logger.info(f"正在初始化 PaddleOCR（用于扫描版 PDF），使用 GPU:{gpu_device}...")
+                
+                # 设置 Paddle 使用指定的 GPU 设备
+                if paddle is not None:
+                    paddle.set_device(f'gpu:{gpu_device}')
+                    logger.info(f"Paddle 设备已设置为 GPU:{gpu_device}")
+                
+                # 🔧 设置环境变量以禁用可能导致兼容性问题的优化
+                # 这些设置可以绕过某些 PaddlePaddle 版本兼容性问题
+                os.environ['FLAGS_use_mkldnn'] = '0'  # 禁用 MKL-DNN 优化
+                os.environ['FLAGS_use_cudnn'] = '1'   # 使用 cuDNN（GPU 环境）
+                
+                # 初始化 PaddleOCR
+                # PaddleOCR 3.x 版本说明：
+                # - use_gpu 参数已被移除，PaddleOCR 会自动检测并使用 GPU
+                # - 通过 paddle.set_device() 已经设置了 GPU 设备
+                # - 只需要传递最基本的参数即可
+                self.ocr = PaddleOCR(
+                    use_angle_cls=True,  # 启用文字方向分类
+                    lang="ch"            # 中文识别
+                )
+                
+                self.enable_ocr = True
+                logger.info(f"✅ PaddleOCR 初始化成功，运行在 GPU:{gpu_device}")
+            except AttributeError as ae:
+                # 处理 PaddlePaddle 版本兼容性问题
+                logger.warning(f"⚠️  PaddleOCR 初始化失败（版本兼容性问题）: {ae}")
+                logger.info("提示：这可能是 PaddlePaddle 和 PaddleOCR 版本不匹配导致的")
+                logger.info("建议：paddlepaddle-gpu==2.6.0 + paddleocr==2.7.0 或更新组合")
+                logger.info("当前配置不影响普通 PDF 文本提取，只是无法处理扫描版 PDF")
+                self.ocr = None
+                self.enable_ocr = False
+            except Exception as e:
+                logger.warning(f"⚠️  PaddleOCR 初始化失败: {e}")
+                logger.info("提示：这不会影响普通 PDF 文本提取，只是无法处理扫描版 PDF")
+                self.ocr = None
+                self.enable_ocr = False
+        else:
+            if not enable_ocr:
+                logger.info("PDF OCR 已手动禁用")
+            elif PaddleOCR is None:
+                logger.info("PaddleOCR 不可用，OCR 功能已禁用")
 
     def __call__(self, file_input: Union[str, bytes, os.PathLike, BytesIO]) -> Tuple[str, List[Dict]]:
         temp_path = None
@@ -322,14 +374,66 @@ class JsonParser:
 class TxtParser:
     def __call__(self, file_input: Union[str, bytes, os.PathLike, BytesIO]) -> Tuple[str, List[Dict]]:
         if isinstance(file_input, (str, os.PathLike)):
-            with open(file_input, "r", encoding="utf-8", errors="ignore") as f:
+            # 自动检测文件编码
+            encoding = self._detect_encoding(file_input)
+            with open(file_input, "r", encoding=encoding, errors="replace") as f:
                 return f.read(), []
         if isinstance(file_input, bytes):
-            return file_input.decode("utf-8", errors="ignore"), []
+            # 自动检测字节流编码
+            encoding = self._detect_encoding_from_bytes(file_input)
+            return file_input.decode(encoding, errors="replace"), []
         if isinstance(file_input, BytesIO):
             file_input.seek(0)
-            return file_input.read().decode("utf-8", errors="ignore"), []
+            content = file_input.read()
+            encoding = self._detect_encoding_from_bytes(content)
+            return content.decode(encoding, errors="replace"), []
         raise ValueError("不支持的输入类型")
+    
+    def _detect_encoding(self, file_path: Union[str, os.PathLike]) -> str:
+        """检测文件编码"""
+        try:
+            # 读取文件的前几KB来检测编码
+            with open(file_path, "rb") as f:
+                raw_data = f.read(min(32768, os.path.getsize(file_path)))  # 读取最多32KB
+            return self._detect_encoding_from_bytes(raw_data)
+        except Exception as e:
+            logger.warning(f"编码检测失败，使用 UTF-8: {e}")
+            return "utf-8"
+    
+    def _detect_encoding_from_bytes(self, data: bytes) -> str:
+        """从字节流检测编码"""
+        try:
+            import chardet
+            result = chardet.detect(data)
+            detected_encoding = result.get("encoding", "utf-8")
+            confidence = result.get("confidence", 0)
+            
+            # 如果置信度太低，尝试常见的中文编码
+            if confidence < 0.7:
+                for encoding in ["utf-8", "gbk", "gb2312", "gb18030"]:
+                    try:
+                        data.decode(encoding)
+                        logger.info(f"使用编码: {encoding} (chardet 置信度较低: {confidence})")
+                        return encoding
+                    except (UnicodeDecodeError, LookupError):
+                        continue
+            
+            logger.info(f"检测到文件编码: {detected_encoding} (置信度: {confidence})")
+            return detected_encoding or "utf-8"
+        except ImportError:
+            # 如果没有 chardet，尝试常见编码
+            logger.warning("未安装 chardet 库，尝试常见编码")
+            for encoding in ["utf-8", "gbk", "gb2312", "latin-1"]:
+                try:
+                    data.decode(encoding)
+                    logger.info(f"使用编码: {encoding}")
+                    return encoding
+                except (UnicodeDecodeError, LookupError):
+                    continue
+            return "utf-8"  # 最后回退到 UTF-8
+        except Exception as e:
+            logger.warning(f"编码检测异常，使用 UTF-8: {e}")
+            return "utf-8"
 
 
 class HtmlParser:
@@ -359,22 +463,40 @@ class DocumentProcessor:
     """统一文档解析器"""
 
     def __init__(self):
-        self.parsers = {
-            "pdf": PdfParser(),
-            "docx": DocxParser(),
-            "doc": DocParser(),
-            "xlsx": ExcelParser(),
-            "xls": ExcelParser(),
-            "pptx": PptParser(),
-            "ppt": PptParser(),
-            "html": HtmlParser(),
-            "htm": HtmlParser(),
-            "json": JsonParser(),
-            "txt": TxtParser(),
-            "md": TxtParser(),
+        # ✅ 使用延迟加载：存储 parser 类而不是实例
+        self._parser_classes = {
+            "pdf": PdfParser,
+            "docx": DocxParser,
+            "doc": DocParser,
+            "xlsx": ExcelParser,
+            "xls": ExcelParser,
+            "pptx": PptParser,
+            "ppt": PptParser,
+            "html": HtmlParser,
+            "htm": HtmlParser,
+            "json": JsonParser,
+            "txt": TxtParser,
+            "md": TxtParser,
         }
+        # 缓存已创建的 parser 实例
+        self._parser_instances: Dict[str, Any] = {}
         self.processed_files = set()
         self.failed_files: Dict[str, str] = {}
+    
+    def _get_parser(self, file_ext: str):
+        """延迟获取 parser 实例，只在需要时才创建"""
+        if file_ext not in self._parser_instances:
+            parser_class = self._parser_classes.get(file_ext)
+            if parser_class is None:
+                return None
+            try:
+                logger.info(f"正在初始化 {file_ext} 格式的解析器...")
+                self._parser_instances[file_ext] = parser_class()
+                logger.info(f"✅ {file_ext} 解析器初始化成功")
+            except Exception as e:
+                logger.error(f"❌ {file_ext} 解析器初始化失败: {e}")
+                return None
+        return self._parser_instances.get(file_ext)
 
     def get_file_extension(self, file_input) -> str:
         if isinstance(file_input, BytesIO) and hasattr(file_input, "name"):
@@ -467,6 +589,7 @@ class DocumentProcessor:
         text_splitter: TokenAwareTextSplitter,
         tag_generator: TagGenerator = None,
         num_tags: int = 5,
+        excel_splitter: ExcelHeaderPreservingSplitter = None,
     ) -> List[Document]:
         try:
             file_ext = self.get_file_extension(file_input)
@@ -479,15 +602,50 @@ class DocumentProcessor:
             else:
                 file_name = str(file_input)
             
-            if file_ext not in self.parsers:
-                supported = ", ".join(sorted(self.parsers.keys()))
+            if file_ext not in self._parser_classes:
+                supported = ", ".join(sorted(self._parser_classes.keys()))
                 raise DocumentParseError(
                     f"不支持的文件类型: '{file_ext}' (文件: {file_name}, 支持的格式: {supported})"
                 )
 
-            parser = self.parsers[file_ext]
+            # ✅ 延迟加载：只在需要时才创建 parser 实例
+            parser = self._get_parser(file_ext)
+            if parser is None:
+                raise DocumentParseError(f"无法初始化 {file_ext} 格式的解析器")
+            
             text, tables = parser(file_input)
 
+            # ✅ Excel文件特殊处理：使用保留表头的分割方式
+            if file_ext in ("xlsx", "xls") and tables and excel_splitter:
+                logger.info(f"使用Excel表头保留分割器处理文件: {file_name}")
+                metadata = self.extract_metadata(file_input, text)
+                chunks: List[Document] = []
+                
+                # 对每个表格使用保留表头分割器
+                for table_idx, table in enumerate(tables):
+                    try:
+                        # 使用Excel专用分割器
+                        split_texts = excel_splitter.split_excel_data(table)
+                        
+                        for text_chunk in split_texts:
+                            chunk_metadata = {
+                                **metadata,
+                                "token_count": excel_splitter.count_tokens(text_chunk),
+                                "table_index": table_idx,
+                                "split_method": "excel_header_preserving",
+                            }
+                            if tag_generator and text_chunk.strip():
+                                chunk_metadata["tags"] = tag_generator.extract_tags(text_chunk, num_tags=num_tags)
+                            chunks.append(Document(page_content=text_chunk, metadata=chunk_metadata))
+                    except Exception as e:
+                        logger.warning(f"表格{table_idx}分割失败: {e}，跳过该表格")
+                        continue
+                
+                metadata["chunk_count"] = len(chunks)
+                logger.info(f"Excel文件分割完成，共生成 {len(chunks)} 个chunk")
+                return chunks
+
+            # 其他文件类型使用原有逻辑
             if tables:
                 table_texts = []
                 for table in tables:

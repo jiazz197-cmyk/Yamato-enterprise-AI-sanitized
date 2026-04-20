@@ -3,6 +3,7 @@ FastAPI 依赖定义
 """
 from collections.abc import Generator
 
+from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
@@ -45,6 +46,11 @@ def get_db() -> Generator[Session, None, None]:
         yield db
         # ✅ 请求成功时自动提交事务
         db.commit()
+    except HTTPException as e:
+        # 鉴权失败(401/403)等业务异常不应按系统错误打印堆栈
+        db.rollback()
+        logger.warning(f"数据库操作触发HTTP异常,已回滚事务: {e.status_code}: {e.detail}")
+        raise
     except Exception as e:
         # ❌ 发生异常时回滚事务
         db.rollback()
@@ -53,3 +59,24 @@ def get_db() -> Generator[Session, None, None]:
     finally:
         # 🔒 确保会话关闭,释放连接回池
         db.close()
+
+
+def get_rag_instance(request: Request):
+    """
+    获取 RAG 系统实例 (FastAPI 依赖注入)
+    
+    RAG 系统在应用启动时初始化并存储在 app.state.rag 中
+    
+    使用方式:
+        @router.post("/db")
+        def db(request: ChatRequest, rag_instance=Depends(get_rag_instance)):
+            retriever = retriever_for_yamato.retriever(
+                rag_system=rag_instance,
+                collection_name=request.collection_name
+            )
+            return retriever.get_response(request.question)
+    
+    返回:
+        RAG 系统实例，如果未初始化则返回 None
+    """
+    return getattr(request.app.state, 'rag', None)

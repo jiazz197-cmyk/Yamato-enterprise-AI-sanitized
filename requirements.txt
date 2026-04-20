@@ -29,7 +29,10 @@ propcache==0.4.1
 # ============================================================
 SQLAlchemy==2.0.43
 psycopg2-binary==2.9.11
+<<<<<<< HEAD
 pymssql==2.3.0
+=======
+>>>>>>> origin/main
 asyncpg==0.31.0
 aiosqlite==0.21.0
 pgvector==0.4.1

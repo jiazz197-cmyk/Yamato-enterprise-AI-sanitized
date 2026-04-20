@@ -9,12 +9,28 @@ from llama_index.core.schema import TextNode
 from .doc_reader import DocumentProcessor
 from .embedding_store import BGEM3EmbeddingWrapper, VectorStoreManager
 from .exceptions import DocumentProcessingError
-from .text_splitter import TagGenerator, TokenAwareTextSplitter
+from .text_splitter import TagGenerator, TokenAwareTextSplitter, ExcelHeaderPreservingSplitter
 
 logger = logging.getLogger(__name__)
 
 
 FileInput = Union[str, os.PathLike, BytesIO]
+
+
+def clean_text_for_postgres(text: str) -> str:
+    """
+    清理文本中的 NUL (0x00) 字符，PostgreSQL 不支持在文本字段中存储这些字符
+    
+    Args:
+        text: 原始文本
+        
+    Returns:
+        清理后的文本
+    """
+    if not text:
+        return text
+    # 移除 NUL 字符 (0x00)
+    return text.replace('\x00', '')
 
 
 class DocumentProcessingPipeline:
@@ -36,6 +52,8 @@ class DocumentProcessingPipeline:
         self.num_tags = num_tags
 
         self.text_splitter = TokenAwareTextSplitter(chunk_size, chunk_overlap)
+        # ✅ 添加Excel专用分割器
+        self.excel_splitter = ExcelHeaderPreservingSplitter(chunk_size, chunk_overlap)
         self.tag_generator = TagGenerator(device=device)
         self.document_processor = DocumentProcessor()
         # 嵌入模型改为调用远程 Docker 服务，通过环境变量配置接口地址和模型名
@@ -47,7 +65,7 @@ class DocumentProcessingPipeline:
             if os.path.isfile(input_data):
                 return [str(input_data)]
             if os.path.isdir(input_data):
-                allowed_ext = set(self.document_processor.parsers.keys())
+                allowed_ext = set(self.document_processor._parser_classes.keys())
                 collected = []
                 for root, _, files in os.walk(input_data):
                     for filename in files:
@@ -65,11 +83,22 @@ class DocumentProcessingPipeline:
     def _documents_to_nodes(self, documents: List, instance_id: int) -> List[TextNode]:
         nodes = []
         for chunk in documents:
-            metadata = dict(chunk.metadata)
+            # 清理文本中的 NUL 字符（PostgreSQL 不支持）
+            cleaned_text = clean_text_for_postgres(chunk.page_content)
+            
+            # 清理 metadata 中的字符串值
+            metadata = {}
+            for key, value in chunk.metadata.items():
+                if isinstance(value, str):
+                    metadata[key] = clean_text_for_postgres(value)
+                else:
+                    metadata[key] = value
+            
             metadata.setdefault("chunk_id", str(uuid.uuid4()))
             metadata["instance_id"] = instance_id
+            
             node = TextNode(
-                text=chunk.page_content,
+                text=cleaned_text,
                 metadata=metadata,
             )
             nodes.append(node)
@@ -89,11 +118,13 @@ class DocumentProcessingPipeline:
         processed = 0
         for file_path in files:
             try:
+                # ✅ 传递Excel专用分割器
                 chunks = self.document_processor.process_document(
                     file_path,
                     self.text_splitter,
                     tag_generator=self.tag_generator,
                     num_tags=self.num_tags,
+                    excel_splitter=self.excel_splitter,
                 )
                 if not chunks:
                     continue

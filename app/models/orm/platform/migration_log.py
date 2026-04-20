@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, ForeignKey, JSON
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -18,7 +19,7 @@ class MigrationLog(Base):
     output = Column(Text, comment="操作输出")
     error = Column(Text, comment="错误信息")
     meta_info = Column(JSON, comment="额外元数据")
-    executed_by = Column(Integer, ForeignKey("users.id"), nullable=False, comment="执行者ID")
+    executed_by = Column(PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, comment="执行者ID")
     executed_at = Column(DateTime(timezone=True), server_default=func.now(), comment="执行时间")
     duration = Column(Integer, comment="执行时长（秒）")
 
@@ -36,7 +37,7 @@ class MigrationBackup(Base):
     backup_path = Column(String(500), nullable=False, comment="备份文件路径")
     file_size = Column(Integer, comment="文件大小（字节）")
     description = Column(Text, comment="备份描述")
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=False, comment="创建者ID")
+    created_by = Column(PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, comment="创建者ID")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
     is_active = Column(Boolean, default=True, comment="是否有效")
 

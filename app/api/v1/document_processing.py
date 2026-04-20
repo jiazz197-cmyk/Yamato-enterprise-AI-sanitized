@@ -6,11 +6,11 @@ import asyncio
 from io import BytesIO
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Query
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.taskmanager import TaskManager
+from app.api.taskmanager import task_manager, TaskManager
 from app.core.config import settings
 from app.core.dependencies import get_db
 from app.core.exceptions import NotFoundError, ValidationError
@@ -23,12 +23,11 @@ from app.core.storage import (
     MINIO_BUCKET_NAME,
 )
 from app.models.orm.file_resource import FileResource
+from app.models.orm.platform.user import User, UserRole
+from app.core.security import get_current_user, normalize_self_uploader
 
 router = APIRouter()
 logger = get_logger("document_processing")
-
-# 全局实例
-task_manager = TaskManager()
 
 
 # ==================== 响应模型 ====================
@@ -79,20 +78,25 @@ def process_documents_background(
     """
     后台文档处理函数（在线程池中执行）
     
-    ✅ 关键改进：
+    🆕 使用改进的协作模式：
     1. 第一个参数是 CancellationToken，由 ExecutorManager 自动注入
     2. 在多个检查点使用 token.is_cancelled() 检查取消状态
     3. 协作式取消 - 任务主动退出
+    4. 🆕 使用独立的 TaskManager 实例避免事件循环冲突
     
     注意：这个函数在独立线程中运行，不能直接使用 async/await
     """
     import asyncio
     import time
     from app.integrations.doc_processing.pipeline import DocumentProcessingPipeline
+    from app.api.taskmanager import TaskManager
     
     logger.info(f"[{task_id}] 开始后台处理，文件数: {len(file_ids)}")
     
-    # ⚠️ 重要：在线程中创建新的事件循环（避免循环冲突）
+    # 🆕 创建线程专用的 TaskManager 实例（避免事件循环冲突）
+    thread_tm = TaskManager.create_thread_safe_instance()
+    
+    # 创建线程专用的事件循环
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -100,14 +104,13 @@ def process_documents_background(
         # ✅ 检查点1：启动前检查
         if token.is_cancelled():
             logger.info(f"[{task_id}] 任务在启动前被取消")
-            return
+            return {"status": "cancelled", "message": "任务在启动前被取消"}
         
-        # ✅ 修复：等待任务创建完成（最多重试5次，避免循环冲突）
+        # 🆕 等待任务创建完成（最多重试5次）
         task_exists = False
         for attempt in range(5):
             try:
-                # 使用新的事件循环查询任务状态
-                task_status = loop.run_until_complete(task_manager.get_task_status(task_id))
+                task_status = loop.run_until_complete(thread_tm.get_task_status(task_id))
                 if task_status:
                     task_exists = True
                     logger.info(f"[{task_id}] 任务已找到，开始处理")
@@ -119,10 +122,10 @@ def process_documents_background(
         
         if not task_exists:
             logger.error(f"[{task_id}] 任务创建超时，无法启动")
-            return
+            return {"status": "error", "message": "任务创建超时"}
         
         # 启动任务
-        loop.run_until_complete(task_manager.start_task(task_id))
+        loop.run_until_complete(thread_tm.start_task(task_id))
         
         # 构建数据库配置
         db_config = {
@@ -154,9 +157,9 @@ def process_documents_background(
                 if token.is_cancelled():
                     logger.info(f"[{task_id}] 任务被取消，停止下载")
                     loop.run_until_complete(
-                        task_manager.fail_task(task_id, "用户取消任务", "任务已取消")
+                        thread_tm.fail_task(task_id, "用户取消任务", "任务已取消")
                     )
-                    return
+                    return {"status": "cancelled", "message": "任务被取消"}
                 
                 file_record = db.query(FileResource).filter(FileResource.id == file_id).first()
                 if not file_record:
@@ -166,7 +169,7 @@ def process_documents_background(
                 # 更新进度：下载阶段
                 progress = int((i / len(file_ids)) * 30)  # 下载占30%进度
                 loop.run_until_complete(
-                    task_manager.update_task_progress(
+                    thread_tm.update_task_progress(
                         task_id, progress, f"正在下载第 {i+1}/{len(file_ids)} 个文件: {file_record.file_name}"
                     )
                 )
@@ -188,15 +191,15 @@ def process_documents_background(
             if token.is_cancelled():
                 logger.info(f"[{task_id}] 任务被取消，停止处理")
                 loop.run_until_complete(
-                    task_manager.fail_task(task_id, "用户取消任务", "任务已取消")
+                    thread_tm.fail_task(task_id, "用户取消任务", "任务已取消")
                 )
-                return
+                return {"status": "cancelled", "message": "任务被取消"}
             
             logger.info(f"[{task_id}] 成功下载 {len(streams)} 个文件，开始处理...")
             
             # 更新进度：处理阶段
             loop.run_until_complete(
-                task_manager.update_task_progress(task_id, 30, f"开始处理 {len(streams)} 个文件...")
+                thread_tm.update_task_progress(task_id, 30, f"开始处理 {len(streams)} 个文件...")
             )
             
             # 处理文档（这里可以添加进度回调）
@@ -207,7 +210,7 @@ def process_documents_background(
             
             # 更新进度：完成
             loop.run_until_complete(
-                task_manager.update_task_progress(task_id, 90, "正在保存结果...")
+                thread_tm.update_task_progress(task_id, 90, "正在保存结果...")
             )
             
             # 标记任务完成
@@ -219,28 +222,60 @@ def process_documents_background(
             }
             
             loop.run_until_complete(
-                task_manager.complete_task(task_id, final_result, "文档处理完成")
+                thread_tm.complete_task(task_id, final_result, "文档处理完成")
             )
             
             logger.info(f"[{task_id}] 处理完成: {final_result}")
+            return final_result
             
         finally:
-            db.close()
+            # ✅ 明确提交或回滚，避免自动 ROLLBACK 延迟
+            try:
+                # 只读操作，提交即可（即使有异常也不影响）
+                db.commit()
+            except Exception:
+                db.rollback()
+            finally:
+                db.close()
         
     except Exception as e:
         logger.error(f"[{task_id}] 处理失败: {e}", exc_info=True)
         try:
-            loop = asyncio.get_event_loop()
             loop.run_until_complete(
-                task_manager.fail_task(task_id, str(e), "文档处理失败")
+                thread_tm.fail_task(task_id, str(e), "文档处理失败")
             )
         except Exception as e2:
             logger.error(f"[{task_id}] 标记失败状态时出错: {e2}")
+        return {"status": "error", "message": str(e)}
     finally:
+        # 清理资源
         try:
-            loop.close()
-        except:
-            pass
+            # 清理 Redis 连接（如果使用）- 添加超时机制
+            if hasattr(thread_tm, 'storage') and hasattr(thread_tm.storage, 'redis_client'):
+                if thread_tm.storage.redis_client is not None:
+                    try:
+                        # 先断开连接池
+                        async def close_redis_with_timeout():
+                            if hasattr(thread_tm.storage.redis_client, 'connection_pool'):
+                                await thread_tm.storage.redis_client.connection_pool.disconnect()
+                            await thread_tm.storage.redis_client.aclose()
+                        
+                        # 使用超时保护（2秒超时）
+                        loop.run_until_complete(
+                            asyncio.wait_for(close_redis_with_timeout(), timeout=2.0)
+                        )
+                        logger.debug(f"[{task_id}] Redis连接已关闭")
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[{task_id}] Redis关闭超时，强制继续")
+                    except Exception as e:
+                        logger.warning(f"[{task_id}] 关闭Redis连接失败: {e}")
+            
+            # 关闭事件循环
+            if loop and not loop.is_closed():
+                loop.close()
+                logger.debug(f"[{task_id}] 事件循环已关闭")
+        except Exception as e:
+            logger.warning(f"[{task_id}] 清理资源时出错: {e}")
 
 
 # ==================== 路由定义 ====================
@@ -250,8 +285,9 @@ async def submit_document_processing(
     instance_id: int = Query(..., description="知识库实例ID"),
     chunk_size: int = Query(500, ge=100, le=2000, description="文本块大小"),
     chunk_overlap: int = Query(50, ge=0, le=500, description="文本块重叠大小"),
-    uploader: str = Query("anonymous", description="上传者标识"),
+    uploader: str = Query("anonymous", description="上传者标识（仅允许传本人信息）"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     提交文档处理任务（异步）
@@ -274,7 +310,9 @@ async def submit_document_processing(
             raise ValidationError("至少需要上传一个文件")
         
         logger.info(f"收到文档处理请求: {len(files)} 个文件, instance_id={instance_id}")
-        
+
+        normalized_uploader = normalize_self_uploader(uploader, current_user)
+
         # 步骤1: 上传文件到 MinIO 并保存元数据
         file_ids = []
         for file in files:
@@ -321,7 +359,7 @@ async def submit_document_processing(
                     minio_object_path=minio_path,
                     content_type=content_type,
                     file_size=file_size,
-                    uploader=uploader,
+                    uploader=normalized_uploader,
                 )
                 db.add(file_record)
                 db.commit()
@@ -346,7 +384,8 @@ async def submit_document_processing(
                 "instance_id": instance_id,
                 "chunk_size": chunk_size,
                 "chunk_overlap": chunk_overlap,
-                "uploader": uploader,
+                "uploader": normalized_uploader,
+                "owner_id": str(current_user.id),
                 "files_count": len(file_ids),
             }
         )
@@ -380,11 +419,14 @@ async def submit_document_processing(
     except Exception as e:
         logger.error(f"提交文档处理任务失败: {e}", exc_info=True)
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"提交任务失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="提交任务失败")
 
 
 @router.get("/status/{task_id}", response_model=TaskStatusResponse, summary="查询任务状态")
-async def get_task_status(task_id: str):
+async def get_task_status(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+):
     """
     查询文档处理任务的状态和进度
     
@@ -398,6 +440,10 @@ async def get_task_status(task_id: str):
         if not task_status:
             raise NotFoundError(f"任务 {task_id} 不存在")
         
+        owner_id = str(task_status.metadata.get("owner_id", "")).strip()
+        if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该任务")
+
         return TaskStatusResponse(
             task_id=task_status.task_id,
             status=task_status.status,
@@ -412,15 +458,18 @@ async def get_task_status(task_id: str):
         
     except NotFoundError:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"查询任务状态失败 {task_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"查询任务状态失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="查询任务状态失败")
 
 
 @router.get("/tasks", response_model=TaskListResponse, summary="获取任务列表")
 async def list_tasks(
     status: Optional[str] = Query(None, description="按状态筛选 (pending/running/completed/failed)"),
     limit: int = Query(10, ge=1, le=100, description="返回数量限制"),
+    current_user: User = Depends(get_current_user),
 ):
     """
     获取文档处理任务列表
@@ -434,6 +483,12 @@ async def list_tasks(
         # 按状态筛选
         if status:
             tasks = [t for t in tasks if t.status == status]
+
+        if current_user.role != UserRole.superuser:
+            tasks = [
+                t for t in tasks
+                if str(t.metadata.get("owner_id", "")).strip() == str(current_user.id)
+            ]
         
         task_responses = [
             TaskStatusResponse(
@@ -455,13 +510,18 @@ async def list_tasks(
             total=len(task_responses),
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"获取任务列表失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"获取任务列表失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取任务列表失败")
 
 
 @router.post("/tasks/{task_id}/cancel", summary="取消任务")
-async def cancel_task_endpoint(task_id: str):
+async def cancel_task_endpoint(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+):
     """
     取消正在运行或等待中的任务
     
@@ -477,6 +537,10 @@ async def cancel_task_endpoint(task_id: str):
         if not task_status:
             raise NotFoundError(f"任务 {task_id} 不存在")
         
+        owner_id = str(task_status.metadata.get("owner_id", "")).strip()
+        if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权取消该任务")
+
         if task_status.status in ["completed", "failed"]:
             return {
                 "success": False,
@@ -504,15 +568,18 @@ async def cancel_task_endpoint(task_id: str):
         
     except NotFoundError:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"取消任务失败 {task_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"取消任务失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="取消任务失败")
 
 
 @router.delete("/tasks/{task_id}", summary="删除任务记录")
 async def delete_task_endpoint(
     task_id: str,
     cancel_if_running: bool = Query(True, description="是否取消正在运行的任务"),
+    current_user: User = Depends(get_current_user),
 ):
     """
     取消或删除文档处理任务
@@ -532,6 +599,10 @@ async def delete_task_endpoint(
         if not task_status:
             raise NotFoundError(f"任务 {task_id} 不存在")
         
+        owner_id = str(task_status.metadata.get("owner_id", "")).strip()
+        if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除该任务")
+
         # 1. 如果任务正在运行且需要取消，先取消
         if cancel_if_running and task_status.status in ["pending", "running"]:
             logger.info(f"任务正在运行，先尝试取消: {task_id}")
@@ -550,9 +621,11 @@ async def delete_task_endpoint(
         
     except NotFoundError:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"删除任务失败 {task_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"删除任务失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="删除任务失败")
 
 
 
