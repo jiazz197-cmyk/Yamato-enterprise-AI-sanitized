@@ -1,4 +1,3 @@
-# from app.integrations.for_dify.dify_config import *
 import gc
 import os
 import threading
@@ -17,7 +16,7 @@ def format_docs(docs):
 
 
 class ModelManager:
-    """单例模式管理模型实例，避免重复加载"""
+    """Singleton for RAG retrievers, query engines, and HTTP reranker."""
     _instance = None
     _lock = threading.Lock()
     
@@ -42,7 +41,7 @@ class ModelManager:
         print(f"模型管理器初始化完成，使用 HTTP API 模式")
     
     def set_rag_system(self, rag_system):
-        """设置RAG系统实例"""
+        """Attach shared RAGRetrieverSystem (first call wins)."""
         if self._rag_system is None:
             self._rag_system = rag_system
             print("RAG系统已设置到模型管理器")
@@ -50,7 +49,7 @@ class ModelManager:
             print("RAG系统已存在，跳过重复设置")
     
     def get_reranker(self):
-        """获取重排序器实例（单例）"""
+        """Lazy-init HTTPReranker."""
         if self._reranker is None:
             try:
                 self._reranker = HTTPReranker(
@@ -65,7 +64,7 @@ class ModelManager:
         return self._reranker
     
     def get_retriever(self, collection_name: str, top_k: int = 5):
-        """获取检索器（带缓存）"""
+        """Cached retriever per (collection, top_k)."""
         cache_key = f"{collection_name}_{top_k}"
         
         if cache_key not in self._retrievers_cache:
@@ -83,7 +82,7 @@ class ModelManager:
         return self._retrievers_cache.get(cache_key)
     
     def get_query_engine(self, collection_name: str, top_k: int = 5):
-        """获取查询引擎（带缓存）"""
+        """RetrieverQueryEngine with optional reranker; cached."""
         cache_key = f"{collection_name}_{top_k}"
         
         if cache_key not in self._query_engines_cache:
@@ -94,11 +93,10 @@ class ModelManager:
             reranker = self.get_reranker()
             
             try:
-                # 创建查询引擎（仅做检索，不使用 LLM）
                 query_engine = RetrieverQueryEngine.from_args(
                     retriever=retriever,
                     node_postprocessors=[reranker] if reranker else [],
-                    streaming=False,  # 禁用流式输出
+                    streaming=False,
                 )
                 self._query_engines_cache[cache_key] = query_engine
                 print(f"查询引擎缓存: {collection_name}")
@@ -109,30 +107,28 @@ class ModelManager:
         return self._query_engines_cache.get(cache_key)
     
     def get_available_collections(self) -> List[str]:
-        """获取可用的collection列表"""
+        """DB table names without data_ prefix."""
         if self._rag_system is None:
             return []
         
         try:
             collections = self._rag_system.vector_store_manager.list_available_collections()
-            # 去掉"data_"前缀
             return [col.replace("data_", "") for col in collections]
         except Exception as e:
             print(f"获取collection列表失败: {e}")
             return []
     
     def clear_cache(self):
-        """清理缓存"""
+        """Drop retriever/query-engine caches and run gc."""
         print("开始清理模型管理器缓存...")
         self._retrievers_cache.clear()
         self._query_engines_cache.clear()
         
-        # 强制垃圾回收
         gc.collect()
         print("缓存清理完成")
     
     def get_memory_info(self) -> Dict:
-        """获取内存使用信息"""
+        """Lightweight stats (HTTP mode, cache sizes)."""
         info = {
             "mode": "HTTP API",
             "retrievers_cached": len(self._retrievers_cache),
@@ -144,7 +140,7 @@ class ModelManager:
 
 
 class OptimizedRetriever:
-    """优化的检索器，使用单例模式管理资源"""
+    """Single- or multi-collection retrieval via ModelManager."""
     
     def __init__(self, rag_system=None, collection_name: Optional[str] = None):
         self.collection_name = collection_name
@@ -152,29 +148,23 @@ class OptimizedRetriever:
         if rag_system is None:
             raise ValueError("rag_system is required")
         
-        # 获取模型管理器实例
         self.model_manager = ModelManager()
         self.model_manager.set_rag_system(rag_system)
         
-        # 从 RAG 系统获取 default_top_n 配置
         self.default_top_n = getattr(rag_system, 'default_top_n', 3)
         print(f"OptimizedRetriever 使用 top_n={self.default_top_n}")
         
-        # 初始化查询引擎
         self._initialize_query_engines()
     
     def _initialize_query_engines(self):
-        """初始化查询引擎"""
+        """Multi: defer engines; single: build one engine."""
         if self.collection_name is None:
-            # 全库检索模式：获取所有可用collections
             collections = self.model_manager.get_available_collections()
             print(f"初始化全库检索，发现 {len(collections)} 个collection")
             
             self.query_engines = {}
-            # 只为真正需要的collection创建query_engine，延迟加载
             self.available_collections = collections
         else:
-            # 单库检索模式
             query_engine = self.model_manager.get_query_engine(self.collection_name, top_k=5)
             if query_engine is None:
                 raise ValueError(f"无法创建查询引擎: {self.collection_name}")
@@ -182,7 +172,7 @@ class OptimizedRetriever:
             print(f"单库检索模式初始化完成: {self.collection_name}")
     
     def get_response(self, question: str, max_collections: int = 3) -> dict:
-        """获取检索响应"""
+        """Return content/source lists (top 5 each)."""
         try:
             if self.collection_name is None:
                 return self._get_multi_collection_response(question, max_collections)
@@ -196,18 +186,15 @@ class OptimizedRetriever:
             }
     
     def _get_single_collection_response(self, question: str) -> dict:
-        """单库检索响应"""
         raw_docs = self.query_engines.query(question)
         source_nodes = raw_docs.source_nodes
         
-        # 🔍 添加调试信息
-        print(f"🔍 检索到的文档块数量: {len(source_nodes)}")
+        print(f"[debug] 检索到的文档块数量: {len(source_nodes)}")
         
         sources = []
         contents = []
         
         for i, node in enumerate(source_nodes):
-            # 打印每个节点的得分
             print(f"  节点 {i+1} - Score: {node.score:.4f} - Source: {node.metadata.get('source', 'Unknown')}")
             source = node.metadata.get('source', 'Unknown')
             content = node.text.strip()
@@ -220,16 +207,13 @@ class OptimizedRetriever:
         }
     
     def _get_multi_collection_response(self, question: str, max_collections: int) -> dict:
-        """多库检索响应（优化版）"""
         all_contents = []
         all_sources = []
         
-        # 限制查询的collection数量，避免资源过度消耗
         collections_to_query = self.available_collections[:max_collections]
         
         for collection_name in collections_to_query:
             try:
-                # 延迟创建query_engine
                 if collection_name not in self.query_engines:
                     query_engine = self.model_manager.get_query_engine(collection_name, top_k=3)
                     if query_engine is not None:
@@ -241,7 +225,6 @@ class OptimizedRetriever:
                 raw_docs = query_engine.query(question)
                 source_nodes = raw_docs.source_nodes
                 
-                # 使用配置的 top_n 而不是硬编码的 2
                 max_results_per_collection = self.default_top_n if len(collections_to_query) == 1 else 2
                 for node in source_nodes[:max_results_per_collection]:
                     source = node.metadata.get('source', f'Unknown_{collection_name}')
@@ -259,7 +242,7 @@ class OptimizedRetriever:
         }
     
     def get_charts(self, question: str):
-        """获取图表数据"""
+        """Resolve source path via retrieval, load from MinIO, excel_to_json."""
         try:
             response_filename = self.get_response(question)
             filename = response_filename["source"]
@@ -275,7 +258,6 @@ class OptimizedRetriever:
             return {"error": str(e)}
     
     def cleanup(self):
-        """清理资源"""
         print("开始清理retriever资源...")
         if hasattr(self, 'query_engines'):
             if isinstance(self.query_engines, dict):
@@ -283,39 +265,30 @@ class OptimizedRetriever:
             else:
                 del self.query_engines
         
-        # 清理模型管理器缓存
         self.model_manager.clear_cache()
         
         print("Retriever资源清理完成")
     
     def get_memory_info(self) -> Dict:
-        """获取内存使用信息"""
         return self.model_manager.get_memory_info()
     
     def __del__(self):
-        """析构函数 - 在对象销毁时自动调用"""
         try:
-            # 检查 Python 是否正在关闭
             import sys
             if sys is None or sys.meta_path is None:
-                # Python 正在关闭，跳过清理
                 return
             
             self.cleanup()
         except:
-            # 完全捕获所有异常，避免析构函数中的错误
             pass
 
 
-# 为了向后兼容，保留原来的类名
 class retriever(OptimizedRetriever):
-    """向后兼容的类名别名"""
+    """Backward-compatible alias."""
     pass
 
 
-# 全局清理函数
 def cleanup_all_resources():
-    """清理所有资源的全局函数"""
     try:
         manager = ModelManager()
         manager.clear_cache()
@@ -326,7 +299,6 @@ def cleanup_all_resources():
 
 if __name__ == '__main__':
     try:
-        # 禁用LLM，仅做检索
         Settings.llm = None
         
         rag_system = create_rag_retriever_system(
@@ -337,15 +309,13 @@ if __name__ == '__main__':
             port=5432,
             table_prefix="doc_collection",
             instance_id=1,
-            default_top_k=20,  # 设置默认粗排检索数量
-            default_top_n=3    # 设置默认精排返回数量
+            default_top_k=20,
+            default_top_n=3
         )
-        # 这里需要传入实际的rag_system实例
         retriever_instance = OptimizedRetriever(rag_system=rag_system)
         responses = retriever_instance.get_response("北部湾")
         print(responses)
         
-        # 显示内存信息
         print("内存使用情况:", retriever_instance.get_memory_info())
         
         print("请确保传入有效的rag_system实例")
@@ -353,6 +323,5 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"执行失败: {e}")
     finally:
-        # 清理资源
         cleanup_all_resources()
 

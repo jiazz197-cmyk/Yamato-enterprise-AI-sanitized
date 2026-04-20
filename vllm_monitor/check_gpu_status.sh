@@ -15,12 +15,12 @@ echo ""
 
 # Check if metrics endpoint is available
 if ! curl -s http://localhost:9400/metrics > /dev/null 2>&1; then
-    echo -e "${RED}❌ Monitor not running!${NC}"
+    echo -e "${RED}[error] Monitor not running!${NC}"
     echo "Start with: ./start_monitor.sh"
     exit 1
 fi
 
-echo -e "${GREEN}✓ Monitor is running${NC}"
+echo -e "${GREEN}[success] Monitor is running${NC}"
 echo ""
 
 # Get metrics

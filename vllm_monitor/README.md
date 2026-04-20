@@ -2,18 +2,18 @@
 
 轻量级监控系统，专为 **4×RTX 4090 + Ubuntu Server** 优化，使用Conda环境隔离，监控vLLM Docker容器和GPU资源。
 
-## 🎯 主要功能
+## 主要功能
 
-- 📊 实时监控 4×RTX 4090 的显存、温度、功耗、利用率
-- 🚀 监控 vLLM 实例性能（TPS、请求队列）
-- 🐳 监控 Docker 容器资源使用
-- 📈 Prometheus metrics 导出（可接入Grafana）
-- 🔔 智能告警系统（显存、温度、功耗超阈值）
-- 📝 CSV格式历史数据记录
+- 实时监控 4×RTX 4090 的显存、温度、功耗、利用率
+- 监控 vLLM 实例性能（TPS、请求队列）
+- 监控 Docker 容器资源使用
+- Prometheus metrics 导出（可接入Grafana）
+- 智能告警系统（显存、温度、功耗超阈值）
+- CSV格式历史数据记录
 
 ---
 
-## 📦 项目文件
+## 项目文件
 
 ```
 vllm-monitor/
@@ -31,7 +31,7 @@ vllm-monitor/
 
 ---
 
-## 🚀 快速开始
+## 快速开始
 
 ### 1. 上传文件到服务器
 
@@ -82,7 +82,7 @@ tail -f /var/log/monitor_vllm.log
 
 ---
 
-## 📊 监控指标
+## 监控指标
 
 访问 `http://your-server:9400/metrics` 获取Prometheus格式的指标：
 
@@ -108,7 +108,7 @@ tail -f /var/log/monitor_vllm.log
 
 ---
 
-## 🎛️ 配置修改
+## 配置修改
 
 编辑 `monitor.py` 中的配置区域：
 
@@ -134,7 +134,7 @@ THRESHOLDS = {
 
 ---
 
-## 🔄 设置开机自启动
+## 设置开机自启动
 
 ```bash
 # 1. 修改service文件中的conda路径
@@ -160,7 +160,7 @@ sudo journalctl -u vllm-monitor -f
 
 ---
 
-## 📈 Grafana可视化
+## Grafana可视化
 
 ### 1. 配置Prometheus
 
@@ -205,7 +205,7 @@ host_memory_free_bytes / 1024^3
 
 ---
 
-## 🛠️ 常用命令
+## 常用命令
 
 ```bash
 # 查看实时GPU状态（彩色表格）
@@ -232,13 +232,13 @@ conda env update -f environment.yml --prune
 
 ---
 
-## 🔧 Conda环境管理
+## Conda环境管理
 
 ### 为什么使用Conda？
-- ✅ **环境隔离** - 不污染系统Python环境
-- ✅ **避免冲突** - 与其他项目依赖不冲突
-- ✅ **易于管理** - 一条命令创建/删除环境
-- ✅ **无权限问题** - 不需要sudo安装依赖
+- [success] **环境隔离** - 不污染系统Python环境
+- [success] **避免冲突** - 与其他项目依赖不冲突
+- [success] **易于管理** - 一条命令创建/删除环境
+- [success] **无权限问题** - 不需要sudo安装依赖
 
 ### 环境操作
 
@@ -267,7 +267,7 @@ conda env create -f environment.yml
 
 ---
 
-## 📖 使用场景
+## 使用场景
 
 ### 场景1: 检测显存分配不均
 
@@ -301,7 +301,7 @@ sudo nvidia-smi -i 0,1,2,3 -pl 400
 
 ---
 
-## 🐛 故障排查
+## 故障排查
 
 ### 问题1: 检测不到GPU
 
@@ -348,7 +348,7 @@ newgrp docker
 
 ---
 
-## 📚 文档
+## 文档
 
 - **[README.md](README.md)** - 本文件，快速开始指南
 - **[CONDA使用说明.md](CONDA使用说明.md)** - 详细的Conda使用文档
@@ -356,21 +356,21 @@ newgrp docker
 
 ---
 
-## 🎯 主要改进
+## 主要改进
 
 相比原始代码：
-- ✅ 修复所有已知Bug（waiting_requests取值、Windows兼容性等）
-- ✅ 针对4×RTX 4090优化阈值
-- ✅ 添加GPU功耗监控（4090重要指标）
-- ✅ 完善的日志系统
-- ✅ 优雅关闭机制
-- ✅ 使用Conda环境隔离
-- ✅ 记录所有GPU数据（不只是第一个）
-- ✅ 更好的错误处理和日志
+- [success] 修复所有已知Bug（waiting_requests取值、Windows兼容性等）
+- [success] 针对4×RTX 4090优化阈值
+- [success] 添加GPU功耗监控（4090重要指标）
+- [success] 完善的日志系统
+- [success] 优雅关闭机制
+- [success] 使用Conda环境隔离
+- [success] 记录所有GPU数据（不只是第一个）
+- [success] 更好的错误处理和日志
 
 ---
 
-## 🆘 获取帮助
+## 获取帮助
 
 1. 运行环境测试：`python test_environment.py`
 2. 查看详细文档：`cat CONDA使用说明.md`
@@ -384,4 +384,4 @@ newgrp docker
 **Python版本**: 3.10 (Conda环境)  
 **环境管理**: Miniconda  
 
-祝监控顺利！🚀
+祝监控顺利！

@@ -1,9 +1,4 @@
-"""
-PDF to Image Converter
-
-Convert uploaded PDF files to JPG images.
-Each page of the PDF will be converted to a separate JPG image and output a share url.
-"""
+"""Convert PDF bytes or streams to raster images (per page)."""
 import io
 import tempfile
 from pathlib import Path
@@ -20,27 +15,15 @@ def pdf_to_images(
     first_page: int = None,
     last_page: int = None
 ) -> List[Tuple[bytes, str]]:
-    """
-    Convert PDF file to JPG images (one image per page)
-    
-    :param file_data: PDF file binary data (bytes) or file stream (like UploadFile.file)
-    :param dpi: Resolution for conversion (default: 200, higher = better quality but larger file)
-    :param fmt: Output image format (default: "JPEG", can be "PNG", "TIFF", etc.)
-    :param quality: JPEG quality (1-100, default: 85)
-    :param first_page: First page to process (None = start from first page)
-    :param last_page: Last page to process (None = process until last page)
-    :return: List of tuples containing (image_bytes, suggested_filename)
-    """
+    """One tuple per page: (bytes, suggested_filename)."""
     
     try:
-        # Convert file stream to bytes if necessary
         if not isinstance(file_data, bytes):
             file_data.seek(0)
             pdf_bytes = file_data.read()
         else:
             pdf_bytes = file_data
         
-        # Convert PDF to PIL Image objects
         images = convert_from_bytes(
             pdf_bytes,
             dpi=dpi,
@@ -49,15 +32,11 @@ def pdf_to_images(
             fmt=fmt
         )
         
-        # Convert PIL Images to bytes
         result = []
         for idx, image in enumerate(images, start=1):
-            # Create BytesIO buffer to store image bytes
             img_buffer = io.BytesIO()
             
-            # Save image to buffer
             if fmt.upper() == "JPEG" or fmt.upper() == "JPG":
-                # Convert RGBA to RGB for JPEG (JPEG doesn't support transparency)
                 if image.mode in ("RGBA", "LA", "P"):
                     rgb_image = Image.new("RGB", image.size, (255, 255, 255))
                     rgb_image.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
@@ -69,11 +48,9 @@ def pdf_to_images(
                 image.save(img_buffer, format=fmt, quality=quality, optimize=True)
                 file_extension = fmt.lower()
             
-            # Get bytes from buffer
             img_bytes = img_buffer.getvalue()
             img_buffer.close()
             
-            # Generate suggested filename
             suggested_filename = f"page_{idx:03d}.{file_extension}"
             
             result.append((img_bytes, suggested_filename))
@@ -90,15 +67,7 @@ def pdf_to_single_image(
     quality: int = 85,
     page_number: int = 1
 ) -> Tuple[bytes, str]:
-    """
-    Convert a single page of PDF to JPG image
-    
-    :param file_data: PDF file binary data (bytes) or file stream
-    :param dpi: Resolution for conversion (default: 200)
-    :param quality: JPEG quality (1-100, default: 85)
-    :param page_number: Page number to convert (1-indexed, default: 1)
-    :return: Tuple containing (image_bytes, suggested_filename)
-    """
+    """Wrapper: pdf_to_images with first_page == last_page == page_number."""
     
     results = pdf_to_images(
         file_data=file_data,
@@ -115,22 +84,15 @@ def pdf_to_single_image(
 
 
 def get_pdf_page_count(file_data: Union[bytes, io.IOBase]) -> int:
-    """
-    Get the number of pages in a PDF file
-    
-    :param file_data: PDF file binary data (bytes) or file stream
-    :return: Number of pages
-    """
+    """Low-DPI convert_from_bytes; len(images) as page count."""
     try:
-        # Convert file stream to bytes if necessary
         if not isinstance(file_data, bytes):
             file_data.seek(0)
             pdf_bytes = file_data.read()
         else:
             pdf_bytes = file_data
         
-        # Convert PDF to get page count
-        images = convert_from_bytes(pdf_bytes, dpi=72)  # Low DPI just to count pages
+        images = convert_from_bytes(pdf_bytes, dpi=72)
         return len(images)
     
     except Exception as e:

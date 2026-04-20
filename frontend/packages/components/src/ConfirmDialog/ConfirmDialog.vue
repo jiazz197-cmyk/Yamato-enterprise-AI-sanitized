@@ -220,7 +220,6 @@ const handleOverlayClick = () => {
   }
 }
 
-// 过渡动画
 .dialog-fade-enter-active,
 .dialog-fade-leave-active {
   transition: opacity 0.2s ease;

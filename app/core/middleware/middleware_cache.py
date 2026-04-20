@@ -1,6 +1,4 @@
-"""
-缓存中间件：命中 Redis 直接返回，未命中则写入缓存
-"""
+"""GET 响应可缓存时走 Redis。"""
 import hashlib
 import json
 from typing import Callable, Optional
@@ -49,7 +47,6 @@ class CacheMiddleware(BaseHTTPMiddleware):
             return False
         if request.url.path in EXCLUDED_PATHS:
             return False
-        # Never cache authenticated responses to avoid cross-user data leakage.
         if request.headers.get("Authorization"):
             return False
         cache_control = request.headers.get("Cache-Control", "")

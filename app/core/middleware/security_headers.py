@@ -1,6 +1,4 @@
-"""
-Security response headers middleware.
-"""
+"""为响应补充常见安全相关 Header。"""
 from typing import Callable
 
 from fastapi import Request
@@ -10,7 +8,7 @@ from app.core.config import settings
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Attach baseline security headers to every response."""
+    """X-Frame-Options、CSP 相关基础头等。"""
 
     async def dispatch(self, request: Request, call_next: Callable):
         response = await call_next(request)

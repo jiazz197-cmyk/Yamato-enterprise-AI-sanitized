@@ -309,7 +309,7 @@ const onRenameCommit = async (chatId: string) => {
           message = error.message
         }
       } catch {
-        // ignore json parse error
+        // 解析失败则跳过
       }
       emit('rename-error', chatId, message)
       emit('rename-cancel')
@@ -391,7 +391,7 @@ const deleteConversation = async (chatId: string): Promise<boolean> => {
           message = error.message
         }
       } catch {
-        // ignore json parse error
+        // 解析失败则跳过
       }
       emit('rename-error', chatId, message)
       return false

@@ -1,7 +1,4 @@
-"""
-观察者模式基础框架
-提供事件发布-订阅机制，用于解耦组件间的通信
-"""
+"""任务事件发布订阅：TaskSubject 异步通知各 TaskObserver。"""
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -13,10 +10,8 @@ import logging
 logger = logging.getLogger("app.observer")
 
 
-# ==================== 事件定义 ====================
-
 class TaskEventType(str, Enum):
-    """任务事件类型"""
+    """任务生命周期事件枚举。"""
     TASK_CREATED = "task_created"
     TASK_STARTED = "task_started"
     TASK_PROGRESS_UPDATED = "task_progress_updated"
@@ -27,17 +22,12 @@ class TaskEventType(str, Enum):
 
 @dataclass
 class TaskEvent:
-    """
-    任务事件数据类
-    
-    携带任务状态变更的完整信息
-    """
+    """一次任务状态变更的载荷。"""
     event_type: TaskEventType
     task_id: str
     task_type: str
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     
-    # 可选字段
     status: Optional[str] = None
     progress: Optional[int] = None
     message: Optional[str] = None
@@ -46,7 +36,7 @@ class TaskEvent:
     metadata: Optional[Dict[str, Any]] = None
     
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
+        """转 dict，便于序列化。"""
         return {
             "event_type": self.event_type.value,
             "task_id": self.task_id,
@@ -61,56 +51,27 @@ class TaskEvent:
         }
 
 
-# ==================== 观察者接口 ====================
-
 class TaskObserver(ABC):
-    """
-    任务观察者抽象基类
-    
-    所有任务观察者必须实现 on_task_event 方法
-    """
+    """观察者需实现异步 on_task_event。"""
     
     @abstractmethod
     async def on_task_event(self, event: TaskEvent) -> None:
-        """
-        处理任务事件
-        
-        Args:
-            event: 任务事件对象
-        
-        Note:
-            此方法应该是异步的，避免阻塞事件分发
-        """
+        """处理一条任务事件。"""
         pass
     
     def get_observer_name(self) -> str:
-        """获取观察者名称（用于日志和调试）"""
+        """默认用类名。"""
         return self.__class__.__name__
 
 
-# ==================== 被观察者（Subject）====================
-
 class TaskSubject:
-    """
-    任务事件发布者（被观察者）
-    
-    职责：
-    - 管理观察者列表
-    - 发布任务事件到所有观察者
-    - 支持按事件类型过滤观察者
-    
-    特性：
-    - 线程安全的观察者管理
-    - 异步事件通知
-    - 错误隔离（单个观察者失败不影响其他观察者）
-    """
+    """维护观察者列表；可按事件类型过滤；notify 时 gather 且单点异常不向外抛。"""
     
     def __init__(self):
         self._observers: List[TaskObserver] = []
         self._filtered_observers: Dict[TaskEventType, Set[TaskObserver]] = {}
         self._lock = asyncio.Lock()
         
-        # 统计信息
         self._event_count = 0
         self._error_count = 0
     
@@ -119,33 +80,12 @@ class TaskSubject:
         observer: TaskObserver, 
         event_types: Optional[List[TaskEventType]] = None
     ) -> None:
-        """
-        注册观察者
-        
-        Args:
-            observer: 观察者实例
-            event_types: 可选，只接收特定类型的事件（None = 接收所有事件）
-        
-        Example:
-            ```python
-            subject = TaskSubject()
-            
-            # 接收所有事件
-            await subject.attach(MyObserver())
-            
-            # 只接收完成和失败事件
-            await subject.attach(
-                AlertObserver(), 
-                event_types=[TaskEventType.TASK_COMPLETED, TaskEventType.TASK_FAILED]
-            )
-            ```
-        """
+        """注册观察者；event_types 非空则只收这些类型。"""
         async with self._lock:
             if observer not in self._observers:
                 self._observers.append(observer)
-                logger.info(f"✅ 注册观察者: {observer.get_observer_name()}")
+                logger.info(f"[success] 注册观察者: {observer.get_observer_name()}")
             
-            # 注册事件过滤
             if event_types:
                 for event_type in event_types:
                     if event_type not in self._filtered_observers:
@@ -156,63 +96,40 @@ class TaskSubject:
                 )
     
     async def detach(self, observer: TaskObserver) -> None:
-        """
-        注销观察者
-        
-        Args:
-            observer: 要注销的观察者实例
-        """
+        """移除观察者及其过滤条目。"""
         async with self._lock:
             if observer in self._observers:
                 self._observers.remove(observer)
-                logger.info(f"🔌 注销观察者: {observer.get_observer_name()}")
+                logger.info(f"[event] 注销观察者: {observer.get_observer_name()}")
             
-            # 清理过滤器
             for event_type_set in self._filtered_observers.values():
                 event_type_set.discard(observer)
     
     async def detach_all(self) -> int:
-        """
-        注销所有观察者（用于关闭时清理）
-        
-        Returns:
-            注销的观察者数量
-        """
+        """清空列表，返回原长度。"""
         async with self._lock:
             count = len(self._observers)
             self._observers.clear()
             self._filtered_observers.clear()
-            logger.info(f"🔌 已注销所有观察者: {count} 个")
+            logger.info(f"[event] 已注销所有观察者: {count} 个")
             return count
     
     async def notify(self, event: TaskEvent) -> None:
-        """
-        通知所有相关观察者
-        
-        Args:
-            event: 任务事件
-        
-        工作流程：
-        1. 确定需要通知的观察者（根据事件类型过滤）
-        2. 并发通知所有观察者
-        3. 错误隔离（单个观察者失败不影响其他观察者）
-        """
+        """并发调用相关观察者的 on_task_event。"""
         self._event_count += 1
         
-        # 获取需要通知的观察者列表
         async with self._lock:
             observers_to_notify = self._get_observers_for_event(event)
         
         if not observers_to_notify:
-            logger.debug(f"📡 事件 {event.event_type.value} 无订阅者")
+            logger.debug(f"[event] 事件 {event.event_type.value} 无订阅者")
             return
         
         logger.debug(
-            f"📡 发布事件: {event.event_type.value} "
+            f"[event] 发布事件: {event.event_type.value} "
             f"[task_id={event.task_id}] → {len(observers_to_notify)} 个观察者"
         )
         
-        # 并发通知所有观察者（错误隔离）
         tasks = []
         for observer in observers_to_notify:
             task = asyncio.create_task(
@@ -220,60 +137,41 @@ class TaskSubject:
             )
             tasks.append(task)
         
-        # 等待所有通知完成（不抛出异常）
         await asyncio.gather(*tasks, return_exceptions=True)
     
     def _get_observers_for_event(self, event: TaskEvent) -> List[TaskObserver]:
-        """
-        根据事件类型获取需要通知的观察者
-        
-        逻辑：
-        - 如果观察者注册了事件过滤器，检查事件类型是否匹配
-        - 如果观察者没有过滤器，接收所有事件
-        """
+        """有过滤器的只收匹配类型；无过滤器收全部。"""
         observers_to_notify = []
         
         for observer in self._observers:
-            # 检查观察者是否有过滤器
             has_filter = any(
                 observer in observer_set 
                 for observer_set in self._filtered_observers.values()
             )
             
             if has_filter:
-                # 有过滤器，检查事件类型是否匹配
                 if event.event_type in self._filtered_observers:
                     if observer in self._filtered_observers[event.event_type]:
                         observers_to_notify.append(observer)
             else:
-                # 无过滤器，接收所有事件
                 observers_to_notify.append(observer)
         
         return observers_to_notify
     
     async def _notify_observer(self, observer: TaskObserver, event: TaskEvent) -> None:
-        """
-        通知单个观察者（带错误处理）
-        
-        错误隔离：单个观察者失败不影响其他观察者
-        """
+        """单观察者 try/except，失败只记 error_count。"""
         try:
             await observer.on_task_event(event)
         except Exception as e:
             self._error_count += 1
             logger.error(
-                f"❌ 观察者 {observer.get_observer_name()} "
+                f"[error] 观察者 {observer.get_observer_name()} "
                 f"处理事件 {event.event_type.value} 失败: {e}",
                 exc_info=True
             )
     
     def get_stats(self) -> Dict[str, Any]:
-        """
-        获取统计信息
-        
-        Returns:
-            统计信息字典
-        """
+        """观察者数量与事件计数。"""
         return {
             "observer_count": len(self._observers),
             "event_count": self._event_count,
@@ -285,43 +183,22 @@ class TaskSubject:
         }
 
 
-# ==================== 函数式观察者包装器 ====================
-
 class FunctionObserver(TaskObserver):
-    """
-    函数式观察者包装器
-    
-    允许使用普通函数作为观察者，无需创建类
-    
-    Example:
-        ```python
-        async def log_task_event(event: TaskEvent):
-            print(f"任务事件: {event.event_type}")
-        
-        observer = FunctionObserver(log_task_event, name="LogObserver")
-        await subject.attach(observer)
-        ```
-    """
+    """把可调用对象包成 TaskObserver；同步回调走 run_in_executor。"""
     
     def __init__(
         self, 
         callback: Callable[[TaskEvent], Any],
         name: Optional[str] = None
     ):
-        """
-        Args:
-            callback: 事件处理函数（可以是同步或异步）
-            name: 观察者名称（可选）
-        """
+        """callback 可为 async 或普通函数。"""
         self._callback = callback
         self._name = name or "FunctionObserver"
     
     async def on_task_event(self, event: TaskEvent) -> None:
-        """调用回调函数"""
         if asyncio.iscoroutinefunction(self._callback):
             await self._callback(event)
         else:
-            # 同步函数在线程池中执行
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self._callback, event)
     

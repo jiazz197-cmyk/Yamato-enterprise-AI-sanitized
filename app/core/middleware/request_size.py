@@ -1,6 +1,4 @@
-"""
-请求体大小限制中间件
-"""
+"""限制 JSON / 上传体积的中间件。"""
 from typing import Callable
 
 from fastapi import Request
@@ -21,10 +19,7 @@ class RequestSizeLimit:
 
     @staticmethod
     async def _read_body_with_limit(request: Request, size_limit: int) -> tuple[bool, bytes]:
-        """
-        Read request body in chunks with an upper bound.
-        Returns (is_within_limit, body_bytes).
-        """
+        """分块读 body，超限则 (False, b'')；否则拼接完整 bytes。"""
         total_size = 0
         chunks: list[bytes] = []
         async for chunk in request.stream():
@@ -44,7 +39,6 @@ class RequestSizeLimit:
             if not content_length:
                 if request.method.upper() not in self._body_methods:
                     return True
-                # Bounded fallback for chunked or missing Content-Length requests.
                 within_limit, body = await self._read_body_with_limit(request, size_limit)
                 if not within_limit:
                     request_logger.warning(
@@ -52,7 +46,6 @@ class RequestSizeLimit:
                         size_limit,
                     )
                     return False
-                # Preserve body for downstream consumers that call request.body().
                 request._body = body  # type: ignore[attr-defined]
                 return True
 

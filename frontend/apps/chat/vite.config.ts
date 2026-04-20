@@ -22,8 +22,8 @@ export default defineConfig(({ mode }) => {
   const port = Number(env.VITE_PORT)
   if (isNaN(port) || port <= 0) throw new Error('VITE_PORT must be a valid positive number')
 
-  const apiBase = env.VITE_API_BASE_URL // e.g. /api/v1
-  const difyApiPrefix = env.VITE_DIFY_API_PREFIX // e.g. /v1
+  const apiBase = env.VITE_API_BASE_URL
+  const difyApiPrefix = env.VITE_DIFY_API_PREFIX
 
   const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -67,20 +67,13 @@ export default defineConfig(({ mode }) => {
       host: true,
 
       proxy: {
-        // 登录、用户等后端业务接口 → 60080（更具体的规则必须放在前面）
         [`${apiBase}/auth`]: makeProxy(env.VITE_BACKEND_TARGET),
-        // 会话归档接口属于后端业务服务，不应走 Dify
         [`${apiBase}/chat-summary`]: makeProxy(env.VITE_BACKEND_TARGET),
-        // 填表接口属于后端业务服务，不应走 Dify
         [`${apiBase}/closing-form`]: makeProxy(env.VITE_BACKEND_TARGET),
-        // 文档处理接口属于后端业务服务，不应走 Dify
         [`${apiBase}/docs`]: makeProxy(env.VITE_BACKEND_TARGET),
-        // 上下文压缩接口属于后端业务服务，不应走 Dify
         [`${apiBase}/context-compression`]: makeProxy(env.VITE_BACKEND_TARGET),
-        // 其余 /api/v1/* → Dify 聊天服务 60086
         [apiBase]: {
           ...makeProxy(env.VITE_DIFY_TARGET, chatProxyApiKey),
-          // 通过环境变量控制前缀改写，避免在代码中硬编码 /v1
           rewrite: (path) => path.replace(new RegExp(`^${escapeRegExp(apiBase)}`), difyApiPrefix),
         },
       },

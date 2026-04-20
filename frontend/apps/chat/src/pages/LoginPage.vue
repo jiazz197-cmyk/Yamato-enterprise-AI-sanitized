@@ -91,7 +91,7 @@ const handleSubmit = async () => {
       )
       saveUserRole(me.role || '')
     } catch {
-      // ignore: user info is best-effort
+      // /me 失败不阻塞登录
     }
 
     showSuccess('登录成功')

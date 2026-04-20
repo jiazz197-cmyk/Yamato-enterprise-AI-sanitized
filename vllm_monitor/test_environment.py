@@ -9,19 +9,19 @@ import sys
 
 def test_python_version():
     """Test Python version"""
-    print("🔍 Testing Python version...")
+    print("[debug] Testing Python version...")
     version = sys.version_info
     print(f"   Python {version.major}.{version.minor}.{version.micro}")
     if version.major >= 3 and version.minor >= 7:
-        print("   ✅ PASS: Python 3.7+ detected")
+        print("   [success] PASS: Python 3.7+ detected")
         return True
     else:
-        print("   ❌ FAIL: Python 3.7+ required")
+        print("   [error] FAIL: Python 3.7+ required")
         return False
 
 def test_packages():
     """Test required packages"""
-    print("\n🔍 Testing required packages...")
+    print("\n[debug] Testing required packages...")
     packages = {
         'psutil': 'System monitoring',
         'requests': 'HTTP requests',
@@ -34,9 +34,9 @@ def test_packages():
     for pkg, desc in packages.items():
         try:
             __import__(pkg)
-            print(f"   ✅ {pkg:20s} - {desc}")
+            print(f"   [success] {pkg:20s} - {desc}")
         except ImportError:
-            print(f"   ❌ {pkg:20s} - {desc} (NOT INSTALLED)")
+            print(f"   [error] {pkg:20s} - {desc} (NOT INSTALLED)")
             all_ok = False
     
     if not all_ok:
@@ -47,12 +47,12 @@ def test_packages():
 
 def test_nvidia_gpu():
     """Test NVIDIA GPU detection"""
-    print("\n🔍 Testing NVIDIA GPU detection...")
+    print("\n[debug] Testing NVIDIA GPU detection...")
     try:
         import pynvml
         pynvml.nvmlInit()
         device_count = pynvml.nvmlDeviceGetCount()
-        print(f"   ✅ Detected {device_count} GPU(s):")
+        print(f"   [success] Detected {device_count} GPU(s):")
         
         for i in range(device_count):
             handle = pynvml.nvmlDeviceGetHandleByIndex(i)
@@ -74,25 +74,25 @@ def test_nvidia_gpu():
         pynvml.nvmlShutdown()
         
         if device_count == 4:
-            print("   ✅ PERFECT: 4 GPUs detected (as expected)")
+            print("   [success] PERFECT: 4 GPUs detected (as expected)")
         elif device_count > 0:
-            print(f"   ⚠️  WARNING: Expected 4 GPUs, found {device_count}")
+            print(f"   [warning]  WARNING: Expected 4 GPUs, found {device_count}")
         
         return True
         
     except Exception as e:
-        print(f"   ❌ FAIL: {e}")
+        print(f"   [error] FAIL: {e}")
         print("   Make sure NVIDIA driver and nvidia-ml-py are installed")
         return False
 
 def test_docker():
     """Test Docker access"""
-    print("\n🔍 Testing Docker access...")
+    print("\n[debug] Testing Docker access...")
     try:
         import docker
         client = docker.from_env()
         containers = client.containers.list()
-        print(f"   ✅ Docker accessible, found {len(containers)} running container(s)")
+        print(f"   [success] Docker accessible, found {len(containers)} running container(s)")
         
         for container in containers[:5]:  # Show first 5
             name = container.name
@@ -105,7 +105,7 @@ def test_docker():
         return True
         
     except Exception as e:
-        print(f"   ⚠️  WARNING: Docker not accessible ({e})")
+        print(f"   [warning]  WARNING: Docker not accessible ({e})")
         print("   If you need Docker monitoring:")
         print("   - Add your user to docker group: sudo usermod -aG docker $USER")
         print("   - Then logout and login again")
@@ -113,7 +113,7 @@ def test_docker():
 
 def test_port():
     """Test if port 9400 is available"""
-    print("\n🔍 Testing port 9400 availability...")
+    print("\n[debug] Testing port 9400 availability...")
     try:
         import socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -121,20 +121,20 @@ def test_port():
         sock.close()
         
         if result == 0:
-            print("   ⚠️  WARNING: Port 9400 is already in use")
+            print("   [warning]  WARNING: Port 9400 is already in use")
             print("   Stop the existing service or change EXPORTER_PORT in monitor.py")
             return False
         else:
-            print("   ✅ Port 9400 is available")
+            print("   [success] Port 9400 is available")
             return True
             
     except Exception as e:
-        print(f"   ⚠️  Could not test port: {e}")
+        print(f"   [warning]  Could not test port: {e}")
         return False
 
 def test_system_info():
     """Display system information"""
-    print("\n🔍 System Information:")
+    print("\n[debug] System Information:")
     try:
         import psutil
         
@@ -172,12 +172,12 @@ def test_system_info():
         return True
         
     except Exception as e:
-        print(f"   ❌ Error: {e}")
+        print(f"   [error] Error: {e}")
         return False
 
 def test_write_permissions():
     """Test write permissions for log files"""
-    print("\n🔍 Testing write permissions...")
+    print("\n[debug] Testing write permissions...")
     test_paths = [
         "/var/log/monitor_vllm_metrics.csv",
         "/var/log/monitor_vllm.log"
@@ -188,13 +188,13 @@ def test_write_permissions():
         try:
             with open(path, 'a') as f:
                 pass
-            print(f"   ✅ Can write to {path}")
+            print(f"   [success] Can write to {path}")
         except PermissionError:
-            print(f"   ⚠️  No write permission for {path}")
+            print(f"   [warning]  No write permission for {path}")
             print(f"      Run with sudo or change path in monitor.py")
             all_ok = False
         except Exception as e:
-            print(f"   ⚠️  Cannot write to {path}: {e}")
+            print(f"   [warning]  Cannot write to {path}: {e}")
             all_ok = False
     
     if not all_ok:
@@ -207,7 +207,7 @@ def test_write_permissions():
 def main():
     """Run all tests"""
     print("="*60)
-    print("🧪 vLLM Monitor - Environment Test")
+    print("[info] vLLM Monitor - Environment Test")
     print("="*60)
     
     results = {}
@@ -222,7 +222,7 @@ def main():
     
     # Summary
     print("\n" + "="*60)
-    print("📊 Test Summary")
+    print("[event] Test Summary")
     print("="*60)
     
     critical_tests = ['python', 'packages', 'gpu']
@@ -232,14 +232,14 @@ def main():
     optional_passed = sum(results[t] for t in optional_tests if t in results)
     
     if critical_passed:
-        print("✅ All critical tests PASSED")
+        print("[success] All critical tests PASSED")
         print(f"   {optional_passed}/{len(optional_tests)} optional tests passed")
-        print("\n🚀 You can now run the monitor:")
+        print("\n[success] You can now run the monitor:")
         print("   ./start_monitor.sh")
         print("   or")
         print("   python3 monitor.py")
     else:
-        print("❌ Some critical tests FAILED")
+        print("[error] Some critical tests FAILED")
         print("   Please fix the issues above before running the monitor")
         sys.exit(1)
     

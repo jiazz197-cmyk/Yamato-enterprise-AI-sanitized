@@ -176,7 +176,7 @@ class VectorStoreManager:
         try:
             vector_store = self._build_vector_store(instance_id)
             
-            # ✅ 对于 PGVector：不需要本地持久化存储，直接创建新的 StorageContext
+            # [note] 对于 PGVector：不需要本地持久化存储，直接创建新的 StorageContext
             # 数据已经存储在 PostgreSQL 中，不需要 docstore.json
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             Settings.embed_model = embedding_model

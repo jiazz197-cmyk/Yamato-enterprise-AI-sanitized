@@ -17,7 +17,7 @@ echo ""
 
 # Check if conda is installed
 if ! command -v conda &> /dev/null; then
-    echo -e "${RED}❌ Conda not found!${NC}"
+    echo -e "${RED}[error] Conda not found!${NC}"
     echo ""
     echo "Please install Miniconda first:"
     echo ""
@@ -33,19 +33,19 @@ if ! command -v conda &> /dev/null; then
     exit 1
 fi
 
-echo -e "${GREEN}✓ Conda found: $(conda --version)${NC}"
+echo -e "${GREEN}[success] Conda found: $(conda --version)${NC}"
 echo ""
 
 # Check if environment.yml exists
 if [ ! -f "environment.yml" ]; then
-    echo -e "${RED}❌ environment.yml not found!${NC}"
+    echo -e "${RED}[error] environment.yml not found!${NC}"
     exit 1
 fi
 
 # Check if environment already exists
 ENV_NAME="vllm-monitor"
 if conda env list | grep -q "^${ENV_NAME} "; then
-    echo -e "${YELLOW}⚠ Environment '${ENV_NAME}' already exists${NC}"
+    echo -e "${YELLOW}[warning] Environment '${ENV_NAME}' already exists${NC}"
     read -p "Do you want to remove and recreate it? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -54,7 +54,7 @@ if conda env list | grep -q "^${ENV_NAME} "; then
     else
         echo -e "${YELLOW}Updating existing environment...${NC}"
         conda env update -n ${ENV_NAME} -f environment.yml --prune
-        echo -e "${GREEN}✓ Environment updated${NC}"
+        echo -e "${GREEN}[success] Environment updated${NC}"
         exit 0
     fi
 fi
@@ -65,7 +65,7 @@ conda env create -f environment.yml
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}✅ Conda Environment Setup Complete!${NC}"
+echo -e "${GREEN}[success] Conda Environment Setup Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "To activate the environment, run:"

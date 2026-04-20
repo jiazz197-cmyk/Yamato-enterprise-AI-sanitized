@@ -399,7 +399,6 @@ const stripThinkContent = (raw: string): string => {
     return ''
   }
 
-  // Normalize escaped think tags to raw tags so one parser can handle both.
   const normalized = raw
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
@@ -474,7 +473,7 @@ const isUploadingKnowledge = ref(false)
 const activeKnowledgeTaskId = ref<string | null>(null)
 let knowledgeStatusPollTimer: number | null = null
 let knowledgeStatusAbortController: AbortController | null = null
-/** Sync guard against overlapping uploads (same tick / duplicate change). */
+/** 同一次上传只处理一轮，避免 change 重复触发。 */
 let knowledgeUploadProcessing = false
 
 const WELCOME_TEXT = '有什么我能帮您的吗😊'
@@ -518,7 +517,7 @@ const saveCachedSettings = () => {
       })
     )
   } catch {
-    // ignore
+    // 忽略
   }
 }
 
@@ -541,7 +540,7 @@ const loadCachedSettings = () => {
       }
     }
   } catch {
-    // ignore
+    // 忽略
   }
 }
 
@@ -834,7 +833,6 @@ const sendMessage = async () => {
 
   if (existingConversationId && !existingConversationId.startsWith('new-') && !existingConversationId.startsWith('temp-')) {
     upsertChatHistoryToTop(existingConversationId)
-    // 确保列表引用更新，这样侧边栏能反映位置变化（置顶）
     chatHistory.value = [...chatHistory.value]
   } else {
     if (existingConversationId && (existingConversationId.startsWith('new-') || existingConversationId.startsWith('temp-'))) {
@@ -891,7 +889,6 @@ const sendMessage = async () => {
     } finally {
       isCompressing.value = false
       await scrollToBottom()
-      // Restore input text after compression ends
       inputMessage.value = currentMsg
     }
     return
@@ -903,17 +900,13 @@ const sendMessage = async () => {
 
   await scrollToBottom()
 
-  // 创建助手消息占位
   const assistantMessage: Message = {
     role: 'assistant',
     content: '',
     timestamp: formatTime(),
   }
   messages.value.push(assistantMessage)
-  // Retrieve the reactive proxy that Vue wraps around the pushed object.
-  // Direct assignment to the raw `assistantMessage` local variable bypasses
-  // Vue's Proxy set-trap entirely, so the DOM never updates reactively.
-  // All content mutations must go through this proxy reference instead.
+  // 后续改内容要用数组最后一项（代理），不要改局部 assistantMessage 引用。
   const reactiveAssistantMessage = messages.value[messages.value.length - 1]
 
   let renderedContent = ''
@@ -968,10 +961,8 @@ const sendMessage = async () => {
     }
     const normalizedUser = String(chatSettings.value.user ?? '').trim()
 
-    // 调用 API
     const currentBg = currentConversationId.value ? (chatBackgrounds.value[currentConversationId.value] || loadBackground(currentConversationId.value)) : ''
     
-    // 如果存在背景信息，使用后立即清空，确保只发送一次
     if (currentConversationId.value && currentBg) {
       saveBackground(currentConversationId.value, '')
     }
@@ -996,17 +987,11 @@ const sendMessage = async () => {
           if (isGenerationStale()) {
             return
           }
-          // If the animation timer is not running, flush immediately.
-          // If it is running, let it animate to completion naturally — do not
-          // cancel it here, otherwise all buffered SSE events (which arrive in a
-          // single reader.read() on loopback) would be rendered at once.
           if (streamRenderTimer === undefined) {
             flushRenderImmediately()
           }
           
-          // Token统计仅计入可见回答文本，不计入 <think>...</think> 思考内容。
-          // 流式场景下后端 usage 往往包含 think token，前端无法稳定精确扣减，
-          // 因此统一采用前端可见文本估算，保证口径一致。
+          // Token：按剥掉 think 后的可见文本估算；与流式 usage 口径对齐用前端累计。
           const cleanAiText = stripThinkContent(targetContent)
           const aiTokens = countTokens(cleanAiText)
           const userTokens = countTokens(currentInput)
@@ -1041,7 +1026,6 @@ const sendMessage = async () => {
           if (import.meta.env.DEV) {
             console.error('发送消息失败:', error)
           }
-          // 如果发送失败，恢复背景信息以便下次重试
           if (currentConversationId.value && currentBg) {
             saveBackground(currentConversationId.value, currentBg)
           }
@@ -1055,12 +1039,10 @@ const sendMessage = async () => {
       return
     }
 
-    // 保存 task_id 和 conversation_id
     currentTaskId.value = result.taskId
     if (result.conversationId) {
       const oldId = currentConversationId.value
       currentConversationId.value = result.conversationId
-      // 如果分配了新会话ID，且当前有token或bg缓存，需要转移到新ID下
       if (oldId && (oldId.startsWith('temp-') || oldId.startsWith('new-'))) {
          if (tokenUsage.value > 0) saveTokenUsage(result.conversationId, tokenUsage.value)
          if (chatBackgrounds.value[oldId]) {
@@ -1076,9 +1058,7 @@ const sendMessage = async () => {
         removeChatHistoryItem(tempConversationId)
       }
       upsertChatHistoryToTop(resolvedConversationId, optimisticTitle)
-      // 最终确认一次激活 ID 稳定在真实 ID 上
       currentConversationId.value = resolvedConversationId
-      // 再次同步列表引用，确保 temp 被替换为真实 ID 后 UI 刷新
       chatHistory.value = [...chatHistory.value]
     }
   } catch (error: unknown) {
@@ -1107,29 +1087,22 @@ const sendMessage = async () => {
 
 const createNewChat = (tempId?: string) => {
   invalidateActiveGeneration()
-  // 清空当前消息和会话 ID
   messages.value = []
   
-  // 关键：为新空对话提供一个默认识别 ID，而不是 undefined
-  // 否则 MessageList 在判断 activeItemId 变化时不会跟踪新节点
   const newId = tempId && typeof tempId === 'string' ? tempId : `new-${Date.now()}`
   currentConversationId.value = newId
   
-  // 往历史列表的头部占位一个"新对话"
   upsertChatHistoryToTop(newId, '新对话')
-  // 强制同步一次历史列表引用，确保 UI 能够正确反映新添加的项
   chatHistory.value = [...chatHistory.value]
 
   currentTaskId.value = undefined
-  tokenUsage.value = 0 // 重置 Token 消耗
+  tokenUsage.value = 0
   
-  // 显示新对话引导语打字效果
   startWelcomeTyping()
 }
 
 const loadChat = async (chatId: string) => {
   invalidateActiveGeneration()
-  // 临时生成的 ID 不应请求后端
   if (chatId.startsWith('new-') || chatId.startsWith('temp-')) {
     messages.value = []
     tokenUsage.value = 0
@@ -1140,14 +1113,11 @@ const loadChat = async (chatId: string) => {
 
   try {
     const normalizedUser = String(chatSettings.value.user ?? '').trim() || 'user'
-    // 加载会话消息
     const response = await getMessages(normalizedUser, chatId)
     
-    // 清空当前消息并重置 Token
     messages.value = []
     tokenUsage.value = 0
     
-    // 转换并加载消息
     if (response.data && response.data.length > 0) {
       messages.value = response.data.flatMap((msg: BackendMessageRecord) => {
         const timestamp = msg.created_at
@@ -1201,11 +1171,9 @@ const loadChat = async (chatId: string) => {
       })
     }
     
-    // 设置当前会话 ID
     currentConversationId.value = chatId
     currentTaskId.value = undefined
     
-    // 恢复该会话的 Token 计数和 Background
     tokenUsage.value = loadTokenUsage(chatId)
     chatBackgrounds.value[chatId] = loadBackground(chatId)
     
@@ -1214,7 +1182,6 @@ const loadChat = async (chatId: string) => {
     if (import.meta.env.DEV) {
       console.error('加载会话失败:', error)
     }
-    // 显示错误提示（可以后续添加 Toast 提示）
   }
 }
 
@@ -1262,11 +1229,8 @@ const handleCompressContext = async () => {
     const response = await compressContext(userId, conversationId)
     const compressedText = response.data.compressed_context
     
-    // 将压缩后的上下文保存为 background
     saveBackground(conversationId, compressedText)
     
-    // 清除 Token 计数并根据回传信息估算初始 Token
-    // 简单估算：中文字符数 + 英文单词数 * 1.2 (这是一个粗略的估算)
     const estimatedTokens = Math.ceil(compressedText.length * 1.2)
     tokenUsage.value = estimatedTokens
     saveTokenUsage(conversationId, estimatedTokens)
@@ -1298,7 +1262,6 @@ const archiveChat = async (chatId: string) => {
 }
 
 const deleteChat = (chatId: string) => {
-  // TODO: 这里后续接入真实删除逻辑
   chatToDelete.value = chatId
   showDeleteDialog.value = true
 }
@@ -1338,13 +1301,10 @@ onMounted(async () => {
   isUnmounted.value = false
   isMounted.value = true
 
-  // 加载缓存设置
   loadCachedSettings()
 
-  // 初始化新对话引导语打字效果
   startWelcomeTyping()
 
-  // 加载会话历史
   try {
     const normalizedUser = String(chatSettings.value.user ?? '').trim() || 'user'
     const response = await getConversations(normalizedUser)
@@ -1360,7 +1320,6 @@ onMounted(async () => {
     }
   }
 
-  // 点击其他区域关闭菜单
   document.addEventListener('click', handleDocumentClick)
 })
 

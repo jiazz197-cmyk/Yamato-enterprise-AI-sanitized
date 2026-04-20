@@ -1,7 +1,4 @@
-"""
-文档处理路由模块
-提供异步文档处理、进度查询等服务
-"""
+"""文档异步处理与任务查询路由。"""
 import asyncio
 from io import BytesIO
 from typing import List, Optional
@@ -30,9 +27,8 @@ router = APIRouter()
 logger = get_logger("document_processing")
 
 
-# ==================== 响应模型 ====================
 class DocumentProcessRequest(BaseModel):
-    """文档处理请求"""
+    """（表单/文档用）处理参数模型。"""
     instance_id: int = Field(..., description="知识库实例ID")
     chunk_size: int = Field(500, ge=100, le=2000, description="文本块大小")
     chunk_overlap: int = Field(50, ge=0, le=500, description="文本块重叠大小")
@@ -40,7 +36,7 @@ class DocumentProcessRequest(BaseModel):
 
 
 class TaskSubmitResponse(BaseModel):
-    """任务提交响应"""
+    """提交任务后的即时响应。"""
     task_id: str
     status: str = "pending"
     message: str = "任务已创建，开始处理"
@@ -48,7 +44,7 @@ class TaskSubmitResponse(BaseModel):
 
 
 class TaskStatusResponse(BaseModel):
-    """任务状态响应"""
+    """单任务状态。"""
     task_id: str
     status: str
     progress: int
@@ -61,31 +57,20 @@ class TaskStatusResponse(BaseModel):
 
 
 class TaskListResponse(BaseModel):
-    """任务列表响应"""
+    """任务列表。"""
     tasks: List[TaskStatusResponse]
     total: int
 
 
-# ==================== 后台处理函数 ====================
 def process_documents_background(
-    token: CancellationToken,  # ✅ 第一个参数必须是 CancellationToken
+    token: CancellationToken,
     task_id: str,
     file_ids: List[int],
     instance_id: int,
     chunk_size: int,
     chunk_overlap: int,
 ):
-    """
-    后台文档处理函数（在线程池中执行）
-    
-    🆕 使用改进的协作模式：
-    1. 第一个参数是 CancellationToken，由 ExecutorManager 自动注入
-    2. 在多个检查点使用 token.is_cancelled() 检查取消状态
-    3. 协作式取消 - 任务主动退出
-    4. 🆕 使用独立的 TaskManager 实例避免事件循环冲突
-    
-    注意：这个函数在独立线程中运行，不能直接使用 async/await
-    """
+    """在线程池里跑 pipeline：首参 token 由 ExecutorManager 注入；内含独立 asyncio 循环与线程内 TaskManager。此处勿直接 await。"""
     import asyncio
     import time
     from app.integrations.doc_processing.pipeline import DocumentProcessingPipeline
@@ -93,20 +78,16 @@ def process_documents_background(
     
     logger.info(f"[{task_id}] 开始后台处理，文件数: {len(file_ids)}")
     
-    # 🆕 创建线程专用的 TaskManager 实例（避免事件循环冲突）
     thread_tm = TaskManager.create_thread_safe_instance()
     
-    # 创建线程专用的事件循环
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     try:
-        # ✅ 检查点1：启动前检查
         if token.is_cancelled():
             logger.info(f"[{task_id}] 任务在启动前被取消")
             return {"status": "cancelled", "message": "任务在启动前被取消"}
         
-        # 🆕 等待任务创建完成（最多重试5次）
         task_exists = False
         for attempt in range(5):
             try:
@@ -118,16 +99,14 @@ def process_documents_background(
             except Exception as e:
                 logger.warning(f"[{task_id}] 查询任务状态失败 (尝试 {attempt + 1}/5): {e}")
             
-            time.sleep(0.3)  # 等待 300ms
+            time.sleep(0.3)
         
         if not task_exists:
             logger.error(f"[{task_id}] 任务创建超时，无法启动")
             return {"status": "error", "message": "任务创建超时"}
         
-        # 启动任务
         loop.run_until_complete(thread_tm.start_task(task_id))
         
-        # 构建数据库配置
         db_config = {
             "host": settings.POSTGRES_SERVER,
             "user": settings.POSTGRES_USER,
@@ -136,24 +115,20 @@ def process_documents_background(
             "port": settings.POSTGRES_PORT,
         }
         
-        # 初始化处理管线
         pipeline = DocumentProcessingPipeline(
             db_config=db_config,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
         
-        # 从 MinIO 下载文件流
         logger.info(f"[{task_id}] 正在从 MinIO 下载 {len(file_ids)} 个文件...")
         streams = []
         
-        # 使用独立的数据库会话查询文件
         from app.core.database import SessionLocal
         db = SessionLocal()
         
         try:
             for i, file_id in enumerate(file_ids):
-                # ✅ 检查点2：每个文件下载前检查
                 if token.is_cancelled():
                     logger.info(f"[{task_id}] 任务被取消，停止下载")
                     loop.run_until_complete(
@@ -166,15 +141,13 @@ def process_documents_background(
                     logger.warning(f"[{task_id}] 文件 ID {file_id} 不存在，跳过")
                     continue
                 
-                # 更新进度：下载阶段
-                progress = int((i / len(file_ids)) * 30)  # 下载占30%进度
+                progress = int((i / len(file_ids)) * 30)
                 loop.run_until_complete(
                     thread_tm.update_task_progress(
                         task_id, progress, f"正在下载第 {i+1}/{len(file_ids)} 个文件: {file_record.file_name}"
                     )
                 )
                 
-                # ✅ 从 MinIO 获取文件流（使用 context manager 防止泄漏）
                 try:
                     with download_object_stream(file_record.minio_object_path) as response:
                         stream = BytesIO(response.read())
@@ -187,7 +160,6 @@ def process_documents_background(
             if not streams:
                 raise ValueError("没有成功下载任何文件")
             
-            # ✅ 检查点3：处理前检查
             if token.is_cancelled():
                 logger.info(f"[{task_id}] 任务被取消，停止处理")
                 loop.run_until_complete(
@@ -197,23 +169,19 @@ def process_documents_background(
             
             logger.info(f"[{task_id}] 成功下载 {len(streams)} 个文件，开始处理...")
             
-            # 更新进度：处理阶段
             loop.run_until_complete(
                 thread_tm.update_task_progress(task_id, 30, f"开始处理 {len(streams)} 个文件...")
             )
             
-            # 处理文档（这里可以添加进度回调）
             result = pipeline.process(
                 input_data=streams,
                 instance_id=instance_id,
             )
             
-            # 更新进度：完成
             loop.run_until_complete(
                 thread_tm.update_task_progress(task_id, 90, "正在保存结果...")
             )
             
-            # 标记任务完成
             final_result = {
                 "processed_files": result.get("processed_files", 0),
                 "total_files": len(file_ids),
@@ -229,9 +197,7 @@ def process_documents_background(
             return final_result
             
         finally:
-            # ✅ 明确提交或回滚，避免自动 ROLLBACK 延迟
             try:
-                # 只读操作，提交即可（即使有异常也不影响）
                 db.commit()
             except Exception:
                 db.rollback()
@@ -248,19 +214,15 @@ def process_documents_background(
             logger.error(f"[{task_id}] 标记失败状态时出错: {e2}")
         return {"status": "error", "message": str(e)}
     finally:
-        # 清理资源
         try:
-            # 清理 Redis 连接（如果使用）- 添加超时机制
             if hasattr(thread_tm, 'storage') and hasattr(thread_tm.storage, 'redis_client'):
                 if thread_tm.storage.redis_client is not None:
                     try:
-                        # 先断开连接池
                         async def close_redis_with_timeout():
                             if hasattr(thread_tm.storage.redis_client, 'connection_pool'):
                                 await thread_tm.storage.redis_client.connection_pool.disconnect()
                             await thread_tm.storage.redis_client.aclose()
                         
-                        # 使用超时保护（2秒超时）
                         loop.run_until_complete(
                             asyncio.wait_for(close_redis_with_timeout(), timeout=2.0)
                         )
@@ -270,7 +232,6 @@ def process_documents_background(
                     except Exception as e:
                         logger.warning(f"[{task_id}] 关闭Redis连接失败: {e}")
             
-            # 关闭事件循环
             if loop and not loop.is_closed():
                 loop.close()
                 logger.debug(f"[{task_id}] 事件循环已关闭")
@@ -278,7 +239,6 @@ def process_documents_background(
             logger.warning(f"[{task_id}] 清理资源时出错: {e}")
 
 
-# ==================== 路由定义 ====================
 @router.post("/process", response_model=TaskSubmitResponse, summary="提交文档处理任务")
 async def submit_document_processing(
     files: List[UploadFile] = File(..., description="要处理的文档文件"),
@@ -289,23 +249,8 @@ async def submit_document_processing(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    提交文档处理任务（异步）
-    
-    工作流程：
-    1. 上传文件到 MinIO 并记录元数据
-    2. 创建异步任务
-    3. 提交到后台线程池处理
-    4. 立即返回任务ID（不等待处理完成）
-    
-    - **files**: 要处理的文档文件（支持多文件）
-    - **instance_id**: 知识库实例ID
-    - **chunk_size**: 文本分块大小（默认500）
-    - **chunk_overlap**: 分块重叠大小（默认50）
-    - **uploader**: 上传者标识
-    """
+    """上传 MinIO、落库、建 task、丢进线程池；接口立即返回 task_id。"""
     try:
-        # 验证文件
         if not files:
             raise ValidationError("至少需要上传一个文件")
         
@@ -313,7 +258,6 @@ async def submit_document_processing(
 
         normalized_uploader = normalize_self_uploader(uploader, current_user)
 
-        # 步骤1: 上传文件到 MinIO 并保存元数据
         file_ids = []
         for file in files:
             if not file.filename:
@@ -321,7 +265,6 @@ async def submit_document_processing(
                 continue
             
             try:
-                # 生成唯一文件名
                 from datetime import datetime
                 import uuid
                 from pathlib import Path
@@ -332,10 +275,8 @@ async def submit_document_processing(
                 unique_name = f"{timestamp}_{unique_id}{suffix}"
                 minio_path = f"documents/{unique_name}"
                 
-                # 获取文件大小
                 file_size = getattr(file, 'size', None) or -1
                 
-                # 流式上传到 MinIO
                 content_type = file.content_type or "application/octet-stream"
                 result = upload_stream_to_minio(file.file, minio_path, file_size, content_type)
                 
@@ -343,7 +284,6 @@ async def submit_document_processing(
                     logger.error(f"上传文件失败: {file.filename} - {result}")
                     continue
                 
-                # 如果文件大小未知，从 MinIO 获取
                 if file_size == -1:
                     try:
                         client = get_minio_client()
@@ -352,7 +292,6 @@ async def submit_document_processing(
                     except:
                         file_size = 0
                 
-                # 保存元数据到数据库
                 file_record = FileResource(
                     file_name=file.filename,
                     unique_name=unique_name,
@@ -376,7 +315,6 @@ async def submit_document_processing(
         if not file_ids:
             raise ValidationError("没有成功上传任何文件")
         
-        # 步骤2: 创建异步任务
         task_id = await task_manager.create_task(
             task_type="doc_process",
             metadata={
@@ -392,21 +330,16 @@ async def submit_document_processing(
         
         logger.info(f"创建文档处理任务: {task_id}, 文件数: {len(file_ids)}")
         
-        # 步骤3: 提交到后台线程池（使用 ExecutorManager）
-        # submit_task 签名: submit_task(task_id, fn, *args, **kwargs)
-        # fn 的签名: process_documents_background(token, task_id, file_ids, instance_id, chunk_size, chunk_overlap)
-        # token 会自动注入，所以这里传递 task_id 开始的参数
         executor_manager.submit_task(
             task_id,
             process_documents_background,
-            task_id,  # 作为位置参数传递给函数
+            task_id,
             file_ids,
             instance_id,
             chunk_size,
             chunk_overlap,
         )
         
-        # 步骤4: 立即返回
         return TaskSubmitResponse(
             task_id=task_id,
             status="pending",
@@ -427,13 +360,7 @@ async def get_task_status(
     task_id: str,
     current_user: User = Depends(get_current_user),
 ):
-    """
-    查询文档处理任务的状态和进度
-    
-    - **task_id**: 任务ID
-    
-    返回任务的详细状态信息，包括进度、消息、结果等
-    """
+    """按 task_id 查状态；非 superuser 仅能看自己的任务。"""
     try:
         task_status = await task_manager.get_task_status(task_id)
         
@@ -471,16 +398,10 @@ async def list_tasks(
     limit: int = Query(10, ge=1, le=100, description="返回数量限制"),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    获取文档处理任务列表
-    
-    - **status**: 可选，按状态筛选
-    - **limit**: 返回数量限制（1-100）
-    """
+    """doc_process 类型任务列表，可按 status 过滤。"""
     try:
         tasks = await task_manager.list_tasks(task_type="doc_process", limit=limit)
         
-        # 按状态筛选
         if status:
             tasks = [t for t in tasks if t.status == status]
 
@@ -522,16 +443,7 @@ async def cancel_task_endpoint(
     task_id: str,
     current_user: User = Depends(get_current_user),
 ):
-    """
-    取消正在运行或等待中的任务
-    
-    工作原理：
-    - 未开始的任务：立即取消，不会执行
-    - 正在运行的任务：设置取消标志，任务会在检查点主动退出
-    - 已完成/失败的任务：无法取消
-    
-    - **task_id**: 任务ID
-    """
+    """协作式取消：ExecutorManager.cancel_task + 必要时更新 TaskManager 文案。"""
     try:
         task_status = await task_manager.get_task_status(task_id)
         if not task_status:
@@ -547,11 +459,9 @@ async def cancel_task_endpoint(
                 "message": f"任务已{task_status.status}，无法取消"
             }
         
-        # 通过 ExecutorManager 取消任务
         success = executor_manager.cancel_task(task_id)
         
         if success:
-            # 更新任务状态
             if task_status.status == "running":
                 task_status.message = "正在取消任务..."
                 await task_manager._save_task_status(task_status)
@@ -581,19 +491,7 @@ async def delete_task_endpoint(
     cancel_if_running: bool = Query(True, description="是否取消正在运行的任务"),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    取消或删除文档处理任务
-    
-    行为说明：
-    - 未开始的任务：立即取消，不会执行
-    - 正在运行的任务：设置取消标志，任务会在检查点退出
-    - 已完成的任务：仅删除记录
-    
-    注意：Python 无法强制杀死线程，正在运行的任务需要主动检查取消标志
-    
-    - **task_id**: 任务ID
-    - **cancel_if_running**: 是否尝试取消正在运行的任务
-    """
+    """可先 cancel 再删记录；线程内任务仍须自行响应 token。"""
     try:
         task_status = await task_manager.get_task_status(task_id)
         if not task_status:
@@ -603,12 +501,10 @@ async def delete_task_endpoint(
         if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除该任务")
 
-        # 1. 如果任务正在运行且需要取消，先取消
         if cancel_if_running and task_status.status in ["pending", "running"]:
             logger.info(f"任务正在运行，先尝试取消: {task_id}")
             executor_manager.cancel_task(task_id)
         
-        # 2. 删除任务记录
         success = await task_manager.delete_task(task_id)
         
         if not success:

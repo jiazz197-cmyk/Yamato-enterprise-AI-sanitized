@@ -124,7 +124,7 @@ const doLogout = async () => {
   try {
     localStorage.removeItem(config.settingsStorageKey)
   } catch {
-    // ignore
+    // 忽略
   }
   await router.push('/login')
 }

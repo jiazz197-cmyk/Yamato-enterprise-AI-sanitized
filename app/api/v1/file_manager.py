@@ -202,11 +202,11 @@ async def download_file(
         if current_user.role != UserRole.superuser and file_record.uploader != current_user.username:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权下载该文件")
         
-        # ✅ 使用 context manager 防止资源泄漏
+        # [note] 使用 context manager 防止资源泄漏
         # 创建生成器函数，在 StreamingResponse 中延迟执行
         def file_stream_generator():
             with download_object_stream(file_record.minio_object_path) as response:
-                # ✅ 使用 1MB chunk 提升下载速度
+                # [note] 使用 1MB chunk 提升下载速度
                 for chunk in response.stream(STREAM_CHUNK_SIZE):
                     yield chunk
         
