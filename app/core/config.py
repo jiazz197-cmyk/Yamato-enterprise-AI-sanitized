@@ -1,5 +1,4 @@
 """从环境变量加载的全局 Settings（单例）。"""
-
 import os
 import secrets
 from pathlib import Path
@@ -14,13 +13,10 @@ from dotenv import load_dotenv
 import sys
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
-)
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))))
 sys.path.insert(0, project_root)
 
 load_dotenv()
-
 
 def _split_comma_separated(value: Union[str, List[str]]) -> List[str]:
     """将逗号分隔配置转换成列表。"""
@@ -70,23 +66,11 @@ def _contains_wildcard(value: Any) -> bool:
 
 
 class SingletonModelMeta(ModelMetaclass):
-<<<<<<< HEAD
     """Settings 用：双检锁单例，兼容 pydantic BaseSettings。"""
-
-=======
-    """
-    线程安全的单例元类，继承自 pydantic 的 ModelMetaclass
-    确保与 pydantic BaseSettings 兼容
-    """
->>>>>>> origin/main
     _instances = {}
     _lock = threading.Lock()
 
     def __call__(cls, *args, **kwargs):
-<<<<<<< HEAD
-=======
-        # 双重检查锁定模式
->>>>>>> origin/main
         if cls not in cls._instances:
             with cls._lock:
                 if cls not in cls._instances:
@@ -96,50 +80,23 @@ class SingletonModelMeta(ModelMetaclass):
 
 
 class Settings(BaseSettings, metaclass=SingletonModelMeta):
-<<<<<<< HEAD
     """单例配置：字段对应环境变量 / .env。"""
-=======
-    """
-    全局配置对象，统一读取 .env 与环境变量（单例模式）
-    
-    使用元类确保全局唯一实例，兼容 pydantic BaseSettings
-    """
->>>>>>> origin/main
 
     PROJECT_NAME: str = Field("AI Data Tool", env="PROJECT_NAME")
     VERSION: str = Field("1.0.0", env="VERSION")
     DESCRIPTION: str = Field("AI数据工具后端API服务", env="DESCRIPTION")
     ENVIRONMENT: str = Field("development", env="ENVIRONMENT")
     DEBUG: bool = Field(True, env="DEBUG")
-<<<<<<< HEAD
-
     @validator("DEBUG", pre=True)
     def parse_debug_flag(cls, v: Any):
         """兼容 true/false、dev/prod 等字符串。"""
-=======
-    @validator("DEBUG", pre=True)
-    def parse_debug_flag(cls, v: Any):
-        """Allow common string aliases like release/prod/debug/dev."""
->>>>>>> origin/main
         if isinstance(v, bool):
             return v
         if isinstance(v, str):
             normalized = v.strip().lower()
             if normalized in {"1", "true", "yes", "on", "debug", "dev", "development"}:
                 return True
-<<<<<<< HEAD
-            if normalized in {
-                "0",
-                "false",
-                "no",
-                "off",
-                "release",
-                "prod",
-                "production",
-            }:
-=======
             if normalized in {"0", "false", "no", "off", "release", "prod", "production"}:
->>>>>>> origin/main
                 return False
         return v
 
@@ -151,9 +108,7 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     TRUST_PROXY_HEADERS: bool = Field(False, env="TRUST_PROXY_HEADERS")
     TRUSTED_PROXIES: List[str] = Field(default_factory=list, env="TRUSTED_PROXIES")
 
-    BACKEND_CORS_ORIGINS: List[str] = Field(
-        default_factory=lambda: ["*"], env="BACKEND_CORS_ORIGINS"
-    )
+    BACKEND_CORS_ORIGINS: List[str] = Field(default_factory=lambda: ["*"], env="BACKEND_CORS_ORIGINS")
 
     @validator("BACKEND_CORS_ORIGINS", pre=True)
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> Union[List[str], str]:
@@ -178,23 +133,13 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     @validator("ALLOWED_HOSTS")
     def validate_allowed_hosts_for_production(cls, v: List[str], values):
         if _is_production_env(values.get("ENVIRONMENT")) and _contains_wildcard(v):
-<<<<<<< HEAD
-            raise ValueError('生产环境禁止使用 ALLOWED_HOSTS=["*"]，请配置明确域名')
-=======
             raise ValueError("生产环境禁止使用 ALLOWED_HOSTS=[\"*\"]，请配置明确域名")
->>>>>>> origin/main
         return v
 
     @validator("BACKEND_CORS_ORIGINS")
     def validate_cors_origins_for_production(cls, v: List[str], values):
         if _is_production_env(values.get("ENVIRONMENT")) and _contains_wildcard(v):
-<<<<<<< HEAD
-            raise ValueError(
-                '生产环境禁止使用 BACKEND_CORS_ORIGINS=["*"]，请配置明确来源'
-            )
-=======
             raise ValueError("生产环境禁止使用 BACKEND_CORS_ORIGINS=[\"*\"]，请配置明确来源")
->>>>>>> origin/main
         return v
 
     @validator("RETRIEVER_ALLOWED_COLLECTIONS", pre=True)
@@ -205,18 +150,9 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
             return [item.strip() for item in v.split(",") if item.strip()]
         return v
 
-<<<<<<< HEAD
-    POSTGRES_SERVER: str = Field("127.0.0.1", env="POSTGRES_SERVER")
-    POSTGRES_USER: str = Field("pguser", env="POSTGRES_USER")
-    POSTGRES_PASSWORD: str = Field(
-        "change_me_postgres_password", env="POSTGRES_PASSWORD"
-    )
-=======
-    # 数据库
     POSTGRES_SERVER: str = Field("127.0.0.1", env="POSTGRES_SERVER")
     POSTGRES_USER: str = Field("pguser", env="POSTGRES_USER")
     POSTGRES_PASSWORD: str = Field("change_me_postgres_password", env="POSTGRES_PASSWORD")
->>>>>>> origin/main
     POSTGRES_DB: str = Field("pgdb", env="POSTGRES_DB")
     POSTGRES_PORT: int = Field(5432, env="POSTGRES_PORT")
 
@@ -225,18 +161,14 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     U8_SQLSERVER_PORT: int = Field(1433, env="U8_SQLSERVER_PORT")
     U8_SQLSERVER_DATABASE: str = Field("UFDATA_CHANGE_ME", env="U8_SQLSERVER_DATABASE")
     U8_SQLSERVER_USER: str = Field("sa", env="U8_SQLSERVER_USER")
-    U8_SQLSERVER_PASSWORD: str = Field(
-        "change_me_u8_sqlserver_password", env="U8_SQLSERVER_PASSWORD"
-    )
+    U8_SQLSERVER_PASSWORD: str = Field("change_me_u8_sqlserver_password", env="U8_SQLSERVER_PASSWORD")
     U8_SQLSERVER_ENCRYPT: bool = Field(False, env="U8_SQLSERVER_ENCRYPT")
 
     PDM_SQLSERVER_HOST: str = Field("127.0.0.1", env="PDM_SQLSERVER_HOST")
     PDM_SQLSERVER_PORT: int = Field(1433, env="PDM_SQLSERVER_PORT")
     PDM_SQLSERVER_DATABASE: str = Field("pdm_change_me", env="PDM_SQLSERVER_DATABASE")
     PDM_SQLSERVER_USER: str = Field("sa", env="PDM_SQLSERVER_USER")
-    PDM_SQLSERVER_PASSWORD: str = Field(
-        "change_me_pdm_sqlserver_password", env="PDM_SQLSERVER_PASSWORD"
-    )
+    PDM_SQLSERVER_PASSWORD: str = Field("change_me_pdm_sqlserver_password", env="PDM_SQLSERVER_PASSWORD")
     PDM_SQLSERVER_ENCRYPT: bool = Field(False, env="PDM_SQLSERVER_ENCRYPT")
 
     @property
@@ -250,10 +182,6 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
             f"{self.POSTGRES_DB}"
         )
 
-<<<<<<< HEAD
-=======
-    # Redis
->>>>>>> origin/main
     REDIS_HOST: str = Field("127.0.0.1", env="REDIS_HOST")
     REDIS_PORT: int = Field(6379, env="REDIS_PORT")
     REDIS_DB: int = Field(0, env="REDIS_DB")
@@ -265,53 +193,25 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
         auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""
         return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
-<<<<<<< HEAD
     MINIO_ENDPOINT: str = Field("127.0.0.1:9000", env="MINIO_ENDPOINT")
-    MINIO_PUBLIC_ENDPOINT: Optional[str] = Field(
-        default=None, env="MINIO_PUBLIC_ENDPOINT"
-    )
-=======
-    # MinIO
-    MINIO_ENDPOINT: str = Field("127.0.0.1:9000", env="MINIO_ENDPOINT")
->>>>>>> origin/main
+    MINIO_PUBLIC_ENDPOINT: Optional[str] = Field(default=None, env="MINIO_PUBLIC_ENDPOINT")
     MINIO_ACCESS_KEY: str = Field("change_me_minio_access_key", env="MINIO_ACCESS_KEY")
     MINIO_SECRET_KEY: str = Field("change_me_minio_secret_key", env="MINIO_SECRET_KEY")
     MINIO_SECURE: bool = Field(False, env="MINIO_SECURE")
     MINIO_BUCKET_NAME: str = Field("yamatodev", env="MINIO_BUCKET_NAME")
 
-    SECRET_KEY: str = Field(
-        default_factory=lambda: secrets.token_urlsafe(32), env="SECRET_KEY"
-    )
+    SECRET_KEY: str = Field(default_factory=lambda: secrets.token_urlsafe(32), env="SECRET_KEY")
     ALGORITHM: str = Field("HS256", env="ALGORITHM")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(60, env="ACCESS_TOKEN_EXPIRE_MINUTES")
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(7, env="REFRESH_TOKEN_EXPIRE_DAYS")
     INTERNAL_API_KEY: str = Field("change_me_internal_api_key", env="INTERNAL_API_KEY")
-<<<<<<< HEAD
-    RETRIEVER_ALLOWED_COLLECTIONS: List[str] = Field(
-        default_factory=list, env="RETRIEVER_ALLOWED_COLLECTIONS"
-    )
-=======
     RETRIEVER_ALLOWED_COLLECTIONS: List[str] = Field(default_factory=list, env="RETRIEVER_ALLOWED_COLLECTIONS")
 
-    # 启动引导账号（仅建议开发环境使用）
     BOOTSTRAP_SUPERUSER_USERNAME: Optional[str] = Field(default=None, env="BOOTSTRAP_SUPERUSER_USERNAME")
     BOOTSTRAP_SUPERUSER_EMAIL: Optional[str] = Field(default=None, env="BOOTSTRAP_SUPERUSER_EMAIL")
     BOOTSTRAP_SUPERUSER_PASSWORD: Optional[str] = Field(default=None, env="BOOTSTRAP_SUPERUSER_PASSWORD")
->>>>>>> origin/main
 
-    BOOTSTRAP_SUPERUSER_USERNAME: Optional[str] = Field(
-        default=None, env="BOOTSTRAP_SUPERUSER_USERNAME"
-    )
-    BOOTSTRAP_SUPERUSER_EMAIL: Optional[str] = Field(
-        default=None, env="BOOTSTRAP_SUPERUSER_EMAIL"
-    )
-    BOOTSTRAP_SUPERUSER_PASSWORD: Optional[str] = Field(
-        default=None, env="BOOTSTRAP_SUPERUSER_PASSWORD"
-    )
-
-    RATE_LIMIT_REQUESTS_PER_MINUTE: int = Field(
-        100, env="RATE_LIMIT_REQUESTS_PER_MINUTE"
-    )
+    RATE_LIMIT_REQUESTS_PER_MINUTE: int = Field(100, env="RATE_LIMIT_REQUESTS_PER_MINUTE")
     RATE_LIMIT_REQUESTS_PER_HOUR: int = Field(1000, env="RATE_LIMIT_REQUESTS_PER_HOUR")
     RATE_LIMIT_AUTH: int = Field(100, env="RATE_LIMIT_AUTH")
     RATE_LIMIT_ANON: int = Field(20, env="RATE_LIMIT_ANON")
@@ -330,9 +230,7 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     MAX_JSON_SIZE: int = Field(5 * 1024 * 1024, env="MAX_JSON_SIZE")
     MAX_FILE_SIZE: int = Field(50 * 1024 * 1024, env="MAX_FILE_SIZE")
     CACHE_DEFAULT_TTL: int = Field(300, env="CACHE_DEFAULT_TTL")
-    CACHE_ENABLED_METHODS: List[str] = Field(
-        default_factory=lambda: ["GET"], env="CACHE_ENABLED_METHODS"
-    )
+    CACHE_ENABLED_METHODS: List[str] = Field(default_factory=lambda: ["GET"], env="CACHE_ENABLED_METHODS")
     CACHE_TTL: int = Field(3600, env="CACHE_TTL")
     CACHE_API_RESPONSE_TTL: int = Field(300, env="CACHE_API_RESPONSE_TTL")
     CACHE_JOB_STATUS_TTL: int = Field(86400, env="CACHE_JOB_STATUS_TTL")
@@ -343,17 +241,7 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
 
     MAX_FILE_SIZE_MB: int = Field(50, env="MAX_FILE_SIZE_MB")
     ALLOWED_FILE_EXTENSIONS: List[str] = Field(
-        default_factory=lambda: [
-            ".pdf",
-            ".doc",
-            ".docx",
-            ".txt",
-            ".csv",
-            ".xlsx",
-            ".xls",
-            ".json",
-            ".xml",
-        ],
+        default_factory=lambda: [".pdf", ".doc", ".docx", ".txt", ".csv", ".xlsx", ".xls", ".json", ".xml"],
         env="ALLOWED_FILE_EXTENSIONS",
     )
 
@@ -361,93 +249,44 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     def split_allowed_extensions(cls, v: Union[str, List[str]]) -> List[str]:
         return _split_comma_separated(v)
 
-<<<<<<< HEAD
-    BGE_M3_API_URL: str = Field(
-        "http://localhost:8002/v1/embeddings", env="BGE_M3_API_URL"
-    )
-    BGE_M3_MODEL_NAME: str = Field("BAAI/bge-m3", env="BGE_M3_MODEL_NAME")
-    BGE_M3_TOKENIZER_NAME: str = Field("BAAI/bge-m3", env="BGE_M3_TOKENIZER_NAME")
-
-    RERANKER_API_URL: str = Field(
-        "http://localhost:8003/v1/rerank", env="RERANKER_API_URL"
-    )
-
-    DOTS_OCR_ENDPOINT: str = Field(
-        "http://localhost:8001/v1/chat/completions", env="DOTS_OCR_ENDPOINT"
-    )
-
-    LOCAL_MODEL_GPU_DEVICE: int = Field(3, env="LOCAL_MODEL_GPU_DEVICE")
-
-    QWEN3_8B_API_URL: str = Field(
-        "http://localhost:80/llm/qwen8b/v1", env="QWEN3_8B_API_URL"
-    )
-    QWEN3_5_27B_API_URL: str = Field(
-        "http://localhost:80/llm/qwen35b/v1", env="QWEN3_5_27B_API_URL"
-    )
-
-    N8N_BASE_URL: str = Field("http://localhost:5678", env="N8N_BASE_URL")
-    N8N_API_KEY: Optional[str] = Field(default=None, env="N8N_API_KEY")
-
-=======
-    # ==================== AI/ML 服务配置 ====================
-    # BGE-M3 嵌入模型
     BGE_M3_API_URL: str = Field("http://localhost:8002/v1/embeddings", env="BGE_M3_API_URL")
     BGE_M3_MODEL_NAME: str = Field("BAAI/bge-m3", env="BGE_M3_MODEL_NAME")
     BGE_M3_TOKENIZER_NAME: str = Field("BAAI/bge-m3", env="BGE_M3_TOKENIZER_NAME")
     
-    # Reranker 重排序服务
     RERANKER_API_URL: str = Field("http://localhost:8003/v1/rerank", env="RERANKER_API_URL")
     
-    # DOTS OCR 服务
     DOTS_OCR_ENDPOINT: str = Field("http://localhost:8001/v1/chat/completions", env="DOTS_OCR_ENDPOINT")
     
-    # 本地模型 GPU 配置（不影响上述 Docker 部署的服务）
-    # 用于 Tokenizer、PaddleOCR、TagGenerator 等本地运行的模型
     LOCAL_MODEL_GPU_DEVICE: int = Field(3, env="LOCAL_MODEL_GPU_DEVICE")
 
-    # ==================== 外部服务（暂未启用） ====================
-    # Qwen3-8B API
     QWEN3_8B_API_URL: str = Field("http://localhost:80/llm/qwen8b/v1", env="QWEN3_8B_API_URL")
     QWEN3_5_27B_API_URL: str = Field("http://localhost:80/llm/qwen35b/v1", env="QWEN3_5_27B_API_URL")
 
-    # N8N 工作流引擎
     N8N_BASE_URL: str = Field("http://localhost:5678", env="N8N_BASE_URL")
     N8N_API_KEY: Optional[str] = Field(default=None, env="N8N_API_KEY")
     
-    # Dify AI 平台
->>>>>>> origin/main
     DIFY_BASE_URL: str = Field("http://localhost:80", env="DIFY_BASE_URL")
     DIFY_API_KEY: Optional[str] = Field(default=None, env="DIFY_API_KEY")
-
+    
     RAGFLOW_BASE_URL: str = Field("http://localhost:9380", env="RAGFLOW_BASE_URL")
     RAGFLOW_API_KEY: Optional[str] = Field(default=None, env="RAGFLOW_API_KEY")
     RAGFLOW_DATASET_ID: Optional[str] = Field(default=None, env="RAGFLOW_DATASET_ID")
-
+    
     SUPERSET_BASE_URL: str = Field("http://localhost:8088", env="SUPERSET_BASE_URL")
     SUPERSET_USERNAME: str = Field("admin", env="SUPERSET_USERNAME")
     SUPERSET_PASSWORD: str = Field("admin", env="SUPERSET_PASSWORD")
     SUPERSET_DATABASE_ID: int = Field(1, env="SUPERSET_DATABASE_ID")
-    SUPERSET_GUEST_TOKEN_SECRET: str = Field(
-        "your-superset-guest-token-secret", env="SUPERSET_GUEST_TOKEN_SECRET"
-    )
+    SUPERSET_GUEST_TOKEN_SECRET: str = Field("your-superset-guest-token-secret", env="SUPERSET_GUEST_TOKEN_SECRET")
     SUPERSET_CSRF_TOKEN_TIMEOUT: int = Field(3600, env="SUPERSET_CSRF_TOKEN_TIMEOUT")
-    SUPERSET_CACHE_DEFAULT_TIMEOUT: int = Field(
-        300, env="SUPERSET_CACHE_DEFAULT_TIMEOUT"
-    )
-
+    SUPERSET_CACHE_DEFAULT_TIMEOUT: int = Field(300, env="SUPERSET_CACHE_DEFAULT_TIMEOUT")
+    
     DATAHUB_GMS_URL: str = Field("http://localhost:8080", env="DATAHUB_GMS_URL")
     DATAHUB_GMS_TOKEN: Optional[str] = Field(default=None, env="DATAHUB_GMS_TOKEN")
-    DATAHUB_KAFKA_BOOTSTRAP_SERVERS: str = Field(
-        "localhost:9092", env="DATAHUB_KAFKA_BOOTSTRAP_SERVERS"
-    )
-    DATAHUB_SCHEMA_REGISTRY_URL: str = Field(
-        "http://localhost:8081", env="DATAHUB_SCHEMA_REGISTRY_URL"
-    )
+    DATAHUB_KAFKA_BOOTSTRAP_SERVERS: str = Field("localhost:9092", env="DATAHUB_KAFKA_BOOTSTRAP_SERVERS")
+    DATAHUB_SCHEMA_REGISTRY_URL: str = Field("http://localhost:8081", env="DATAHUB_SCHEMA_REGISTRY_URL")
 
     LOG_LEVEL: str = Field("INFO", env="LOG_LEVEL")
-    LOG_FORMAT: str = Field(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s", env="LOG_FORMAT"
-    )
+    LOG_FORMAT: str = Field("%(asctime)s - %(name)s - %(levelname)s - %(message)s", env="LOG_FORMAT")
     LOG_FILE: Optional[str] = Field(default=None, env="LOG_FILE")
     ENABLE_METRICS: bool = Field(True, env="ENABLE_METRICS")
     METRICS_PORT: int = Field(9090, env="METRICS_PORT")
@@ -467,11 +306,8 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
         "INTERNAL_API_KEY",
         "CHAT_API_KEY",
         "POSTGRES_PASSWORD",
-<<<<<<< HEAD
         "U8_SQLSERVER_PASSWORD",
         "PDM_SQLSERVER_PASSWORD",
-=======
->>>>>>> origin/main
         "MINIO_ACCESS_KEY",
         "MINIO_SECRET_KEY",
         mode="after",
