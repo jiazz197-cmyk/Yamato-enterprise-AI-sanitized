@@ -578,10 +578,10 @@ def update_user_profile_with_new_queries(
 #     #     }
 #     # )
     
-#     print(f"\n✓ 用户ID: {result['user_id']}")
-#     print(f"✓ 成功提取 {result['query_count']} 条提问")
-#     print(f"✓ 首次用户: {'是' if result['is_first_time'] else '否'}")
-#     print(f"✓ 数据库更新: {'成功' if result['db_updated'] else '失败'}\n")
+#     print(f"\n[success] 用户ID: {result['user_id']}")
+#     print(f"[success] 成功提取 {result['query_count']} 条提问")
+#     print(f"[success] 首次用户: {'是' if result['is_first_time'] else '否'}")
+#     print(f"[success] 数据库更新: {'成功' if result['db_updated'] else '失败'}\n")
     
 #     if result['previous_summary']:
 #         print("=" * 60)

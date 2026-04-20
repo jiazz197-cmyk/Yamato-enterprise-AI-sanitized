@@ -103,17 +103,14 @@ export const updateUserRole = (userId: string, payload: UpdateRoleRequest): Prom
   })
 }
 
-/**
- * Persist role in localStorage settings so App.vue can read it without
- * an additional network request on every route change.
- */
+/** 把 role 写入设置缓存，路由切换时少打 /me。 */
 export const saveUserRole = (role: string): void => {
   try {
     const raw = localStorage.getItem(config.settingsStorageKey)
     const existing = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
     localStorage.setItem(config.settingsStorageKey, JSON.stringify({ ...existing, role }))
   } catch {
-    // ignore storage errors
+    // 忽略
   }
 }
 

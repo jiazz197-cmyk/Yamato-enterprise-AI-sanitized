@@ -6,7 +6,7 @@
 🆕 新特性：
 - 线程安全的异步操作辅助方法
 - 与 ExecutorManager 协作支持
-- ✨ 观察者模式支持（可选，不影响原有轮询机制）
+- [info] 观察者模式支持（可选，不影响原有轮询机制）
 """
 
 import asyncio
@@ -115,15 +115,15 @@ class TaskManager:
     - 存储任务元数据和结果
     - 提供任务查询接口
     - 🆕 提供线程安全的异步操作辅助方法
-    - ✨ 支持观察者模式（事件驱动通知）
+    - [info] 支持观察者模式（事件驱动通知）
     
     注意：
     - 仅负责状态管理，不负责任务执行
     - 不管理线程池或进程池
     - 任务的实际执行由调用方负责（通常是 ExecutorManager）
     - 🆕 支持在后台线程中调用异步方法
-    - ✅ 全局单例，确保任务状态统一管理
-    - ✨ 观察者模式与轮询机制并存，互不影响
+    - [success] 全局单例，确保任务状态统一管理
+    - [info] 观察者模式与轮询机制并存，互不影响
     """
     _instance = None
     _initialized = False
@@ -155,7 +155,7 @@ class TaskManager:
         # 🆕 线程本地存储（用于在后台线程中创建独立的事件循环）
         self._thread_local = threading.local()
         
-        # ✨ 观察者模式支持（可选特性）
+        # [note] 观察者模式支持（可选特性）
         self._subject = TaskSubject()
         self._observer_enabled = True  # 全局开关
         # 主事件循环桥接（用于线程任务回投事件到主循环）
@@ -174,13 +174,13 @@ class TaskManager:
 
         self._init_attempted = True
 
-        # # ⚠️ 临时禁用 Redis，直接使用内存存储
+        # # [warning] 临时禁用 Redis，直接使用内存存储
         # # 原因：当前 Redis (107.174.1.76:6379) 是只读副本，无法写入
-        # logger.warning("⚠️  检测到 Redis 只读副本，自动降级到内存存储")
+        # logger.warning("[warning] 检测到 Redis 只读副本，自动降级到内存存储")
         # logger.info("如需使用 Redis，请配置可写的 Redis 主节点")
         # self.storage = MemoryTaskStorage()
         # self.storage_type = "memory"
-        # logger.info("✅ 任务管理器使用内存存储")
+        # logger.info("[success] 任务管理器使用内存存储")
         # return
 
         # 待 Redis 配置修复后，取消下面代码的注释
@@ -190,12 +190,12 @@ class TaskManager:
                 redis_manager.redis_client is not None):
                 self.storage = redis_manager
                 self.storage_type = "redis"
-                logger.info("✅ 任务管理器使用 Redis 存储")
+                logger.info("[success] 任务管理器使用 Redis 存储")
                 return
         except Exception as e:
             logger.warning(f"无法初始化 Redis: {e}")
         
-        logger.info("✅ 任务管理器使用内存存储")
+        logger.info("[success] 任务管理器使用内存存储")
 
     def generate_task_id(self, task_type: str) -> str:
         """生成任务ID"""
@@ -229,7 +229,7 @@ class TaskManager:
             ```
         """
         await self._subject.attach(observer, event_types)
-        logger.info(f"✨ TaskManager 注册观察者: {observer.get_observer_name()}")
+        logger.info(f"[info] TaskManager 注册观察者: {observer.get_observer_name()}")
     
     async def unregister_observer(self, observer: TaskObserver) -> None:
         """
@@ -239,17 +239,17 @@ class TaskManager:
             observer: 要注销的观察者实例
         """
         await self._subject.detach(observer)
-        logger.info(f"✨ TaskManager 注销观察者: {observer.get_observer_name()}")
+        logger.info(f"[info] TaskManager 注销观察者: {observer.get_observer_name()}")
     
     def enable_observers(self) -> None:
         """启用观察者通知（全局开关）"""
         self._observer_enabled = True
-        logger.info("✨ TaskManager 观察者通知已启用")
+        logger.info("[info] TaskManager 观察者通知已启用")
     
     def disable_observers(self) -> None:
         """禁用观察者通知（全局开关）"""
         self._observer_enabled = False
-        logger.info("✨ TaskManager 观察者通知已禁用")
+        logger.info("[info] TaskManager 观察者通知已禁用")
     
     def get_observer_stats(self) -> Dict[str, Any]:
         """
@@ -275,7 +275,7 @@ class TaskManager:
             移除的观察者数量
         """
         count = await self._subject.detach_all()
-        logger.info(f"✨ TaskManager 已移除所有观察者: {count} 个")
+        logger.info(f"[info] TaskManager 已移除所有观察者: {count} 个")
         return count
     
     async def _emit_event(
@@ -312,8 +312,8 @@ class TaskManager:
                 task_type=task_type,
                 **kwargs
             )
-            # 🐛 调试日志：记录事件发布
-            logger.debug(f"📡 准备发布事件: {event_type.value} [task_id={task_id}]")
+            # [debug] 调试日志：记录事件发布
+            logger.debug(f"[event] 准备发布事件: {event_type.value} [task_id={task_id}]")
 
             notify_loop = getattr(self, "_notify_loop", None)
             bridge_subject = getattr(self, "_bridge_subject", self._subject)
@@ -329,14 +329,14 @@ class TaskManager:
                         bridge_subject.notify(event),
                         notify_loop,
                     )
-                    logger.debug(f"✅ 事件已桥接到主循环: {event_type.value} [task_id={task_id}]")
+                    logger.debug(f"[success] 事件已桥接到主循环: {event_type.value} [task_id={task_id}]")
                     return
 
             await self._subject.notify(event)
-            logger.debug(f"✅ 事件发布完成: {event_type.value} [task_id={task_id}]")
+            logger.debug(f"[success] 事件发布完成: {event_type.value} [task_id={task_id}]")
         except Exception as e:
             # 观察者通知失败不应影响任务执行
-            logger.warning(f"⚠️  发布任务事件失败 [{event_type.value}]: {e}")
+            logger.warning(f"[warning] 发布任务事件失败 [{event_type.value}]: {e}")
 
     async def create_task(self, task_type: str, metadata: Optional[Dict[str, Any]] = None) -> str:
         """创建新任务"""
@@ -358,7 +358,7 @@ class TaskManager:
 
             logger.info(f"创建任务: {task_id} (类型: {task_type}, 存储: {self.storage_type})")
             
-            # ✨ 发布任务创建事件
+            # [note] 发布任务创建事件
             await self._emit_event(
                 TaskEventType.TASK_CREATED,
                 task_id=task_id,
@@ -389,7 +389,7 @@ class TaskManager:
             if success:
                 logger.info(f"启动任务: {task_id}")
                 
-                # ✨ 发布任务启动事件
+                # [note] 发布任务启动事件
                 await self._emit_event(
                     TaskEventType.TASK_STARTED,
                     task_id=task_id,
@@ -418,7 +418,7 @@ class TaskManager:
             success = await self._save_task_status(task_status)
             
             if success:
-                # ✨ 发布进度更新事件
+                # [note] 发布进度更新事件
                 await self._emit_event(
                     TaskEventType.TASK_PROGRESS_UPDATED,
                     task_id=task_id,
@@ -451,7 +451,7 @@ class TaskManager:
             if success:
                 logger.info(f"完成任务: {task_id}")
                 
-                # ✨ 发布任务完成事件
+                # [note] 发布任务完成事件
                 await self._emit_event(
                     TaskEventType.TASK_COMPLETED,
                     task_id=task_id,
@@ -484,7 +484,7 @@ class TaskManager:
             if success:
                 logger.error(f"任务失败: {task_id} - {error}")
                 
-                # ✨ 发布任务失败事件
+                # [note] 发布任务失败事件
                 await self._emit_event(
                     TaskEventType.TASK_FAILED,
                     task_id=task_id,
@@ -602,7 +602,7 @@ class TaskManager:
         """
         为后台线程创建独立的 TaskManager 实例
         
-        ⚠️ 重要：由于 Redis 连接绑定到事件循环，在后台线程中必须创建独立实例
+        [warning] 重要：由于 Redis 连接绑定到事件循环，在后台线程中必须创建独立实例
         
         Returns:
             新的 TaskManager 实例（带有独立的事件循环和存储）
@@ -697,14 +697,14 @@ class TaskManager:
             instance._notify_loop = getattr(global_instance, "_notify_loop", None)
             instance._bridge_subject = global_instance._subject
             observer_count = len(global_instance._subject._observers) if hasattr(global_instance._subject, '_observers') else 0
-            logger.info(f"✨ 线程安全实例已启用主循环桥接（{observer_count} 个观察者）")
+            logger.info(f"[info] 线程安全实例已启用主循环桥接（{observer_count} 个观察者）")
         else:
             # 如果全局实例还没有观察者，初始化空的观察者
             instance._subject = TaskSubject()
             instance._observer_enabled = True
             instance._notify_loop = None
             instance._bridge_subject = instance._subject
-            logger.warning("⚠️  线程安全实例创建了独立观察者（全局实例不可用）")
+            logger.warning("[warning] 线程安全实例创建了独立观察者（全局实例不可用）")
         
         return instance
 

@@ -69,7 +69,7 @@ class LibreOfficeConverter:
         else:
             self.soffice_path = "soffice"
         
-        # ✅ 仅检查文件是否存在,不运行 --version (避免弹窗)
+        # [note] 仅检查文件是否存在,不运行 --version (避免弹窗)
         if os.name == "nt":
             if not os.path.exists(self.soffice_path):
                 raise RuntimeError(f"未检测到LibreOffice，请确认路径：{self.soffice_path}")
@@ -171,7 +171,7 @@ class PdfParser:
                     paddle.set_device(f'gpu:{gpu_device}')
                     logger.info(f"Paddle 设备已设置为 GPU:{gpu_device}")
                 
-                # 🔧 设置环境变量以禁用可能导致兼容性问题的优化
+                # [note] 设置环境变量以禁用可能导致兼容性问题的优化
                 # 这些设置可以绕过某些 PaddlePaddle 版本兼容性问题
                 os.environ['FLAGS_use_mkldnn'] = '0'  # 禁用 MKL-DNN 优化
                 os.environ['FLAGS_use_cudnn'] = '1'   # 使用 cuDNN（GPU 环境）
@@ -187,17 +187,17 @@ class PdfParser:
                 )
                 
                 self.enable_ocr = True
-                logger.info(f"✅ PaddleOCR 初始化成功，运行在 GPU:{gpu_device}")
+                logger.info(f"[success] PaddleOCR 初始化成功，运行在 GPU:{gpu_device}")
             except AttributeError as ae:
                 # 处理 PaddlePaddle 版本兼容性问题
-                logger.warning(f"⚠️  PaddleOCR 初始化失败（版本兼容性问题）: {ae}")
+                logger.warning(f"[warning]  PaddleOCR 初始化失败（版本兼容性问题）: {ae}")
                 logger.info("提示：这可能是 PaddlePaddle 和 PaddleOCR 版本不匹配导致的")
                 logger.info("建议：paddlepaddle-gpu==2.6.0 + paddleocr==2.7.0 或更新组合")
                 logger.info("当前配置不影响普通 PDF 文本提取，只是无法处理扫描版 PDF")
                 self.ocr = None
                 self.enable_ocr = False
             except Exception as e:
-                logger.warning(f"⚠️  PaddleOCR 初始化失败: {e}")
+                logger.warning(f"[warning]  PaddleOCR 初始化失败: {e}")
                 logger.info("提示：这不会影响普通 PDF 文本提取，只是无法处理扫描版 PDF")
                 self.ocr = None
                 self.enable_ocr = False
@@ -463,7 +463,7 @@ class DocumentProcessor:
     """统一文档解析器"""
 
     def __init__(self):
-        # ✅ 使用延迟加载：存储 parser 类而不是实例
+        # [note] 使用延迟加载：存储 parser 类而不是实例
         self._parser_classes = {
             "pdf": PdfParser,
             "docx": DocxParser,
@@ -492,9 +492,9 @@ class DocumentProcessor:
             try:
                 logger.info(f"正在初始化 {file_ext} 格式的解析器...")
                 self._parser_instances[file_ext] = parser_class()
-                logger.info(f"✅ {file_ext} 解析器初始化成功")
+                logger.info(f"[success] {file_ext} 解析器初始化成功")
             except Exception as e:
-                logger.error(f"❌ {file_ext} 解析器初始化失败: {e}")
+                logger.error(f"[error] {file_ext} 解析器初始化失败: {e}")
                 return None
         return self._parser_instances.get(file_ext)
 
@@ -608,14 +608,14 @@ class DocumentProcessor:
                     f"不支持的文件类型: '{file_ext}' (文件: {file_name}, 支持的格式: {supported})"
                 )
 
-            # ✅ 延迟加载：只在需要时才创建 parser 实例
+            # [note] 延迟加载：只在需要时才创建 parser 实例
             parser = self._get_parser(file_ext)
             if parser is None:
                 raise DocumentParseError(f"无法初始化 {file_ext} 格式的解析器")
             
             text, tables = parser(file_input)
 
-            # ✅ Excel文件特殊处理：使用保留表头的分割方式
+            # [note] Excel文件特殊处理：使用保留表头的分割方式
             if file_ext in ("xlsx", "xls") and tables and excel_splitter:
                 logger.info(f"使用Excel表头保留分割器处理文件: {file_name}")
                 metadata = self.extract_metadata(file_input, text)

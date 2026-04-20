@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-monitor_vllm.py
-轻量级监控 + Prometheus exporter for vLLM + LMCache + GPU + host
-用途：在机器上长期运行，Prometheus 拉取 /metrics 即可获得这些指标
-"""
+"""vLLM / LMCache / GPU / 主机指标采集，Prometheus 拉 /metrics。"""
 
 import time
 import os
@@ -20,14 +16,12 @@ import requests
 import psutil
 from prometheus_client import start_http_server, Gauge
 
-# 尝试导入 pynvml (GPU monitoring)
 try:
     import pynvml
     NVML_AVAILABLE = True
 except ImportError:
     NVML_AVAILABLE = False
 
-# 尝试导入 docker SDK
 try:
     import docker
     DOCKER_AVAILABLE = True
@@ -35,49 +29,26 @@ except ImportError:
     DOCKER_AVAILABLE = False
 
 
-# ============================================================
-# CONFIGURATION SECTION - 配置区域
-# ============================================================
-# Hardware Info: 4x RTX 4090 (24GB each) + 2x AMD Server CPUs
-# OS: Ubuntu Server
+POLL_INTERVAL = 5
+EXPORTER_PORT = 9400
 
-POLL_INTERVAL = 5                 # 秒，采样周期
-EXPORTER_PORT = 9400              # Prometheus scrape port
-
-# vLLM / LMCache endpoints (http)
-# 示例配置：根据你的实际部署调整
 VLLM_INSTANCES = [
-    "http://127.0.0.1:8000/metrics",   # vLLM instance 1
-    # "http://127.0.0.1:8001/metrics", # vLLM instance 2
-    # "http://127.0.0.1:8002/metrics", # vLLM instance 3
+    "http://127.0.0.1:8000/metrics",
+    # "http://127.0.0.1:8001/metrics",
+    # "http://127.0.0.1:8002/metrics",
 ]
-LM_CACHE_METRICS = "http://127.0.0.1:19200/metrics"  # LMCache metrics endpoint
+LM_CACHE_METRICS = "http://127.0.0.1:19200/metrics"
 
-# Docker container names to monitor
-# 根据你的实际容器名称调整
 DOCKER_CONTAINERS = ["qwen30b_tp2", "qwen8_gpu2", "bge_gpu3"]
 
-# Slack alerting webhook URL (设置为 None 则只打印到控制台)
-SLACK_WEBHOOK = None  # "https://hooks.slack.com/services/..." or None
+SLACK_WEBHOOK = None
 
-# Alert thresholds - 告警阈值配置 (针对4090优化)
 THRESHOLDS = {
-    # RTX 4090 24GB VRAM，建议在90%时告警
-    "gpu_memory_used_ratio": 0.90,       # GPU内存使用率 >= 90% 触发告警
-    
-    # RTX 4090 工作温度一般在70-83°C，超过83°C告警
-    "gpu_temperature": 83,                # GPU温度 >= 83°C 触发告警
-    
-    # 4090功耗最高450W，超过420W可能需要注意
-    "gpu_power_watts": 420,               # GPU功耗 >= 420W 触发告警
-    
-    # 服务器内存告警阈值（根据你的总内存调整）
-    "host_free_gb": 32,                   # 主机可用内存 < 32GB 触发告警
-    
-    # vLLM性能指标
-    "vllm_waiting_requests": 10,          # vLLM等待请求数 >= 10 触发告警
-    
-    # LMCache性能指标
+    "gpu_memory_used_ratio": 0.90,
+    "gpu_temperature": 83,
+    "gpu_power_watts": 420,
+    "host_free_gb": 32,
+    "vllm_waiting_requests": 10,
     "lmcache_hit_rate": 0.65,             # LMCache命中率 < 0.65 触发告警
     
     # 容器内存告警（大模型可能需要更多内存）
@@ -735,7 +706,7 @@ def monitor_loop():
     # 启动Prometheus HTTP服务器
     try:
         start_http_server(EXPORTER_PORT)
-        logger.info(f"✓ Prometheus exporter started on http://0.0.0.0:{EXPORTER_PORT}/metrics")
+        logger.info(f"[success] Prometheus exporter started on http://0.0.0.0:{EXPORTER_PORT}/metrics")
     except Exception as e:
         logger.error(f"Failed to start Prometheus exporter: {e}")
         return

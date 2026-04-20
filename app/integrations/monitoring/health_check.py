@@ -24,7 +24,7 @@ class HealthCheckService:
     - 并行检查各服务，减少总耗时
     - 每次检查使用独立的数据库会话
     - 超时控制，避免单个服务阻塞整体响应
-    - ✅ 单例模式确保全局唯一实例
+    - [success] 单例模式确保全局唯一实例
     """
     _instance = None
     _initialized = False

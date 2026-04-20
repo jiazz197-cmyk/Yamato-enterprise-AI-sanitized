@@ -1,7 +1,4 @@
-"""
-Authentication router
-Provides login, current-user, and superuser management endpoints.
-"""
+"""登录、当前用户、注册与 superuser 用户管理。"""
 import uuid
 from typing import List
 
@@ -28,7 +25,7 @@ logger = get_logger("auth")
 
 @router.post("/login", response_model=TokenResponse, summary="用户登录")
 def login(body: UserLogin, db: Session = Depends(get_db)):
-    """Authenticate with username/password and receive a JWT access token."""
+    """校验账号密码，返回 JWT。"""
     user = db.query(User).filter(User.username == body.username).first()
     if not user or not verify_password(body.password, user.password):
         raise HTTPException(
@@ -49,13 +46,13 @@ def login(body: UserLogin, db: Session = Depends(get_db)):
 
 @router.get("/me", response_model=UserRead, summary="获取当前用户信息")
 def get_me(current_user: User = Depends(get_current_user)):
-    """Return the profile of the currently authenticated user."""
+    """当前登录用户 ORM。"""
     return current_user
 
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED, summary="用户注册")
 def register(body: UserRegister, db: Session = Depends(get_db)):
-    """Register a new account. Role is always set to user."""
+    """新用户，角色固定为 user。"""
     conflict = db.query(User).filter(
         or_(User.username == body.username, User.email == body.email)
     ).first()
@@ -79,9 +76,6 @@ def register(body: UserRegister, db: Session = Depends(get_db)):
     return user
 
 
-# ==================== Superuser Management ====================
-
-
 @router.get(
     "/users",
     response_model=List[UserRead],
@@ -91,7 +85,7 @@ def list_users(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.superuser)),
 ):
-    """Return a list of all registered users. Requires superuser role."""
+    """全量用户列表，需 superuser。"""
     return db.query(User).order_by(User.created_at).all()
 
 
@@ -105,7 +99,7 @@ def delete_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(UserRole.superuser)),
 ):
-    """Delete a user by UUID. Superuser cannot delete themselves."""
+    """按 UUID 删除；不能删自己。"""
     if user_id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -133,10 +127,7 @@ def update_user_role(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(UserRole.superuser)),
 ):
-    """
-    Change a user's role. Superuser can assign admin or user roles.
-    The superuser role cannot be granted through this endpoint.
-    """
+    """改角色为 admin/user；不可授予 superuser，不可改自己。"""
     if body.role == UserRole.superuser:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

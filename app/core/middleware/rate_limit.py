@@ -1,6 +1,4 @@
-"""
-基于 Redis 的限流中间件
-"""
+"""Redis 滑动窗口限流。"""
 from dataclasses import dataclass
 import ipaddress
 import time
@@ -97,7 +95,6 @@ class RateLimiter:
                     if user_id:
                         return f"auth:{user_id}", True
                 except jwt.PyJWTError:
-                    # fallback to IP bucket when token is invalid
                     pass
         client_ip = self._get_effective_client_ip(request)
         return f"anon:{client_ip}", False

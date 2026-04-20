@@ -28,7 +28,6 @@ export const countTokens = (text: string): number => {
   try {
     return initEncoder().encode(normalized).length
   } catch {
-    // Safe fallback to avoid breaking chat flow if tokenizer init fails.
     return Math.ceil(normalized.length * 1.2)
   }
 }

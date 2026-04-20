@@ -1,9 +1,6 @@
 import { config } from '../config'
 
-/**
- * Store auth token in sessionStorage to reduce persistence risk.
- * Keep one-time migration from localStorage for backward compatibility.
- */
+/** Token 放 sessionStorage；若仅有 localStorage 旧值则迁移一次。 */
 export const getAuthTokenFromStorage = (): string | null => {
   try {
     const sessionToken = sessionStorage.getItem(config.authTokenStorageKey)
@@ -27,7 +24,7 @@ export const setAuthTokenToStorage = (token: string): void => {
     sessionStorage.setItem(config.authTokenStorageKey, token)
     localStorage.removeItem(config.authTokenStorageKey)
   } catch {
-    // ignore storage errors
+    // 忽略
   }
 }
 
@@ -36,6 +33,6 @@ export const clearAuthTokenFromStorage = (): void => {
     sessionStorage.removeItem(config.authTokenStorageKey)
     localStorage.removeItem(config.authTokenStorageKey)
   } catch {
-    // ignore storage errors
+    // 忽略
   }
 }

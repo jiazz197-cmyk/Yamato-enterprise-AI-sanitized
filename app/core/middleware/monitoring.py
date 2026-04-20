@@ -1,6 +1,4 @@
-"""
-监控中间件：记录请求耗时并上报 Prometheus
-"""
+"""记录请求耗时并写入 Prometheus metrics。"""
 import time
 from typing import Callable
 
@@ -14,7 +12,7 @@ logger = get_logger("monitoring")
 
 
 def _normalize_endpoint(request: Request) -> str:
-    """Use route template to avoid high-cardinality metric labels."""
+    """优先用路由模板路径，避免 metrics 标签爆炸。"""
     route = request.scope.get("route")
     route_path = getattr(route, "path", None)
     if isinstance(route_path, str) and route_path:

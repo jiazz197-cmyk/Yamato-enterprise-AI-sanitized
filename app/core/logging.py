@@ -1,6 +1,4 @@
-"""
-日志配置中心
-"""
+"""logging.dictConfig 与 app.* 命名 logger。"""
 import logging
 import logging.config
 import sys
@@ -72,7 +70,6 @@ def _build_logging_config() -> Dict[str, Any]:
             "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
             "uvicorn.error": {"handlers": ["default"], "level": "INFO", "propagate": False},
             "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
-            # 第三方库日志级别控制（减少噪音）
             "pdfminer": {"handlers": ["default"], "level": "ERROR", "propagate": False},
             "pdfminer.pdffont": {"handlers": ["default"], "level": "ERROR", "propagate": False},
             "PIL": {"handlers": ["default"], "level": "ERROR", "propagate": False},

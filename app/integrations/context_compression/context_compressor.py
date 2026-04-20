@@ -1,8 +1,4 @@
-"""
-Context Compression Workflow
-Uses local vLLM (Qwen3:8b) via LangChain to compress context.
-Fetches dialogue history from Dify.
-"""
+"""LangChain + OpenAI 兼容接口调本地/配置里的 LLM，从 Dify 拉变量后压缩上下文。"""
 import logging
 from typing import Dict, Any, List, Optional
 from urllib.parse import unquote
@@ -20,13 +16,10 @@ def _decode_user_id(raw_user_id: str) -> str:
     value = (raw_user_id or "").strip()
     if not value:
         return value
-    # Decode once to handle already URL-encoded identifiers from client side.
     return unquote(value).strip()
 
 class ContextCompressor:
-    """
-    Compresses chat context into a structured, concise format using LLM.
-    """
+    """拉 Dify 变量、拼 prompt、走 LLM，必要时降级 max_tokens 重试。"""
     
     def __init__(
         self,
@@ -36,9 +29,7 @@ class ContextCompressor:
         max_tokens: int = 1024,
         dify_api_key: Optional[str] = None
     ):
-        """
-        Initialize the context compressor
-        """
+        """base_url 默认 QWEN3_5_27B；dify 密钥来自 CHAT_API_KEY。"""
         self.base_url = base_url or settings.QWEN3_5_27B_API_URL
         self.model_name = model_name
         self.dify_api_key = dify_api_key or settings.CHAT_API_KEY
@@ -56,14 +47,11 @@ class ContextCompressor:
         self.extractor = MessageExtractor(api_key=self.dify_api_key)
         
     def _fetch_and_split_dialogues(self, user_id: str, conversation_id: str, n: int = 5) -> Dict[str, List[str]]:
-        """
-        Fetch dialogues from Dify via variables endpoint and extract long_memory and recent_dialogs.
-        """
+        """GET /conversations/{id}/variables，解析 long_memory、recent_dialogs 两个变量。"""
         import requests
         import ast
 
         decoded_user_id = _decode_user_id(str(user_id))
-        # Dify variables endpoint: path uses conversation_id, query uses business user_id.
         url = f"{self.extractor.base_url}/conversations/{conversation_id}/variables"
         params = {'user': decoded_user_id}
         
@@ -97,7 +85,6 @@ class ContextCompressor:
             if not val_str or val_str == '[]':
                 return []
             try:
-                # Dify returns list as string representation like "['msg1', 'msg2']"
                 return ast.literal_eval(val_str)
             except Exception as e:
                 logger.warning(f"Failed to parse variable value '{val_str}': {str(e)}")
@@ -112,23 +99,7 @@ class ContextCompressor:
         }
 
     def compress(self, context_data: Dict[str, Any]) -> str:
-        """
-        Compress the provided context data into a summary.
-        
-        Args:
-            context_data: Dictionary containing:
-                - user_id: str
-                - conversation_id: str
-                - system_prompt: str
-                - current_task: str
-                - n_recent: int (default 5)
-                - user_preferences: str
-                - project_background: str
-                - confirmed_decisions: str
-                
-        Returns:
-            Compressed string representation (<= 200 words)
-        """
+        """有 user_id+conversation_id 则拉 Dify；否则用入参里的 recent/older 列表。返回去掉 think 标签后的文本。"""
         user_id = context_data.get("user_id")
         conversation_id = context_data.get("conversation_id")
         n_recent = context_data.get("n_recent", 5)
@@ -196,7 +167,6 @@ class ContextCompressor:
             logger.info(f"Starting context compression for user {user_id}...")
             raw_result = chain.invoke(payload)
         except Exception as e:
-            # 兼容上下文接近上限时的 max_tokens 报错，自动收缩输出 token 后重试
             import re
             error_text = str(e)
             match = re.search(r"\((\d+)\s*>\s*(\d+)\s*-\s*(\d+)\)", error_text)
@@ -207,7 +177,7 @@ class ContextCompressor:
             requested_max = int(match.group(1))
             max_context = int(match.group(2))
             input_tokens = int(match.group(3))
-            available = max_context - input_tokens - 64  # 预留安全余量，防止边界抖动
+            available = max_context - input_tokens - 64
             retry_max_tokens = min(requested_max, self.max_tokens, max(64, available))
 
             if retry_max_tokens <= 0:
@@ -229,12 +199,9 @@ class ContextCompressor:
             retry_chain = prompt | retry_llm | StrOutputParser()
             raw_result = retry_chain.invoke(payload)
 
-        # 后处理：移除可能出现的 <think> 标签内容
         import re
         processed_result = re.sub(r'<think>.*?</think>', '', raw_result, flags=re.DOTALL | re.IGNORECASE).strip()
-        # 如果模型没有输出 </think> 导致匹配失败，尝试简单截断
         if '<think>' in processed_result.lower():
-            # 大小写不敏感地截断
             processed_result = re.split(r'<think>', processed_result, flags=re.IGNORECASE)[0].strip()
 
         logger.info("[Debug] Raw Compression Result length: %s", len(raw_result))
@@ -244,8 +211,6 @@ class ContextCompressor:
         return processed_result
 
 def compress_context(context_data: Dict[str, Any]) -> str:
-    """
-    Convenience function to compress context using default settings.
-    """
+    """默认参数 new ContextCompressor().compress。"""
     compressor = ContextCompressor()
     return compressor.compress(context_data)

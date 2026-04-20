@@ -1,24 +1,4 @@
-"""
-数据库连接与会话管理(生产级)
-
-核心特性:
-- SQLAlchemy 2.0+ 原生支持(DeclarativeBase)
-- 连接池配置优化(pool_size, max_overflow, pool_timeout)
-- 连接健康检查(pool_pre_ping + pool_recycle)
-- 连接池状态监控函数
-
-使用示例:
-    from app.core.database import Base
-    from app.core.dependencies import get_db
-    
-    class User(Base):
-        __tablename__ = "users"
-        id = Column(Integer, primary_key=True)
-    
-    @router.get("/users")
-    def list_users(db: Session = Depends(get_db)):
-        return db.execute(select(User)).scalars().all()
-"""
+"""SQLAlchemy 2.0：Engine、SessionLocal、Base 与表初始化。"""
 from contextlib import contextmanager
 from typing import Generator, Optional
 
@@ -30,85 +10,54 @@ from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger("db")
-logger = get_logger("db")
-
-# ==================== Engine 配置 ====================
 
 DATABASE_URL = settings.SQLALCHEMY_DATABASE_URI
 
-# 🔧 连接池配置(根据实际负载调整)
-POOL_SIZE = getattr(settings, "DB_POOL_SIZE", 10)        # 常驻连接数
-MAX_OVERFLOW = getattr(settings, "DB_MAX_OVERFLOW", 20)  # 最大溢出连接数
-POOL_TIMEOUT = getattr(settings, "DB_POOL_TIMEOUT", 30)  # 获取连接超时(秒)
-POOL_RECYCLE = getattr(settings, "DB_POOL_RECYCLE", 3600)  # 连接回收时间(秒)
+POOL_SIZE = getattr(settings, "DB_POOL_SIZE", 10)
+MAX_OVERFLOW = getattr(settings, "DB_MAX_OVERFLOW", 20)
+POOL_TIMEOUT = getattr(settings, "DB_POOL_TIMEOUT", 30)
+POOL_RECYCLE = getattr(settings, "DB_POOL_RECYCLE", 3600)
 
-# 构建 Engine(生产级配置)
 engine = create_engine(
     DATABASE_URL,
-    echo=settings.DEBUG,  # 开发环境打印 SQL
-    future=True,  # 启用 SQLAlchemy 2.0 行为
-    pool_pre_ping=True,  # 连接使用前检查有效性(防止 "MySQL has gone away")
-    pool_size=POOL_SIZE,  # 连接池大小
-    max_overflow=MAX_OVERFLOW,  # 溢出连接数
-    pool_timeout=POOL_TIMEOUT,  # 获取连接超时
-    pool_recycle=POOL_RECYCLE,  # 连接回收(防止长时间连接失效)
-    # isolation_level="READ COMMITTED",  # 事务隔离级别(可选)
-    connect_args={
-        # PostgreSQL 特定参数(可选)
-        # "application_name": "ai_data_tool",
-        # "connect_timeout": 10,
-    },
+    echo=settings.DEBUG,
+    future=True,
+    pool_pre_ping=True,
+    pool_size=POOL_SIZE,
+    max_overflow=MAX_OVERFLOW,
+    pool_timeout=POOL_TIMEOUT,
+    pool_recycle=POOL_RECYCLE,
+    connect_args={},
 )
 
-# Session 工厂(必须 future=True)
 SessionLocal = sessionmaker(
     bind=engine,
-    autoflush=False,  # 禁用自动 flush(显式控制)
-    autocommit=False,  # 禁用自动提交(手动事务管理)
-    future=True,  # SQLAlchemy 2.0 模式
-    expire_on_commit=False,  # 提交后对象不过期(可选,根据需求)
+    autoflush=False,
+    autocommit=False,
+    future=True,
+    expire_on_commit=False,
 )
 
 
-# ==================== Declarative Base (2.0+) ====================
-
 class Base(DeclarativeBase):
-    """
-    SQLAlchemy 2.0 声明式基类
-    
-    所有 ORM 模型需继承此类:
-        class User(Base):
-            __tablename__ = "users"
-            id: Mapped[int] = mapped_column(primary_key=True)
-    """
+    """ORM 模型基类。"""
     pass
 
 
-# ==================== 事件监听(可选) ====================
-
 @event.listens_for(Pool, "connect")
 def receive_connect(dbapi_conn, connection_record):
-    """连接建立时的回调(可用于设置连接级参数)"""
+    """连接入池时可在此设会话级参数。"""
     logger.debug("数据库连接已建立")
-    # 示例:设置 PostgreSQL 连接参数
-    # dbapi_conn.execute("SET timezone='UTC'")
 
 
 @event.listens_for(Pool, "checkout")
 def receive_checkout(dbapi_conn, connection_record, connection_proxy):
-    """连接从池中取出时的回调(用于监控)"""
+    """连接被取出时触发，便于打调试日志。"""
     logger.debug("连接已从池中获取")
 
 
-# ==================== 工具函数 ====================
-
 def check_db_connection() -> bool:
-    """
-    检查数据库连接是否健康
-    
-    Returns:
-        bool: 连接正常返回 True,异常返回 False
-    """
+    """SELECT 1 探活。"""
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -120,17 +69,7 @@ def check_db_connection() -> bool:
 
 
 def get_pool_status() -> dict:
-    """
-    获取连接池状态信息(用于监控)
-    
-    Returns:
-        dict: 连接池状态
-            - pool_size: 连接池大小
-            - checked_in: 已归还连接数
-            - checked_out: 已取出连接数
-            - overflow: 溢出连接数
-            - total: 总连接数
-    """
+    """连接池占用概况，供监控用。"""
     pool_obj = engine.pool
     return {
         "pool_size": pool_obj.size(),
@@ -143,13 +82,7 @@ def get_pool_status() -> dict:
 
 @contextmanager
 def get_db_context() -> Generator[Session, None, None]:
-    """
-    数据库会话上下文管理器(用于非 FastAPI 场景)
-    
-    使用示例:
-        with get_db_context() as db:
-            user = db.query(User).first()
-    """
+    """非 FastAPI 场景用的 with 会话（commit/rollback/close）。"""
     db = SessionLocal()
     try:
         yield db
@@ -163,16 +96,11 @@ def get_db_context() -> Generator[Session, None, None]:
 
 
 def init_db_tables():
-    """
-    初始化数据库表（不存在则创建）
-    
-    ✅ 自动导入所有 ORM 模型并创建表
-    应在应用启动时调用
-    """
+    """create_all；并尝试给 data_pending 补 status 列；最后写种子 superuser。"""
     try:
-        # 导入所有 ORM 模型（确保注册到 Base.metadata）
         from app.models.orm.closing_form import PendingForm  # noqa: F401
         from app.models.orm.file_resource import FileResource  # noqa: F401
+        from app.models.orm.quotation_task import QuotationTask  # noqa: F401
         from app.models.orm.knowledge import KnowledgeInstance  # noqa: F401
         from app.models.orm.platform import (  # noqa: F401
             User, UserLoginHistory, UserPreferences, UserSubscription,
@@ -181,13 +109,10 @@ def init_db_tables():
             PlatformAuditLog, MigrationLog, MigrationBackup,
         )
 
-        # 创建所有表（已存在的表会被跳过）
         Base.metadata.create_all(bind=engine)
 
-        # 简单的数据库迁移：为 data_pending 表添加 status 列（如果不存在）
         try:
             with engine.connect() as conn:
-                # 检查 status 列是否存在
                 result = conn.execute(text(
                     "SELECT column_name "
                     "FROM information_schema.columns "
@@ -195,24 +120,21 @@ def init_db_tables():
                 )).fetchone()
                 
                 if not result:
-                    logger.info("🔧 发现 data_pending 表缺少 status 列，正在添加...")
+                    logger.info("[info] 发现 data_pending 表缺少 status 列，正在添加...")
                     conn.execute(text(
                         "ALTER TABLE data_pending ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'pending'"
                     ))
                     conn.commit()
-                    logger.info("✅ 成功向 data_pending 表添加 status 列")
+                    logger.info("[success] 成功向 data_pending 表添加 status 列")
         except Exception as mig_e:
-            logger.error(f"⚠️ data_pending 表迁移失败（如果表还未创建可忽略此错误）: {mig_e}")
+            logger.error(f"[warning] data_pending 表迁移失败（如果表还未创建可忽略此错误）: {mig_e}")
 
-        # 获取已创建的表列表
         table_names = [table.name for table in Base.metadata.sorted_tables]
-        logger.info(f"✅ 数据库表初始化完成，共 {len(table_names)} 个表: {', '.join(table_names)}")
+        logger.info(f"[success] 数据库表初始化完成，共 {len(table_names)} 个表: {', '.join(table_names)}")
 
     except Exception as e:
-        logger.error(f"❌ 数据库表初始化失败: {e}", exc_info=True)
-        # 不抛出异常，允许应用继续启动
+        logger.error(f"[error] 数据库表初始化失败: {e}", exc_info=True)
 
-    # 种子数据独立执行，不受 create_all 是否报错影响
     _seed_superuser()
 
 
@@ -227,7 +149,7 @@ def _seed_superuser():
         password: Optional[str] = settings.BOOTSTRAP_SUPERUSER_PASSWORD
 
         if not username or not email or not password:
-            logger.info("ℹ️ 未配置 BOOTSTRAP_SUPERUSER_*，跳过 superuser 种子写入")
+            logger.info("[info] 未配置 BOOTSTRAP_SUPERUSER_*，跳过 superuser 种子写入")
             return
 
         db = SessionLocal()
@@ -243,13 +165,13 @@ def _seed_superuser():
                 )
                 db.add(su)
                 db.commit()
-                logger.info(f"✅ superuser 账号已创建 ({username} / {email})")
+                logger.info(f"[success] superuser 账号已创建 ({username} / {email})")
             else:
-                logger.info(f"ℹ️ superuser 账号已存在，跳过种子写入: {username}")
+                logger.info(f"[info] superuser 账号已存在，跳过种子写入: {username}")
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"❌ superuser 种子写入失败: {e}", exc_info=True)
+        logger.error(f"[error] superuser 种子写入失败: {e}", exc_info=True)
 
 
 def dispose_engine():

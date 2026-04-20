@@ -36,7 +36,7 @@
             </svg>
             刷新
           </button>
-          <span class="records__count">共 {{ records.length }} 条</span>
+          <span class="records__count">共 {{ records.length }} 条 · {{ groupedRecords.length }} 个文件</span>
         </div>
 
         <div v-if="loadingRecords" class="records__loading">
@@ -49,67 +49,79 @@
           暂无记录
         </div>
 
-        <div v-else class="records__list">
-          <div
-            v-for="record in records"
-            :key="record.id"
-            class="record-card"
-            :class="{ 'record-card--expanded': expandedId === record.id }"
+        <div v-else class="records__groups">
+          <section
+            v-for="group in groupedRecords"
+            :key="group.key"
+            class="file-group"
           >
-            <div class="record-card__header" @click="toggleExpand(record.id)">
-              <div class="record-card__meta">
-                <span class="record-card__time">{{ record.upload_time || '—' }}</span>
-                <span v-if="record.uploader" class="record-card__uploader">{{ record.uploader }}</span>
-                <span v-if="record.file_name" class="record-card__filename" :title="record.file_name">
-                  {{ record.file_name }}
-                </span>
-                <span class="record-card__summary">{{ getSummary(record.text) }}</span>
+            <header class="file-group__header">
+              <div class="file-group__title-row">
+                <h2 class="file-group__title" :title="group.fileName">{{ group.fileName }}</h2>
+                <span class="file-group__badge">{{ group.count }} 条</span>
               </div>
-              <div class="record-card__right">
-                <button
-                  class="delete-btn"
-                  :disabled="deletingId === record.id"
-                  @click.stop="openDeleteDialog(record.id)"
-                >
-                  {{ deletingId === record.id ? '...' : '删除' }}
-                </button>
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  class="record-card__chevron"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M6 9l6 6 6-6"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
+              <div class="file-group__meta">
+                <span class="file-group__meta-item">最近：{{ formatUploadTime(group.latestUploadTime) }}</span>
+                <span v-if="group.uploaders" class="file-group__meta-item">上传：{{ group.uploaders }}</span>
               </div>
-            </div>
+            </header>
 
-            <div v-if="expandedId === record.id" class="record-card__body">
-              <div v-if="record.file_name" class="record-file-row">
-                <span class="record-file-row__label">文件名称</span>
-                <span class="record-file-row__value">{{ record.file_name }}</span>
-              </div>
-              <div v-if="hasStructuredFields(record.text)" class="record-fields">
-                <div
-                  v-for="field in parseFields(record.text)"
-                  :key="field.label"
-                  class="record-field"
-                >
-                  <span class="record-field__label">{{ field.label }}</span>
-                  <span class="record-field__value">{{ field.value }}</span>
+            <div class="file-group__records">
+              <div
+                v-for="record in group.items"
+                :key="record.id"
+                class="record-card"
+                :class="{ 'record-card--expanded': expandedId === record.id }"
+              >
+                <div class="record-card__header" @click="toggleExpand(record.id)">
+                  <div class="record-card__meta">
+                    <span class="record-card__time">{{ formatUploadTime(record.upload_time) }}</span>
+                    <span v-if="record.uploader" class="record-card__uploader">{{ record.uploader }}</span>
+                    <span class="record-card__summary">{{ getSummary(record.text) }}</span>
+                  </div>
+                  <div class="record-card__right">
+                    <button
+                      class="delete-btn"
+                      :disabled="deletingId === record.id"
+                      @click.stop="openDeleteDialog(record.id)"
+                    >
+                      {{ deletingId === record.id ? '...' : '删除' }}
+                    </button>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      class="record-card__chevron"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M6 9l6 6 6-6"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  </div>
+                </div>
+
+                <div v-if="expandedId === record.id" class="record-card__body">
+                  <div v-if="hasStructuredFields(record.text)" class="record-fields">
+                    <div
+                      v-for="field in parseFields(record.text)"
+                      :key="field.label"
+                      class="record-field"
+                    >
+                      <span class="record-field__label">{{ field.label }}</span>
+                      <span class="record-field__value">{{ field.value }}</span>
+                    </div>
+                  </div>
+                  <div v-else class="record-raw-text">{{ record.text }}</div>
                 </div>
               </div>
-              <div v-else class="record-raw-text">{{ record.text }}</div>
             </div>
-          </div>
+          </section>
         </div>
       </div>
     </div>
@@ -127,13 +139,22 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ConfirmDialog, useToast } from '@yamato/components'
 import { deleteCollection2Record, listCollection2Records, type ClosingFormRecord } from '../services/closing_form'
 
 interface ParsedField {
   label: string
   value: string
+}
+
+interface FileGroup {
+  key: string
+  fileName: string
+  items: ClosingFormRecord[]
+  count: number
+  latestUploadTime: string | null
+  uploaders: string
 }
 
 const { showSuccess, showError } = useToast()
@@ -144,6 +165,59 @@ const expandedId = ref<string | null>(null)
 const deletingId = ref<string | null>(null)
 const showDeleteDialog = ref(false)
 const recordToDelete = ref<string | null>(null)
+
+const UNTITLED_FILE_KEY = '__untitled_file__'
+
+const formatUploadTime = (value: string | null | undefined): string => {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+const groupedRecords = computed<FileGroup[]>(() => {
+  const groupedMap = new Map<string, ClosingFormRecord[]>()
+
+  for (const record of records.value) {
+    const fileName = String(record.file_name ?? '').trim()
+    const key = fileName || UNTITLED_FILE_KEY
+    const bucket = groupedMap.get(key)
+    if (bucket) {
+      bucket.push(record)
+    } else {
+      groupedMap.set(key, [record])
+    }
+  }
+
+  return Array.from(groupedMap.entries()).map(([key, items]) => {
+    const uploaders = Array.from(
+      new Set(
+        items
+          .map((item) => String(item.uploader ?? '').trim())
+          .filter(Boolean)
+      )
+    ).join('、')
+
+    const latestUploadTime = items
+      .map((item) => item.upload_time)
+      .filter((time): time is string => Boolean(time))
+      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] ?? null
+
+    return {
+      key,
+      fileName: key === UNTITLED_FILE_KEY ? '未命名文件' : key,
+      items,
+      count: items.length,
+      latestUploadTime,
+      uploaders,
+    }
+  })
+})
 
 const loadRecords = async () => {
   loadingRecords.value = true
@@ -230,6 +304,7 @@ onMounted(() => {
   padding: 32px 32px 24px;
   box-sizing: border-box;
   overflow: auto;
+  background: var(--yamato-color-bg-light);
 }
 
 .page-header {
@@ -248,15 +323,18 @@ onMounted(() => {
 
 .page-header__title {
   margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  color: #202124;
+  font-family: var(--yamato-font-display);
+  font-size: 34px;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0;
+  color: var(--yamato-color-text-primary);
 }
 
 .page__content {
   background: #ffffff;
-  border-radius: 12px;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+  border-radius: var(--yamato-radius-lg);
+  box-shadow: var(--yamato-shadow-card);
   padding: 32px;
   flex: 1;
   display: flex;
@@ -281,17 +359,23 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 14px;
-  border-radius: 999px;
-  border: 1px solid #d2e3fc;
-  background: #f8f9fa;
-  color: #1a73e8;
-  font-size: 13px;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: var(--yamato-radius-sm);
+  border: 1px solid var(--yamato-color-border-subtle);
+  background: var(--yamato-color-surface);
+  color: var(--yamato-color-text-primary);
+  font-size: 14px;
   cursor: pointer;
-  transition: background 0.2s ease;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
 
   &:hover:not(:disabled) {
-    background: #e8f0fe;
+    background: var(--yamato-color-surface-alt);
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: var(--yamato-focus-ring);
   }
 
   &:disabled {
@@ -315,8 +399,8 @@ onMounted(() => {
 }
 
 .records__count {
-  font-size: 13px;
-  color: #5f6368;
+  font-size: 14px;
+  color: var(--yamato-color-text-secondary);
 }
 
 .records__loading {
@@ -333,7 +417,7 @@ onMounted(() => {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #1a73e8;
+    background: var(--yamato-color-accent);
     animation: dot-bounce 1.2s ease-in-out infinite;
 
     &:nth-child(2) { animation-delay: 0.2s; }
@@ -350,30 +434,93 @@ onMounted(() => {
   padding: 48px 0;
   text-align: center;
   font-size: 14px;
-  color: #9aa0a6;
+  color: var(--yamato-color-text-muted);
 }
 
-.records__list {
+.records__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.file-group {
+  border-radius: var(--yamato-radius-md);
+  border: 1px solid var(--yamato-color-border-subtle);
+  background: #ffffff;
+  box-shadow: 0 2px 10px rgba(20, 20, 19, 0.06);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.file-group__header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 2px 6px;
+  border-bottom: 1px solid var(--yamato-color-border-subtle);
+}
+
+.file-group__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.file-group__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--yamato-color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-group__badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--yamato-color-text-secondary);
+  background: var(--yamato-color-surface-alt);
+  border-radius: var(--yamato-radius-pill);
+  padding: 2px 8px;
+}
+
+.file-group__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.file-group__meta-item {
+  font-size: 12px;
+  color: var(--yamato-color-text-muted);
+}
+
+.file-group__records {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
 .record-card {
-  border-radius: 10px;
-  border: 1px solid #e8eaed;
-  background: #ffffff;
+  border-radius: var(--yamato-radius-sm);
+  border: 1px solid var(--yamato-color-border-subtle);
+  background: var(--yamato-color-surface);
   overflow: hidden;
-  box-shadow: 0 1px 2px rgba(60, 64, 67, 0.08);
-  transition: box-shadow 0.2s ease;
-  border-left: 3px solid #34a853;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+  border-left: 3px solid var(--yamato-color-accent);
 
   &:hover {
-    box-shadow: 0 2px 6px rgba(60, 64, 67, 0.15);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
   }
 
   &--expanded {
-    border-color: #c5d9f8;
+    border-color: rgba(201, 100, 66, 0.4);
   }
 }
 
@@ -396,38 +543,24 @@ onMounted(() => {
 
 .record-card__time {
   font-size: 12px;
-  color: #9aa0a6;
+  color: var(--yamato-color-text-muted);
   white-space: nowrap;
   flex-shrink: 0;
 }
 
 .record-card__uploader {
   font-size: 12px;
-  color: #9aa0a6;
+  color: var(--yamato-color-text-muted);
   white-space: nowrap;
   flex-shrink: 0;
-  background: #f1f3f4;
+  background: #ebe8de;
   padding: 1px 7px;
-  border-radius: 999px;
-}
-
-.record-card__filename {
-  font-size: 12px;
-  color: #5f6368;
-  white-space: nowrap;
-  flex-shrink: 1;
-  min-width: 0;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  background: #eef3fb;
-  padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--yamato-radius-pill);
 }
 
 .record-card__summary {
   font-size: 13px;
-  color: #202124;
+  color: var(--yamato-color-text-primary);
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -444,7 +577,7 @@ onMounted(() => {
 
 .record-card__chevron {
   flex-shrink: 0;
-  color: #9aa0a6;
+  color: var(--yamato-color-text-muted);
   transition: transform 0.2s ease;
 
   .record-card--expanded & {
@@ -455,10 +588,10 @@ onMounted(() => {
 .delete-btn {
   height: 26px;
   padding: 0 12px;
-  border-radius: 999px;
+  border-radius: var(--yamato-radius-pill);
   border: none;
-  color: #c5221f;
-  background: #fce8e6;
+  color: var(--yamato-color-danger);
+  background: var(--yamato-color-danger-soft);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -466,7 +599,7 @@ onMounted(() => {
   white-space: nowrap;
 
   &:hover:not(:disabled) {
-    background: #fad2cf;
+    background: rgba(196, 59, 47, 0.2);
   }
 
   &:disabled {
@@ -476,32 +609,9 @@ onMounted(() => {
 }
 
 .record-card__body {
-  border-top: 1px solid #e8eaed;
+  border-top: 1px solid var(--yamato-color-border-subtle);
   padding: 16px;
-  background: #fafbfc;
-}
-
-.record-file-row {
-  display: grid;
-  grid-template-columns: 96px 1fr;
-  gap: 12px;
-  margin-bottom: 12px;
-  align-items: start;
-}
-
-.record-file-row__label {
-  font-size: 12px;
-  color: #9aa0a6;
-  font-weight: 600;
-}
-
-.record-file-row__value {
-  font-size: 13px;
-  color: #202124;
-  line-height: 1.7;
-  text-align: justify;
-  text-justify: inter-ideograph;
-  word-break: break-all;
+  background: var(--yamato-color-surface-alt);
 }
 
 .record-fields {
@@ -516,19 +626,19 @@ onMounted(() => {
   gap: 12px;
   align-items: start;
   padding-bottom: 8px;
-  border-bottom: 1px dashed #e5e8ee;
+  border-bottom: 1px dashed rgba(0, 0, 0, 0.12);
 }
 
 .record-field__label {
   font-size: 12px;
-  color: #9aa0a6;
+  color: var(--yamato-color-text-muted);
   font-weight: 600;
   text-align: left;
 }
 
 .record-field__value {
   font-size: 13px;
-  color: #202124;
+  color: var(--yamato-color-text-primary);
   line-height: 1.7;
   text-align: justify;
   text-justify: inter-ideograph;
@@ -537,11 +647,30 @@ onMounted(() => {
 
 .record-raw-text {
   font-size: 13px;
-  color: #202124;
+  color: var(--yamato-color-text-primary);
   line-height: 1.8;
   text-align: justify;
   text-justify: inter-ideograph;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+@media (max-width: 980px) {
+  .page {
+    padding: 24px 20px 18px;
+  }
+
+  .page__content {
+    padding: 20px;
+  }
+
+  .file-group {
+    padding: 10px;
+  }
+
+  .record-card__meta {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
 }
 </style>

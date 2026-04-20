@@ -1,15 +1,14 @@
-"""
-WebSocket Task Notifier
-Real-time task progress and status updates for clients
-"""
+"""任务进度 WebSocket：按 task 订阅推送。"""
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, WebSocketException, status, Depends
 from typing import Dict, Set
 import json
 import jwt
 import time
+import uuid
 from app.core.observer import TaskObserver, TaskEvent
 from app.core.logging import get_logger
 from app.core.config import settings
+from app.core.database import SessionLocal
 from app.core.executor import executor_manager
 from app.api.taskmanager import task_manager
 from app.core.security import require_roles
@@ -21,18 +20,15 @@ router = APIRouter()
 
 
 class WebSocketConnectionManager:
-    """WebSocket connection manager"""
+    """按 task_id 挂连接；按 IP 限连接数与每分钟消息数。"""
 
     def __init__(self):
-        # {task_id: Set[WebSocket]}
         self.active_connections: Dict[str, Set[WebSocket]] = {}
-        # {client_ip: connection_count}
         self.ip_connections: Dict[str, int] = {}
-        # {client_ip: {"window": int, "count": int}}
         self.ip_message_counters: Dict[str, Dict[str, int]] = {}
 
     async def connect(self, websocket: WebSocket, task_id: str, client_ip: str):
-        """Connect client"""
+        """accept 并记入 task 与 IP 计数。"""
         current_count = self.ip_connections.get(client_ip, 0)
         if current_count >= settings.WS_MAX_CONNECTIONS_PER_IP:
             raise WebSocketException(
@@ -46,12 +42,12 @@ class WebSocketConnectionManager:
         self.ip_connections[client_ip] = current_count + 1
         websocket.state.client_ip = client_ip
         logger.info(
-            f"✅ WebSocket client connected: task_id={task_id}, "
+            f"[success] WebSocket client connected: task_id={task_id}, "
             f"connections={len(self.active_connections[task_id])}"
         )
 
     def disconnect(self, websocket: WebSocket, task_id: str):
-        """Disconnect client"""
+        """从 task 集合移除并递减 IP 计数。"""
         if task_id in self.active_connections:
             self.active_connections[task_id].discard(websocket)
             if not self.active_connections[task_id]:
@@ -63,10 +59,10 @@ class WebSocketConnectionManager:
                     self.ip_connections.pop(client_ip, None)
                 else:
                     self.ip_connections[client_ip] = next_count
-            logger.info(f"❌ WebSocket client disconnected: task_id={task_id}")
+            logger.info(f"[error] WebSocket client disconnected: task_id={task_id}")
 
     def allow_message(self, client_ip: str) -> bool:
-        """Simple fixed-window message limiter by client IP."""
+        """按 IP 每分钟固定窗口计数。"""
         current_window = int(time.time()) // 60
         counter = self.ip_message_counters.get(client_ip)
         if not counter or counter["window"] != current_window:
@@ -76,7 +72,7 @@ class WebSocketConnectionManager:
         return counter["count"] <= settings.WS_MAX_MESSAGES_PER_MINUTE
 
     async def send_to_task(self, task_id: str, message: dict):
-        """Send message to all clients subscribed to a specific task"""
+        """JSON 文本推给订阅该 task 的全部连接；失败则 disconnect。"""
         if task_id not in self.active_connections:
             return
 
@@ -88,25 +84,24 @@ class WebSocketConnectionManager:
             try:
                 await websocket.send_text(message_text)
                 logger.debug(
-                    f"📡 Message pushed to client: task_id={task_id}, "
+                    f"[event] Message pushed to client: task_id={task_id}, "
                     f"event={message.get('event_type')}"
                 )
             except Exception as e:
                 logger.warning(f"Push failed: {e}")
                 disconnected.append(websocket)
 
-        # Clean up disconnected connections
         for ws in disconnected:
             self.disconnect(ws, task_id)
 
     def get_connection_count(self, task_id: str = None) -> int:
-        """Get connection count"""
+        """指定 task 或全局连接数。"""
         if task_id:
             return len(self.active_connections.get(task_id, set()))
         return sum(len(conns) for conns in self.active_connections.values())
 
     async def disconnect_all(self):
-        """Disconnect all WebSocket connections gracefully"""
+        """关服时 1001 关闭并清空表。"""
         total_count = self.get_connection_count()
         if total_count == 0:
             logger.info("没有活跃的 WebSocket 连接需要关闭")
@@ -114,7 +109,6 @@ class WebSocketConnectionManager:
 
         logger.info(f"正在关闭 {total_count} 个 WebSocket 连接...")
 
-        # Close all connections
         for task_id, websockets in list(self.active_connections.items()):
             for websocket in list(websockets):
                 try:
@@ -122,9 +116,8 @@ class WebSocketConnectionManager:
                 except Exception as e:
                     logger.debug(f"关闭 WebSocket 时出错: {e}")
 
-        # Clear all connections
         self.active_connections.clear()
-        logger.info("✅ 所有 WebSocket 连接已关闭")
+        logger.info("[success] 所有 WebSocket 连接已关闭")
 
 
 def _decode_ws_token(token: str) -> str:
@@ -140,18 +133,29 @@ def _decode_ws_token(token: str) -> str:
     return user_id
 
 
-# Global connection manager
+def _load_ws_user(user_id: str) -> User | None:
+    """Fetch user for role checks in websocket authorization."""
+    db = SessionLocal()
+    try:
+        return db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+    except Exception as exc:
+        logger.warning(f"加载 WebSocket 用户失败: {exc}")
+        return None
+    finally:
+        db.close()
+
+
 ws_manager = WebSocketConnectionManager()
 
 
 class WebSocketTaskObserver(TaskObserver):
-    """WebSocket task observer"""
+    """TaskObserver：把事件 JSON 推到 ws_manager。"""
     
     def __init__(self, connection_manager: WebSocketConnectionManager):
         self.manager = connection_manager
     
     async def on_task_event(self, event: TaskEvent) -> None:
-        """Receive task event and push to subscribed clients"""
+        """组装 payload 后 send_to_task。"""
         message = {
             "type": "task_event",
             "event_type": event.event_type.value,
@@ -165,7 +169,6 @@ class WebSocketTaskObserver(TaskObserver):
             "timestamp": event.timestamp,
         }
         
-        # Push to all clients subscribed to this task
         await self.manager.send_to_task(event.task_id, message)
     
     def get_observer_name(self) -> str:
@@ -202,6 +205,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str):
         return
 
     owner_id = executor_manager.get_task_owner(task_id)
+    ws_user = _load_ws_user(user_id)
 
     if not owner_id:
         task_status = await task_manager.get_task_status(task_id)
@@ -213,7 +217,9 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="任务缺少归属信息，禁止订阅")
         return
 
-    if owner_id != user_id:
+    is_admin_like = bool(ws_user and ws_user.role in (UserRole.admin, UserRole.superuser))
+
+    if owner_id != user_id and not is_admin_like:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="无权订阅该任务")
         return
 
@@ -247,7 +253,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str):
     
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket, task_id)
-        logger.info(f"🔌 Client disconnected: task_id={task_id}")
+        logger.info(f"[event] Client disconnected: task_id={task_id}")
     
     except Exception as e:
         logger.error(f"WebSocket error: {e}", exc_info=True)

@@ -1,7 +1,4 @@
-/**
- * 应用配置
- * 所有配置都从环境变量读取，禁止硬编码
- */
+/** 自 Vite 环境变量构建，缺项在 getConfig 里抛错。 */
 
 interface AppConfig {
   port: number
@@ -9,21 +6,9 @@ interface AppConfig {
   env: string
   userName?: string
   userAvatarUrl?: string
-  /**
-   * 登录接口相对路径，例如 `/auth/login`
-   */
   loginEndpoint: string
-  /**
-   * 获取当前用户信息的接口相对路径，例如 `/auth/me`
-   */
   meEndpoint: string
-  /**
-   * 存储登录 Token 的 localStorage Key
-   */
   authTokenStorageKey: string
-  /**
-   * 存储用户设置的 localStorage Key
-   */
   settingsStorageKey: string
 }
 

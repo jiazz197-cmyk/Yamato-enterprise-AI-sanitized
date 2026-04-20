@@ -65,13 +65,13 @@ class ReportRequest(BaseModel):
     structure_data: dict
 
 class ChatSummaryRequest(BaseModel):
-    """Request model for chat summary creation"""
+    """触发会话摘要的请求体。"""
     user_id: str
     conversation_id: str
     limit: Optional[int] = 20
 
 class ChatSummaryResponse(BaseModel):
-    """Response model for chat summary"""
+    """摘要任务结果。"""
     user_id: str
     conversation_id: str
     query_count: int
@@ -81,7 +81,7 @@ class ChatSummaryResponse(BaseModel):
     db_updated: bool
 
 class UserSummaryResponse(BaseModel):
-    """Response model for user summary query"""
+    """用户最新摘要查询结果。"""
     user_id: str
     latest_summary: Optional[str] = None
     exists: bool

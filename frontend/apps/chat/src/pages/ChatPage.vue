@@ -399,7 +399,6 @@ const stripThinkContent = (raw: string): string => {
     return ''
   }
 
-  // Normalize escaped think tags to raw tags so one parser can handle both.
   const normalized = raw
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
@@ -474,6 +473,8 @@ const isUploadingKnowledge = ref(false)
 const activeKnowledgeTaskId = ref<string | null>(null)
 let knowledgeStatusPollTimer: number | null = null
 let knowledgeStatusAbortController: AbortController | null = null
+/** 同一次上传只处理一轮，避免 change 重复触发。 */
+let knowledgeUploadProcessing = false
 
 const WELCOME_TEXT = '有什么我能帮您的吗😊'
 const welcomeDisplayText = ref('')
@@ -516,7 +517,7 @@ const saveCachedSettings = () => {
       })
     )
   } catch {
-    // ignore
+    // 忽略
   }
 }
 
@@ -539,7 +540,7 @@ const loadCachedSettings = () => {
       }
     }
   } catch {
-    // ignore
+    // 忽略
   }
 }
 
@@ -669,9 +670,11 @@ const handleKnowledgeUploadChange = async (event: Event) => {
   const target = event.target as HTMLInputElement
   const selectedFiles = target.files ? Array.from(target.files) : []
 
-  if (selectedFiles.length === 0 || isUploadingKnowledge.value) {
+  if (selectedFiles.length === 0 || isUploadingKnowledge.value || knowledgeUploadProcessing) {
     return
   }
+
+  knowledgeUploadProcessing = true
 
   const formData = new FormData()
   for (const file of selectedFiles) {
@@ -720,6 +723,7 @@ const handleKnowledgeUploadChange = async (event: Event) => {
   } catch (error: unknown) {
     showError(getErrorMessage(error, '知识上传失败'))
   } finally {
+    knowledgeUploadProcessing = false
     if (!keepUploadingState) {
       isUploadingKnowledge.value = false
     }
@@ -829,7 +833,6 @@ const sendMessage = async () => {
 
   if (existingConversationId && !existingConversationId.startsWith('new-') && !existingConversationId.startsWith('temp-')) {
     upsertChatHistoryToTop(existingConversationId)
-    // 确保列表引用更新，这样侧边栏能反映位置变化（置顶）
     chatHistory.value = [...chatHistory.value]
   } else {
     if (existingConversationId && (existingConversationId.startsWith('new-') || existingConversationId.startsWith('temp-'))) {
@@ -886,7 +889,6 @@ const sendMessage = async () => {
     } finally {
       isCompressing.value = false
       await scrollToBottom()
-      // Restore input text after compression ends
       inputMessage.value = currentMsg
     }
     return
@@ -898,17 +900,13 @@ const sendMessage = async () => {
 
   await scrollToBottom()
 
-  // 创建助手消息占位
   const assistantMessage: Message = {
     role: 'assistant',
     content: '',
     timestamp: formatTime(),
   }
   messages.value.push(assistantMessage)
-  // Retrieve the reactive proxy that Vue wraps around the pushed object.
-  // Direct assignment to the raw `assistantMessage` local variable bypasses
-  // Vue's Proxy set-trap entirely, so the DOM never updates reactively.
-  // All content mutations must go through this proxy reference instead.
+  // 后续改内容要用数组最后一项（代理），不要改局部 assistantMessage 引用。
   const reactiveAssistantMessage = messages.value[messages.value.length - 1]
 
   let renderedContent = ''
@@ -963,10 +961,8 @@ const sendMessage = async () => {
     }
     const normalizedUser = String(chatSettings.value.user ?? '').trim()
 
-    // 调用 API
     const currentBg = currentConversationId.value ? (chatBackgrounds.value[currentConversationId.value] || loadBackground(currentConversationId.value)) : ''
     
-    // 如果存在背景信息，使用后立即清空，确保只发送一次
     if (currentConversationId.value && currentBg) {
       saveBackground(currentConversationId.value, '')
     }
@@ -991,17 +987,11 @@ const sendMessage = async () => {
           if (isGenerationStale()) {
             return
           }
-          // If the animation timer is not running, flush immediately.
-          // If it is running, let it animate to completion naturally — do not
-          // cancel it here, otherwise all buffered SSE events (which arrive in a
-          // single reader.read() on loopback) would be rendered at once.
           if (streamRenderTimer === undefined) {
             flushRenderImmediately()
           }
           
-          // Token统计仅计入可见回答文本，不计入 <think>...</think> 思考内容。
-          // 流式场景下后端 usage 往往包含 think token，前端无法稳定精确扣减，
-          // 因此统一采用前端可见文本估算，保证口径一致。
+          // Token：按剥掉 think 后的可见文本估算；与流式 usage 口径对齐用前端累计。
           const cleanAiText = stripThinkContent(targetContent)
           const aiTokens = countTokens(cleanAiText)
           const userTokens = countTokens(currentInput)
@@ -1036,7 +1026,6 @@ const sendMessage = async () => {
           if (import.meta.env.DEV) {
             console.error('发送消息失败:', error)
           }
-          // 如果发送失败，恢复背景信息以便下次重试
           if (currentConversationId.value && currentBg) {
             saveBackground(currentConversationId.value, currentBg)
           }
@@ -1050,12 +1039,10 @@ const sendMessage = async () => {
       return
     }
 
-    // 保存 task_id 和 conversation_id
     currentTaskId.value = result.taskId
     if (result.conversationId) {
       const oldId = currentConversationId.value
       currentConversationId.value = result.conversationId
-      // 如果分配了新会话ID，且当前有token或bg缓存，需要转移到新ID下
       if (oldId && (oldId.startsWith('temp-') || oldId.startsWith('new-'))) {
          if (tokenUsage.value > 0) saveTokenUsage(result.conversationId, tokenUsage.value)
          if (chatBackgrounds.value[oldId]) {
@@ -1071,9 +1058,7 @@ const sendMessage = async () => {
         removeChatHistoryItem(tempConversationId)
       }
       upsertChatHistoryToTop(resolvedConversationId, optimisticTitle)
-      // 最终确认一次激活 ID 稳定在真实 ID 上
       currentConversationId.value = resolvedConversationId
-      // 再次同步列表引用，确保 temp 被替换为真实 ID 后 UI 刷新
       chatHistory.value = [...chatHistory.value]
     }
   } catch (error: unknown) {
@@ -1102,29 +1087,22 @@ const sendMessage = async () => {
 
 const createNewChat = (tempId?: string) => {
   invalidateActiveGeneration()
-  // 清空当前消息和会话 ID
   messages.value = []
   
-  // 关键：为新空对话提供一个默认识别 ID，而不是 undefined
-  // 否则 MessageList 在判断 activeItemId 变化时不会跟踪新节点
   const newId = tempId && typeof tempId === 'string' ? tempId : `new-${Date.now()}`
   currentConversationId.value = newId
   
-  // 往历史列表的头部占位一个"新对话"
   upsertChatHistoryToTop(newId, '新对话')
-  // 强制同步一次历史列表引用，确保 UI 能够正确反映新添加的项
   chatHistory.value = [...chatHistory.value]
 
   currentTaskId.value = undefined
-  tokenUsage.value = 0 // 重置 Token 消耗
+  tokenUsage.value = 0
   
-  // 显示新对话引导语打字效果
   startWelcomeTyping()
 }
 
 const loadChat = async (chatId: string) => {
   invalidateActiveGeneration()
-  // 临时生成的 ID 不应请求后端
   if (chatId.startsWith('new-') || chatId.startsWith('temp-')) {
     messages.value = []
     tokenUsage.value = 0
@@ -1135,14 +1113,11 @@ const loadChat = async (chatId: string) => {
 
   try {
     const normalizedUser = String(chatSettings.value.user ?? '').trim() || 'user'
-    // 加载会话消息
     const response = await getMessages(normalizedUser, chatId)
     
-    // 清空当前消息并重置 Token
     messages.value = []
     tokenUsage.value = 0
     
-    // 转换并加载消息
     if (response.data && response.data.length > 0) {
       messages.value = response.data.flatMap((msg: BackendMessageRecord) => {
         const timestamp = msg.created_at
@@ -1196,11 +1171,9 @@ const loadChat = async (chatId: string) => {
       })
     }
     
-    // 设置当前会话 ID
     currentConversationId.value = chatId
     currentTaskId.value = undefined
     
-    // 恢复该会话的 Token 计数和 Background
     tokenUsage.value = loadTokenUsage(chatId)
     chatBackgrounds.value[chatId] = loadBackground(chatId)
     
@@ -1209,7 +1182,6 @@ const loadChat = async (chatId: string) => {
     if (import.meta.env.DEV) {
       console.error('加载会话失败:', error)
     }
-    // 显示错误提示（可以后续添加 Toast 提示）
   }
 }
 
@@ -1257,11 +1229,8 @@ const handleCompressContext = async () => {
     const response = await compressContext(userId, conversationId)
     const compressedText = response.data.compressed_context
     
-    // 将压缩后的上下文保存为 background
     saveBackground(conversationId, compressedText)
     
-    // 清除 Token 计数并根据回传信息估算初始 Token
-    // 简单估算：中文字符数 + 英文单词数 * 1.2 (这是一个粗略的估算)
     const estimatedTokens = Math.ceil(compressedText.length * 1.2)
     tokenUsage.value = estimatedTokens
     saveTokenUsage(conversationId, estimatedTokens)
@@ -1293,7 +1262,6 @@ const archiveChat = async (chatId: string) => {
 }
 
 const deleteChat = (chatId: string) => {
-  // TODO: 这里后续接入真实删除逻辑
   chatToDelete.value = chatId
   showDeleteDialog.value = true
 }
@@ -1333,13 +1301,10 @@ onMounted(async () => {
   isUnmounted.value = false
   isMounted.value = true
 
-  // 加载缓存设置
   loadCachedSettings()
 
-  // 初始化新对话引导语打字效果
   startWelcomeTyping()
 
-  // 加载会话历史
   try {
     const normalizedUser = String(chatSettings.value.user ?? '').trim() || 'user'
     const response = await getConversations(normalizedUser)
@@ -1355,7 +1320,6 @@ onMounted(async () => {
     }
   }
 
-  // 点击其他区域关闭菜单
   document.addEventListener('click', handleDocumentClick)
 })
 
@@ -1377,6 +1341,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
+  background: var(--yamato-color-bg-light);
 }
 
 .chat-body {
@@ -1408,7 +1373,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #5f6368;
+  color: var(--yamato-color-text-muted);
 }
 
 .chat-history-toggle svg {
@@ -1420,7 +1385,7 @@ onBeforeUnmount(() => {
 }
 
 .chat-input-container {
-  padding: 24px 32px;
+  padding: 20px 24px;
   border-top: none;
   background: transparent;
   display: flex;
@@ -1431,26 +1396,25 @@ onBeforeUnmount(() => {
 .chat-input-wrapper {
   position: relative;
   margin-bottom: 8px;
-  width: min(1020px, 90%);
-  min-width: 560px;
-  max-width: 1120px;
+  width: min(980px, 92%);
+  max-width: 980px;
 }
 
 .chat-input {
   width: 100%;
 
   :deep(.input) {
-    border: 1px solid #b8cff8;
-    background: #ffffff;
-    box-shadow: 0 1px 2px rgba(66, 133, 244, 0.05);
-    border-radius: 22px;
-    padding: 14px 54px 58px 18px;
-    min-height: 96px;
+    border: 1px solid var(--yamato-color-border-subtle);
+    background: var(--yamato-color-surface);
+    box-shadow: var(--yamato-shadow-card);
+    border-radius: var(--yamato-radius-lg);
+    padding: 14px 54px 54px 16px;
+    min-height: 92px;
   }
 
   :deep(.input:focus) {
-    border-color: #8ab4f8;
-    box-shadow: 0 0 0 3px rgba(138, 180, 248, 0.2);
+    border-color: var(--yamato-color-accent);
+    box-shadow: var(--yamato-focus-ring);
   }
 }
 
@@ -1477,13 +1441,13 @@ onBeforeUnmount(() => {
   height: 24px;
   padding: 0 8px;
   font-size: 11px;
-  background: #f7f9fc;
-  border: 1px solid #d7e3f8;
-  border-radius: 12px;
+  background: var(--yamato-color-surface);
+  border: 1px solid var(--yamato-color-border-subtle);
+  border-radius: var(--yamato-radius-pill);
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: #2b5fb8;
+  color: var(--yamato-color-text-secondary);
   cursor: pointer;
   white-space: nowrap;
   opacity: 1;
@@ -1491,13 +1455,13 @@ onBeforeUnmount(() => {
   transition: all 0.2s ease;
 
   &:hover:not(:disabled) {
-    background: #eef3fb;
-    border-color: #8ab4f8;
+    background: rgba(0, 0, 0, 0.05);
+    border-color: rgba(201, 100, 66, 0.35);
   }
 
   &:disabled {
     cursor: not-allowed;
-    color: #9aa0a6;
+    color: var(--yamato-color-text-muted);
     opacity: 0.7;
   }
 }
@@ -1511,7 +1475,7 @@ onBeforeUnmount(() => {
   height: 36px;
   border: none;
   border-radius: 50%;
-  background: #4285f4;
+  background: var(--yamato-color-accent);
   color: white;
   cursor: pointer;
   display: flex;
@@ -1521,27 +1485,27 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 
   &:hover:not(:disabled) {
-    background: #1976d2;
+    background: var(--yamato-color-accent-hover);
   }
 
   &:disabled {
-    background: #dadce0;
+    background: rgba(0, 0, 0, 0.16);
     cursor: not-allowed;
     opacity: 0.5;
   }
 
   &--stop {
-    background: #ea4335;
+    background: var(--yamato-color-danger);
 
     &:hover {
-      background: #d33426;
+      filter: brightness(1.05);
     }
   }
 }
 
 .chat-input-hint {
   font-size: 12px;
-  color: #9aa0a6;
+  color: var(--yamato-color-text-muted);
   text-align: center;
   margin: 0;
 }
@@ -1563,12 +1527,12 @@ onBeforeUnmount(() => {
 
 .chat-welcome__text {
   margin: 0;
-  font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
+  font-family: var(--yamato-font-display);
   font-size: 40px;
-  font-weight: 700;
-  line-height: 1.3;
-  color: #202124;
-  letter-spacing: 1px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--yamato-color-text-primary);
+  letter-spacing: 0;
   text-align: center;
 }
 
@@ -1586,7 +1550,7 @@ onBeforeUnmount(() => {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #4285f4;
+    background: var(--yamato-color-accent);
     animation: bounce 1.4s infinite ease-in-out both;
 
     &:nth-child(1) {
@@ -1618,23 +1582,23 @@ onBeforeUnmount(() => {
 .search-mode-btn {
   height: 30px;
   padding: 0 10px;
-  border: 1px solid #d7e3f8;
-  border-radius: 14px;
-  background: rgba(247, 249, 252, 0.95);
-  color: #202124;
+  border: 1px solid var(--yamato-color-border-subtle);
+  border-radius: var(--yamato-radius-pill);
+  background: var(--yamato-color-surface);
+  color: var(--yamato-color-text-primary);
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
   transition: all 0.2s ease;
 
   &:hover {
-    background: #eef3fb;
-    border-color: #8ab4f8;
-    color: #202124;
+    background: rgba(0, 0, 0, 0.04);
+    border-color: rgba(201, 100, 66, 0.35);
+    color: var(--yamato-color-text-primary);
   }
 }
 
@@ -1645,24 +1609,24 @@ onBeforeUnmount(() => {
 .knowledge-upload-btn {
   height: 30px;
   padding: 0 12px;
-  border: 1px solid #d7e3f8;
-  border-radius: 14px;
-  background: rgba(247, 249, 252, 0.95);
-  color: #202124;
+  border: 1px solid var(--yamato-color-border-subtle);
+  border-radius: var(--yamato-radius-pill);
+  background: var(--yamato-color-surface);
+  color: var(--yamato-color-text-primary);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
   transition: all 0.2s ease;
 
   &:hover:not(:disabled) {
-    background: #eef3fb;
-    border-color: #8ab4f8;
-    color: #202124;
+    background: rgba(0, 0, 0, 0.04);
+    border-color: rgba(201, 100, 66, 0.35);
+    color: var(--yamato-color-text-primary);
   }
 
   &:disabled {
@@ -1680,10 +1644,10 @@ onBeforeUnmount(() => {
 }
 
 .knowledge-upload-btn--uploading {
-  border-color: #1a73e8;
-  background: linear-gradient(90deg, #1a73e8 0%, #4285f4 100%);
+  border-color: var(--yamato-color-accent);
+  background: var(--yamato-color-accent);
   color: #ffffff;
-  box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.2);
+  box-shadow: var(--yamato-focus-ring);
   animation: knowledge-upload-pulse 1.3s ease-in-out infinite;
 }
 
@@ -1699,19 +1663,19 @@ onBeforeUnmount(() => {
 @keyframes knowledge-upload-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.2);
+    box-shadow: 0 0 0 3px rgba(201, 100, 66, 0.2);
   }
   50% {
-    box-shadow: 0 0 0 6px rgba(66, 133, 244, 0.28);
+    box-shadow: 0 0 0 6px rgba(201, 100, 66, 0.28);
   }
 }
 
 .token-indicator {
   height: 30px;
   padding: 0 10px;
-  border: 1px solid #d7e3f8;
-  border-radius: 14px;
-  background: rgba(247, 249, 252, 0.95);
+  border: 1px solid var(--yamato-color-border-subtle);
+  border-radius: var(--yamato-radius-pill);
+  background: var(--yamato-color-surface);
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1720,14 +1684,14 @@ onBeforeUnmount(() => {
   .token-indicator-label {
     font-size: 11px;
     font-weight: 600;
-    color: #5f6368;
+    color: var(--yamato-color-text-secondary);
     white-space: nowrap;
   }
 
   .token-indicator-progress {
     width: 34px;
     height: 4px;
-    background-color: #e8eaed;
+    background-color: rgba(0, 0, 0, 0.12);
     border-radius: 2px;
     overflow: hidden;
 
@@ -1749,10 +1713,10 @@ onBeforeUnmount(() => {
 
 .search-mode-menu {
   position: fixed;
-  background: #ffffff;
-  border: 1px solid #e8eaed;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  background: var(--yamato-color-surface);
+  border: 1px solid var(--yamato-color-border-subtle);
+  border-radius: var(--yamato-radius-sm);
+  box-shadow: var(--yamato-shadow-overlay);
   padding: 4px;
   min-width: 110px;
   z-index: 9999;
@@ -1765,7 +1729,7 @@ onBeforeUnmount(() => {
   background: transparent;
   text-align: left;
   font-size: 13px;
-  color: #202124;
+  color: var(--yamato-color-text-primary);
   cursor: pointer;
   border-radius: 4px;
   transition: background 0.15s ease;
@@ -1773,16 +1737,30 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 
   &:hover {
-    background: #f1f3f4;
+    background: rgba(0, 0, 0, 0.06);
   }
 
   &--active {
-    color: #1a73e8;
+    color: var(--yamato-color-accent);
     font-weight: 600;
 
     &::before {
       content: '✓ ';
     }
+  }
+}
+
+@media (max-width: 900px) {
+  .chat-input-container {
+    padding: 14px 12px 10px;
+  }
+
+  .chat-input-wrapper {
+    width: 100%;
+  }
+
+  .chat-welcome__text {
+    font-size: 28px;
   }
 }
 

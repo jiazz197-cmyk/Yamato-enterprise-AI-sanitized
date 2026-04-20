@@ -10,9 +10,7 @@ import type {
   RenameConversationRequest,
 } from '../types/chat'
 
-/**
- * SSE 事件回调类型
- */
+/** SSE 流回调 */
 export interface SSECallbacks {
   onMessage?: (content: string, data: SSEEvent) => void
   onEnd?: (data: SSEEvent) => void
@@ -190,9 +188,7 @@ const parseErrorResponseMessage = async (response: Response): Promise<string | u
   return rawText.trim() || undefined
 }
 
-/**
- * 发送聊天消息（SSE 流式响应）
- */
+/** POST /chat-messages，解析 SSE。 */
 export const sendChatMessage = async (
   query: string,
   conversationId: string | undefined,
@@ -394,9 +390,6 @@ export const sendChatMessage = async (
   }
 }
 
-/**
- * 压缩对话上下文
- */
 export const compressContext = async (
   userId: string,
   conversationId: string,
@@ -426,9 +419,6 @@ export const compressContext = async (
   return response.json()
 }
 
-/**
- * 停止消息生成
- */
 export const stopChatMessage = async (taskId: string): Promise<void> => {
   const url = `${config.apiBaseUrl}/chat-messages/${taskId}/stop`
   
@@ -443,9 +433,6 @@ export const stopChatMessage = async (taskId: string): Promise<void> => {
   }
 }
 
-/**
- * 获取会话列表
- */
 export const getConversations = async (
   user: string,
   page = 1,
@@ -467,9 +454,6 @@ export const getConversations = async (
   return response.json()
 }
 
-/**
- * 获取消息列表
- */
 export const getMessages = async (
   user: string,
   conversationId: string,
@@ -492,9 +476,6 @@ export const getMessages = async (
   return response.json()
 }
 
-/**
- * 重命名会话
- */
 export const renameConversation = async (
   conversationId: string,
   name: string,

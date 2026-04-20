@@ -1,6 +1,4 @@
-"""
-全局异常定义
-"""
+"""统一结构的业务异常类型。"""
 from __future__ import annotations
 
 from typing import Any, Dict, Optional

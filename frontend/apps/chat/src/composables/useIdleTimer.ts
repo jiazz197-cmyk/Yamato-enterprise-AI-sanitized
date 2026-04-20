@@ -9,13 +9,7 @@ const ACTIVITY_EVENTS = [
   'click',
 ] as const
 
-/**
- * 用户空闲检测 composable
- *
- * 监听常见用户操作事件，若在 timeoutMs 毫秒内无任何操作则调用 onIdle。
- * 对外暴露 start() / stop()，由调用方决定启停时机。
- * 组件卸载时自动 stop() 防止内存泄漏。
- */
+/** 无操作超过 timeoutMs 触发 onIdle；卸载时自动 stop。 */
 export function useIdleTimer(timeoutMs: number, onIdle: () => void) {
   let timer: ReturnType<typeof setTimeout> | null = null
 

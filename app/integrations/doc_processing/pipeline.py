@@ -52,7 +52,7 @@ class DocumentProcessingPipeline:
         self.num_tags = num_tags
 
         self.text_splitter = TokenAwareTextSplitter(chunk_size, chunk_overlap)
-        # ✅ 添加Excel专用分割器
+        # [note] 添加Excel专用分割器
         self.excel_splitter = ExcelHeaderPreservingSplitter(chunk_size, chunk_overlap)
         self.tag_generator = TagGenerator(device=device)
         self.document_processor = DocumentProcessor()
@@ -118,7 +118,7 @@ class DocumentProcessingPipeline:
         processed = 0
         for file_path in files:
             try:
-                # ✅ 传递Excel专用分割器
+                # [note] 传递Excel专用分割器
                 chunks = self.document_processor.process_document(
                     file_path,
                     self.text_splitter,

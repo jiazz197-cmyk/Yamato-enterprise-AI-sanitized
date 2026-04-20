@@ -52,9 +52,9 @@ if ! command -v conda &> /dev/null; then
     # Source conda
     source $HOME/miniconda3/etc/profile.d/conda.sh
     
-    echo -e "${GREEN}✓ Miniconda installed${NC}"
+    echo -e "${GREEN}[success] Miniconda installed${NC}"
 else
-    echo -e "${GREEN}✓ Conda found: $(conda --version)${NC}"
+    echo -e "${GREEN}[success] Conda found: $(conda --version)${NC}"
     
     # Make sure conda is properly initialized
     if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
@@ -69,9 +69,9 @@ echo ""
 echo -e "${BLUE}Step 2: Setting up directories${NC}"
 if [ ! -d "$INSTALL_DIR" ]; then
     mkdir -p "$INSTALL_DIR"
-    echo -e "✓ Created directory: ${INSTALL_DIR}"
+    echo -e "[success] Created directory: ${INSTALL_DIR}"
 else
-    echo -e "✓ Directory exists: ${INSTALL_DIR}"
+    echo -e "[success] Directory exists: ${INSTALL_DIR}"
 fi
 echo ""
 
@@ -93,9 +93,9 @@ FILES=(
 for file in "${FILES[@]}"; do
     if [ -f "$file" ]; then
         cp "$file" "$INSTALL_DIR/"
-        echo "  ✓ Copied $file"
+        echo "  [success] Copied $file"
     else
-        echo -e "  ${YELLOW}⚠ $file not found, skipping${NC}"
+        echo -e "  ${YELLOW}[warning] $file not found, skipping${NC}"
     fi
 done
 echo ""
@@ -107,7 +107,7 @@ chmod +x "$INSTALL_DIR/setup_conda_env.sh"
 chmod +x "$INSTALL_DIR/start_monitor.sh"
 chmod +x "$INSTALL_DIR/test_environment.py"
 chmod +x "$INSTALL_DIR/check_gpu_status.sh"
-echo -e "✓ Permissions set"
+echo -e "[success] Permissions set"
 echo ""
 
 # Step 5: Create conda environment
@@ -115,16 +115,16 @@ echo -e "${BLUE}Step 5: Creating conda environment${NC}"
 cd "$INSTALL_DIR"
 
 if conda env list | grep -q "^vllm-monitor "; then
-    echo -e "${YELLOW}⚠ Environment 'vllm-monitor' already exists${NC}"
+    echo -e "${YELLOW}[warning] Environment 'vllm-monitor' already exists${NC}"
     read -p "Update it? (Y/n): " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
         conda env update -n vllm-monitor -f environment.yml --prune
-        echo -e "${GREEN}✓ Environment updated${NC}"
+        echo -e "${GREEN}[success] Environment updated${NC}"
     fi
 else
     conda env create -f environment.yml
-    echo -e "${GREEN}✓ Environment created${NC}"
+    echo -e "${GREEN}[success] Environment created${NC}"
 fi
 echo ""
 
@@ -149,7 +149,7 @@ if [ "$EUID" -eq 0 ] || groups | grep -q sudo; then
         $USE_SUDO cp "$INSTALL_DIR/vllm-monitor.service" /etc/systemd/system/
         $USE_SUDO systemctl daemon-reload
         
-        echo -e "${GREEN}✓ Service installed${NC}"
+        echo -e "${GREEN}[success] Service installed${NC}"
         echo ""
         echo "Enable and start with:"
         echo -e "  ${YELLOW}sudo systemctl enable vllm-monitor${NC}"
@@ -169,7 +169,7 @@ source ~/miniconda3/etc/profile.d/conda.sh 2>/dev/null || source ~/anaconda3/etc
 conda activate vllm-monitor
 EOF
 chmod +x "$INSTALL_DIR/activate.sh"
-echo -e "✓ Created activate.sh"
+echo -e "[success] Created activate.sh"
 
 # Create quick start alias
 cat > "$INSTALL_DIR/start.sh" << 'EOF'
@@ -178,15 +178,15 @@ cd $(dirname "$0")
 ./start_monitor.sh
 EOF
 chmod +x "$INSTALL_DIR/start.sh"
-echo -e "✓ Created start.sh (alias for start_monitor.sh)"
+echo -e "[success] Created start.sh (alias for start_monitor.sh)"
 
 echo ""
 echo -e "${GREEN}================================================${NC}"
-echo -e "${GREEN}✅ Installation Complete!${NC}"
+echo -e "${GREEN}[success] Installation Complete!${NC}"
 echo -e "${GREEN}================================================${NC}"
 echo ""
-echo -e "📁 Installation directory: ${YELLOW}${INSTALL_DIR}${NC}"
-echo -e "🐍 Conda environment: ${YELLOW}vllm-monitor${NC}"
+echo -e "[info] Installation directory: ${YELLOW}${INSTALL_DIR}${NC}"
+echo -e "[info] Conda environment: ${YELLOW}vllm-monitor${NC}"
 echo ""
 echo -e "${BLUE}Quick Start:${NC}"
 echo -e "  ${YELLOW}cd ${INSTALL_DIR}${NC}"
@@ -201,7 +201,7 @@ echo -e "${BLUE}Check GPU status:${NC}"
 echo -e "  ${YELLOW}cd ${INSTALL_DIR}${NC}"
 echo -e "  ${YELLOW}./check_gpu_status.sh${NC}"
 echo ""
-echo -e "📊 Metrics endpoint: ${BLUE}http://localhost:9400/metrics${NC}"
+echo -e "[info] Metrics endpoint: ${BLUE}http://localhost:9400/metrics${NC}"
 echo ""
 echo -e "${YELLOW}Note: If this is your first conda installation, please:${NC}"
 echo -e "${YELLOW}  1. Close and reopen your terminal${NC}"

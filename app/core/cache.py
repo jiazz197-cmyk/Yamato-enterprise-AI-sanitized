@@ -1,14 +1,4 @@
-"""
-Redis 缓存管理器
-
-提供以下功能：
-- 通用缓存操作 (get/set/delete)
-- API 响应缓存
-- 限流计数
-- 异步任务状态
-- 文件上传进度
-- 数据源概览缓存
-"""
+"""异步 Redis：通用 KV、API 缓存键、简易限流、任务状态等。"""
 import hashlib
 import json
 from datetime import datetime, timedelta
@@ -23,23 +13,18 @@ logger = get_logger("cache")
 
 
 class AsyncRedisManager:
-    """
-    异步 Redis 管理器（单例模式）
-    
-    提供缓存、限流、任务状态等功能
-    ✅ 单例模式确保全局唯一连接池
-    """
+    """单例连接池；decode_responses=True。"""
     _instance = None
     _initialized = False
     
     def __new__(cls):
-        """确保只创建一个 AsyncRedisManager 实例"""
+        """单例。"""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
     
     def __init__(self):
-        """初始化（只执行一次）"""
+        """仅首次 from_url。"""
         if self._initialized:
             return
         
@@ -62,27 +47,23 @@ class AsyncRedisManager:
             raise
 
     async def test_connection(self):
-        """测试 Redis 连接是否正常"""
+        """ping。"""
         return await self._test_connection()
 
     async def close(self):
-        """关闭 Redis 连接（优雅关闭，带超时保护）"""
+        """断开连接池并 aclose 客户端。"""
         try:
             logger.info("正在关闭 Redis 连接...")
-            # 先关闭连接池
             if hasattr(self.redis_client, 'connection_pool'):
                 pool = self.redis_client.connection_pool
-                # 断开所有活跃连接
                 await pool.disconnect()
-                logger.info("✅ Redis 连接池已断开")
+                logger.info("[success] Redis 连接池已断开")
             
-            # 关闭客户端
             await self.redis_client.aclose()
-            logger.info("✅ Redis 客户端已关闭")
+            logger.info("[success] Redis 客户端已关闭")
         except Exception as e:
             logger.error(f"关闭 Redis 连接时出错: {e}", exc_info=True)
 
-    # ==================== 通用缓存操作 ====================
     async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
         try:
             if isinstance(value, (dict, list)):
@@ -138,7 +119,6 @@ class AsyncRedisManager:
             logger.error(f"Error setting expiration for key {key}: {e}")
             return False
 
-    # ==================== API响应缓存 ====================
     async def cache_api_response(self, endpoint: str, params: Dict[str, Any], response_data: Any,
                                  ttl: Optional[int] = None) -> bool:
         cache_key = self._generate_api_cache_key(endpoint, params)
@@ -158,7 +138,6 @@ class AsyncRedisManager:
         params_hash = hashlib.md5(params_str.encode()).hexdigest()
         return f"api_cache:{endpoint}:{params_hash}"
 
-    # ==================== API限流 ====================
     async def check_rate_limit(self, identifier: str, limit: int, window: int, prefix: str = "rate_limit") -> Dict[
         str, Any]:
         key = f"{prefix}:{identifier}:{window}s"
@@ -204,7 +183,6 @@ class AsyncRedisManager:
                 "reset_time": datetime.utcnow() + timedelta(seconds=window)
             }
 
-    # ==================== 任务状态缓存 ====================
     async def set_job_status(self, job_id: str, status: str, progress: int = 0,
                              metadata: Optional[Dict[str, Any]] = None, ttl: Optional[int] = None) -> bool:
         job_key = f"job_status:{job_id}"
@@ -225,7 +203,6 @@ class AsyncRedisManager:
         job_key = f"job_status:{job_id}"
         return await self.delete(job_key)
 
-    # ==================== 数据源概览缓存 ====================
     async def cache_data_source_overview(self, source_id: int, overview_data: Dict[str, Any], ttl: int = 300) -> bool:
         cache_key = f"ds_overview:{source_id}"
         return await self.set(cache_key, overview_data, ttl)
@@ -238,7 +215,6 @@ class AsyncRedisManager:
         cache_key = f"ds_overview:{source_id}"
         return await self.delete(cache_key)
 
-    # ==================== 文件上传进度 ====================
     async def set_upload_progress(self, file_id: str, total_size: int, uploaded_size: int, status: str = "uploading",
                                   ttl: int = 3600) -> bool:
         progress_key = f"upload_progress:{file_id}"
@@ -259,7 +235,6 @@ class AsyncRedisManager:
         progress_key = f"upload_progress:{file_id}"
         return await self.delete(progress_key)
 
-    # ==================== 系统统计 ====================
     async def get_redis_stats(self) -> Dict[str, Any]:
         try:
             info = await self.redis_client.info()
@@ -293,5 +268,4 @@ class AsyncRedisManager:
             return {}
 
 
-# 全局 Redis 管理器实例
 redis_manager = AsyncRedisManager()
