@@ -17,7 +17,7 @@
           AI聊天
         </RouterLink>
         <RouterLink class="sidebar-nav__item" active-class="is-active" to="/files">
-          文件管理
+          报价生成
         </RouterLink>
         <RouterLink class="sidebar-nav__item" active-class="is-active" to="/closing-form">
           报单填写
@@ -153,20 +153,21 @@ watch(isShellFreePage, (onShellFreePage) => {
   width: 100%;
   height: 100vh;
   overflow: hidden;
-  background: #f8f9fa;
+  background: var(--yamato-color-bg-light);
 }
 
 .login-shell {
   width: 100%;
   height: 100vh;
   overflow: hidden;
+  background: var(--yamato-color-bg-light);
 }
 
 .app-main {
   height: 100%;
-  padding-left: 212px;
+  padding-left: 224px;
   overflow: hidden;
-  background: #f8f9fa;
+  background: var(--yamato-color-bg-light);
 }
 
 .sidebar-extra {
@@ -180,50 +181,64 @@ watch(isShellFreePage, (onShellFreePage) => {
 .sidebar-nav {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   padding: 8px;
 }
 
 .sidebar-nav__item {
   display: flex;
   align-items: center;
-  height: 40px;
-  padding: 0 12px;
-  border-radius: 10px;
-  color: #202124;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: var(--yamato-radius-sm);
+  color: var(--yamato-color-text-secondary);
   text-decoration: none;
   font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0;
   transition: background 0.2s ease, color 0.2s ease;
 
   &:hover {
-    background: #e8eaed;
+    background: rgba(20, 20, 19, 0.05);
   }
 
   &.is-active {
-    background: #d2e3fc;
-    color: #1976d2;
+    background: var(--yamato-color-accent-soft);
+    color: var(--yamato-color-accent);
     font-weight: 600;
   }
 }
 
 .logout-btn {
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: none;
-  background: #e8f0fe;
-  color: #1a73e8;
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: var(--yamato-radius-pill);
+  border: 1px solid rgba(201, 100, 66, 0.32);
+  background: rgba(201, 100, 66, 0.12);
+  color: var(--yamato-color-accent);
   font-size: 12px;
   cursor: pointer;
   flex-shrink: 0;
-  transition: background 0.2s ease, color 0.2s ease, transform 0.1s ease;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.1s ease;
 
   &:hover {
-    background: #d2e3fc;
-    color: #174ea6;
+    background: var(--yamato-color-accent-soft-strong);
+    border-color: rgba(201, 100, 66, 0.44);
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: var(--yamato-focus-ring);
   }
 
   &:active {
     transform: translateY(1px);
+  }
+}
+
+@media (max-width: 1024px) {
+  .app-main {
+    padding-left: 216px;
   }
 }
 </style>

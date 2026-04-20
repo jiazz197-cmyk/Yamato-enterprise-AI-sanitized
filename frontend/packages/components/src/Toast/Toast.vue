@@ -92,9 +92,10 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   padding: 12px 20px;
-  border-radius: 8px;
-  background: white;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border-radius: var(--yamato-radius-sm);
+  background: #ffffff;
+  border: 1px solid var(--yamato-color-border-subtle);
+  box-shadow: var(--yamato-shadow-card);
   z-index: 9999;
   max-width: 500px;
   min-width: 300px;
@@ -110,32 +111,32 @@ onMounted(() => {
 
   &__content {
     flex: 1;
-    font-size: 14px;
-    line-height: 1.5;
-    color: #333;
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--yamato-color-text-primary);
   }
 
   &--success {
     .toast__icon {
-      color: #52c41a;
+      color: var(--yamato-color-success);
     }
   }
 
   &--error {
     .toast__icon {
-      color: #ff4d4f;
+      color: var(--yamato-color-danger);
     }
   }
 
   &--warning {
     .toast__icon {
-      color: #faad14;
+      color: var(--yamato-color-warning);
     }
   }
 
   &--info {
     .toast__icon {
-      color: #1890ff;
+      color: var(--yamato-color-accent);
     }
   }
 }

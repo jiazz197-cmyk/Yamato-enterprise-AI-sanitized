@@ -71,6 +71,7 @@ export default defineConfig(({ mode }) => {
         [`${apiBase}/chat-summary`]: makeProxy(env.VITE_BACKEND_TARGET),
         [`${apiBase}/closing-form`]: makeProxy(env.VITE_BACKEND_TARGET),
         [`${apiBase}/docs`]: makeProxy(env.VITE_BACKEND_TARGET),
+        [`${apiBase}/quotation`]: makeProxy(env.VITE_BACKEND_TARGET),
         [`${apiBase}/context-compression`]: makeProxy(env.VITE_BACKEND_TARGET),
         [apiBase]: {
           ...makeProxy(env.VITE_DIFY_TARGET, chatProxyApiKey),

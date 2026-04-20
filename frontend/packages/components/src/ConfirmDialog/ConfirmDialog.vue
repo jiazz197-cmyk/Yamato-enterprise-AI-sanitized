@@ -94,7 +94,8 @@ const handleOverlayClick = () => {
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.5);
+  background-color: rgba(20, 20, 19, 0.4);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -103,9 +104,10 @@ const handleOverlayClick = () => {
 }
 
 .dialog-container {
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  background: #ffffff;
+  border-radius: var(--yamato-radius-lg);
+  box-shadow: var(--yamato-shadow-overlay);
+  border: 1px solid var(--yamato-color-border-subtle);
   min-width: 320px;
   max-width: 500px;
   width: 100%;
@@ -117,21 +119,23 @@ const handleOverlayClick = () => {
   align-items: center;
   justify-content: space-between;
   padding: 20px 24px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--yamato-color-border-subtle);
 }
 
 .dialog-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 21px;
   font-weight: 600;
-  color: #333;
+  line-height: 1.19;
+  letter-spacing: 0;
+  color: var(--yamato-color-text-primary);
 }
 
 .dialog-close {
   border: none;
-  background: none;
+  background: transparent;
   font-size: 20px;
-  color: #999;
+  color: var(--yamato-color-text-muted);
   cursor: pointer;
   padding: 0;
   width: 24px;
@@ -143,16 +147,22 @@ const handleOverlayClick = () => {
   transition: all 0.2s ease;
 
   &:hover {
-    background-color: #f5f5f5;
-    color: #666;
+    background-color: rgba(0, 0, 0, 0.05);
+    color: var(--yamato-color-text-primary);
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: var(--yamato-focus-ring);
   }
 }
 
 .dialog-body {
   padding: 24px;
-  color: #666;
-  font-size: 14px;
+  color: var(--yamato-color-text-secondary);
+  font-size: 16px;
   line-height: 1.6;
+  letter-spacing: normal;
 }
 
 .dialog-message {
@@ -163,17 +173,17 @@ const handleOverlayClick = () => {
   display: flex;
   gap: 12px;
   padding: 16px 24px;
-  border-top: 1px solid #f0f0f0;
+  border-top: 1px solid var(--yamato-color-border-subtle);
   justify-content: flex-end;
 }
 
 .dialog-btn {
-  height: 36px;
+  min-height: 36px;
   padding: 0 20px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--yamato-radius-sm);
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
   transition: all 0.2s ease;
   outline: none;
@@ -181,14 +191,18 @@ const handleOverlayClick = () => {
   &:active {
     transform: translateY(1px);
   }
+
+  &:focus-visible {
+    box-shadow: var(--yamato-focus-ring);
+  }
 }
 
 .dialog-btn--cancel {
-  background: #f5f5f5;
-  color: #666;
+  background: var(--yamato-color-surface-alt);
+  color: #4d4c48;
 
   &:hover {
-    background: #e8e8e8;
+    background: #e8e6dc;
   }
 }
 
@@ -196,26 +210,26 @@ const handleOverlayClick = () => {
   color: #fff;
 
   &.dialog-btn--primary {
-    background: #1890ff;
+    background: var(--yamato-color-accent);
 
     &:hover {
-      background: #40a9ff;
+      background: var(--yamato-color-accent-hover);
     }
   }
 
   &.dialog-btn--danger {
-    background: #ff4d4f;
+    background: var(--yamato-color-danger);
 
     &:hover {
-      background: #ff7875;
+      filter: brightness(1.04);
     }
   }
 
   &.dialog-btn--warning {
-    background: #faad14;
+    background: var(--yamato-color-warning);
 
     &:hover {
-      background: #ffc53d;
+      filter: brightness(1.04);
     }
   }
 }

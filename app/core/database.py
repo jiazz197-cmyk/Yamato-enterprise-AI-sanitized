@@ -100,6 +100,7 @@ def init_db_tables():
     try:
         from app.models.orm.closing_form import PendingForm  # noqa: F401
         from app.models.orm.file_resource import FileResource  # noqa: F401
+        from app.models.orm.quotation_task import QuotationTask  # noqa: F401
         from app.models.orm.knowledge import KnowledgeInstance  # noqa: F401
         from app.models.orm.platform import (  # noqa: F401
             User, UserLoginHistory, UserPreferences, UserSubscription,

@@ -122,35 +122,39 @@ watch(
 
 .input {
   width: 100%;
-  padding: 12px 16px;
-  border: 1px solid #dadce0;
-  border-radius: 24px;
+  padding: 10px 14px;
+  border: 1px solid var(--yamato-color-border-subtle);
+  border-radius: var(--yamato-radius-sm);
   box-sizing: border-box;
   font-size: 16px;
+  line-height: 1.6;
+  letter-spacing: normal;
+  color: var(--yamato-color-text-primary);
   outline: none;
   transition: all 0.2s ease;
-  background: transparent;
+  background: #ffffff;
 
   &:focus {
-    border-color: #4285f4;
-    box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.1);
+    border-color: var(--yamato-color-accent);
+    box-shadow: var(--yamato-focus-ring);
   }
 
   &--disabled {
-    background: #f5f5f5;
+    background: var(--yamato-color-surface-alt);
+    color: var(--yamato-color-text-muted);
     cursor: not-allowed;
-    opacity: 0.6;
+    opacity: 0.72;
   }
 
   &--multiline {
     resize: none;
     font-family: inherit;
     line-height: 1.5;
-    padding-bottom: 14px;
+    padding-bottom: 12px;
     max-height: calc(1.5em * 5 + 26px); /* 5行 + padding */
     overflow-y: hidden;
     scrollbar-width: thin;
-    scrollbar-color: #d3d7dc transparent;
+    scrollbar-color: rgba(77, 76, 72, 0.3) transparent;
 
     &::-webkit-scrollbar {
       width: 8px;
@@ -162,14 +166,14 @@ watch(
     }
 
     &::-webkit-scrollbar-thumb {
-      background: #d3d7dc;
+      background: rgba(77, 76, 72, 0.3);
       border-radius: 8px;
       border: 2px solid transparent;
       background-clip: content-box;
     }
 
     &::-webkit-scrollbar-thumb:hover {
-      background: #c2c8cf;
+      background: rgba(77, 76, 72, 0.42);
       background-clip: content-box;
     }
     
@@ -185,7 +189,7 @@ watch(
   }
 
   &::placeholder {
-    color: #9aa0a6;
+    color: var(--yamato-color-text-muted);
   }
 }
 </style>

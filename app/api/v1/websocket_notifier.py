@@ -4,9 +4,11 @@ from typing import Dict, Set
 import json
 import jwt
 import time
+import uuid
 from app.core.observer import TaskObserver, TaskEvent
 from app.core.logging import get_logger
 from app.core.config import settings
+from app.core.database import SessionLocal
 from app.core.executor import executor_manager
 from app.api.taskmanager import task_manager
 from app.core.security import require_roles
@@ -131,6 +133,18 @@ def _decode_ws_token(token: str) -> str:
     return user_id
 
 
+def _load_ws_user(user_id: str) -> User | None:
+    """Fetch user for role checks in websocket authorization."""
+    db = SessionLocal()
+    try:
+        return db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+    except Exception as exc:
+        logger.warning(f"加载 WebSocket 用户失败: {exc}")
+        return None
+    finally:
+        db.close()
+
+
 ws_manager = WebSocketConnectionManager()
 
 
@@ -191,6 +205,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str):
         return
 
     owner_id = executor_manager.get_task_owner(task_id)
+    ws_user = _load_ws_user(user_id)
 
     if not owner_id:
         task_status = await task_manager.get_task_status(task_id)
@@ -202,7 +217,9 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="任务缺少归属信息，禁止订阅")
         return
 
-    if owner_id != user_id:
+    is_admin_like = bool(ws_user and ws_user.role in (UserRole.admin, UserRole.superuser))
+
+    if owner_id != user_id and not is_admin_like:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="无权订阅该任务")
         return
 

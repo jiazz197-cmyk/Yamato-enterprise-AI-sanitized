@@ -28,15 +28,24 @@ export const createChatHeaders = (): HeadersInit => {
 
 /** 业务 API：Bearer 来自登录，不用 Chat API Key。 */
 export const createHeaders = (): HeadersInit => {
+  return createAuthHeaders({ jsonContentType: true })
+}
+
+export const createAuthHeaders = (options?: { jsonContentType?: boolean }): HeadersInit => {
   const token = getAuthToken()
   if (!token) {
     throw new Error('未登录或登录态已失效，请重新登录')
   }
 
-  return {
+  const headers: HeadersInit = {
     Authorization: `Bearer ${token}`,
-    'Content-Type': 'application/json',
   }
+
+  if (options?.jsonContentType !== false) {
+    ;(headers as Record<string, string>)['Content-Type'] = 'application/json'
+  }
+
+  return headers
 }
 
 export const handleApiError = async (response: Response): Promise<never> => {
@@ -76,15 +85,7 @@ export const apiRequest = async <T>(
   endpoint: string,
   options?: RequestInit
 ): Promise<T> => {
-  const url = `${config.apiBaseUrl}${endpoint}`
-  
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...createHeaders(),
-      ...options?.headers,
-    },
-  })
+  const response = await authorizedFetch(endpoint, options, { jsonContentType: true })
   
   if (!response.ok) {
     await handleApiError(response)
@@ -105,4 +106,20 @@ export const apiRequest = async <T>(
   }
   
   return response.json()
+}
+
+export const authorizedFetch = async (
+  endpoint: string,
+  options?: RequestInit,
+  authOptions?: { jsonContentType?: boolean }
+): Promise<Response> => {
+  const url = `${config.apiBaseUrl}${endpoint}`
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...createAuthHeaders(authOptions),
+      ...options?.headers,
+    },
+  })
+  return response
 }

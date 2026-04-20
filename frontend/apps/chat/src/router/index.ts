@@ -32,7 +32,7 @@ const routes: RouteRecordRaw[] = [
     path: '/files',
     name: 'files',
     component: () => import('@/pages/FileManagerPage.vue'),
-    meta: { title: '文件管理' },
+    meta: { title: '报价生成' },
   },
   {
     path: '/closing-form',

@@ -101,17 +101,18 @@ const toggle = () => {
   z-index: 10;
   background: #ffffff;
   border-radius: 16px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  border: 1px solid var(--yamato-color-border-subtle);
+  box-shadow: 0 10px 28px rgba(20, 20, 19, 0.08);
   transition: width 0.3s ease;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 
   &__header {
-    padding: 16px;
+    padding: 14px 14px 10px;
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
   }
 
   &__toggle {
@@ -119,23 +120,30 @@ const toggle = () => {
     height: 40px;
     border: none;
     background: transparent;
-    border-radius: 50%;
+    border-radius: var(--yamato-radius-pill);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #5f6368;
+    color: #6d6b65;
     transition: all 0.2s ease;
 
     &:hover {
-      background: #e8eaed;
+      background: var(--yamato-color-surface-alt);
+      color: var(--yamato-color-text-primary);
+    }
+
+    &:focus-visible {
+      outline: none;
+      box-shadow: var(--yamato-focus-ring);
     }
   }
 
   &__title {
-    font-size: 16px;
-    font-weight: 500;
-    color: #202124;
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--yamato-color-text-primary);
+    letter-spacing: 0;
     margin: 0;
     max-width: 160px;
     overflow: hidden;
@@ -144,12 +152,13 @@ const toggle = () => {
   }
 
   &__logo {
-    height: 32px;
+    height: 28px;
     width: auto;
-    max-width: 120px;
+    max-width: 100px;
     object-fit: contain;
     display: block;
     transition: opacity 0.2s ease;
+    filter: none;
   }
 
   &__content {
@@ -157,13 +166,15 @@ const toggle = () => {
     overflow-y: auto;
     padding: 8px;
     transition: opacity 0.2s ease;
+    background: #ffffff;
   }
 
   &__footer {
-    padding: 12px 16px;
+    padding: 10px 14px 14px;
     height: 64px;
     box-sizing: border-box;
     margin-top: auto;
+    border-top: 1px solid var(--yamato-color-border-subtle);
   }
 }
 
@@ -191,14 +202,14 @@ const toggle = () => {
 .sidebar-user {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   height: 40px;
 
   &__avatar {
     width: 28px;
     height: 28px;
     border-radius: 50%;
-    background: #4285f4;
+    background: #30302e;
     color: #ffffff;
     display: flex;
     align-items: center;
@@ -232,8 +243,8 @@ const toggle = () => {
 
   &__name {
     font-size: 14px;
-    font-weight: 500;
-    color: #202124;
+    font-weight: 600;
+    color: var(--yamato-color-text-primary);
     line-height: 1.2;
     min-width: 0;
     overflow: hidden;
@@ -252,7 +263,7 @@ const toggle = () => {
 
   &__desc {
     font-size: 12px;
-    color: #9aa0a6;
+    color: #8a8881;
     line-height: 1.2;
     margin-top: 2px;
   }

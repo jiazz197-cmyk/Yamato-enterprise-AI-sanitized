@@ -1,230 +1,979 @@
 <template>
-  <div class="file-manager-page">
-    <div class="file-manager-header">
-      <div class="file-manager-header__left">
-        <h1 class="file-manager-header__title">文件管理</h1>
-        <span class="file-manager-header__count">共 {{ tasks.length }} 个任务</span>
+  <div class="quotation-page">
+    <input
+      ref="fileInputRef"
+      class="hidden-input"
+      type="file"
+      accept="application/pdf,.pdf"
+      @change="handleFileSelected"
+    />
+
+    <header class="quotation-header">
+      <div>
+        <h1 class="quotation-title">报价生成</h1>
+        <p class="quotation-subtitle">
+          共 {{ tasks.length }} 个任务 · WebSocket 连接 {{ wsConnections }} 个
+        </p>
       </div>
       <div class="header-actions">
-        <div class="ws-metric">
-          <span class="ws-metric__label">WebSocket 连接数:</span>
-          <span class="ws-metric__value">{{ wsConnections }}</span>
-        </div>
-        <button class="upload-btn" @click="handleUpload">
-          上传文件
+        <button class="secondary-btn" :disabled="loading" @click="loadTasks">
+          刷新
+        </button>
+        <button class="primary-btn" :disabled="uploading" @click="openFilePicker">
+          {{ uploading ? '上传中...' : '上传PDF' }}
         </button>
       </div>
-    </div>
+    </header>
 
-    <div class="file-manager-content">
-      <div class="task-list">
-        <TaskCard
-          v-for="task in sortedTasks"
-          :key="task.id"
-          :title="task.name"
-          :status="task.status"
-          :progress="task.progress"
-          @refresh="handleRefresh(task.id)"
-          @cancel="handleCancel(task.id)"
-          @delete="handleDelete(task.id)"
+    <p v-if="errorMessage" class="error-tip">{{ errorMessage }}</p>
+
+    <section class="columns">
+      <article class="column">
+        <header class="column-header">
+          <h2>排队任务</h2>
+          <span>{{ queuedTasks.length }}</span>
+        </header>
+        <div v-if="queuedTasks.length === 0" class="empty">暂无排队任务</div>
+        <TaskItemCard
+          v-for="task in queuedTasks"
+          :key="task.task_id"
+          :task="task"
+          :show-owner="isAdminLike"
+          :can-cancel="canCancel(task)"
+          @cancel="handleCancel(task.task_id)"
+          @view-result="openResultModal(task)"
+          @view-file="handleViewFile(task.task_id)"
         />
+      </article>
+
+      <article class="column">
+        <header class="column-header">
+          <h2>处理中任务</h2>
+          <span>{{ runningTasks.length }}</span>
+        </header>
+        <div v-if="runningTasks.length === 0" class="empty">暂无处理中任务</div>
+        <TaskItemCard
+          v-for="task in runningTasks"
+          :key="task.task_id"
+          :task="task"
+          :show-owner="isAdminLike"
+          :can-cancel="canCancel(task)"
+          @cancel="handleCancel(task.task_id)"
+          @view-result="openResultModal(task)"
+          @view-file="handleViewFile(task.task_id)"
+        />
+      </article>
+
+      <article class="column column--done">
+        <header class="column-header">
+          <h2>完成任务</h2>
+          <span>{{ doneTasks.length }}</span>
+        </header>
+        <p class="dev-tip">该功能仍在开发中，非最终版</p>
+        <div class="task-list task-list--scroll">
+          <div v-if="doneTasks.length === 0" class="empty">暂无完成任务</div>
+          <TaskItemCard
+            v-for="task in doneTasks"
+            :key="task.task_id"
+            :task="task"
+            :show-owner="isAdminLike"
+            :can-cancel="false"
+            @cancel="handleCancel(task.task_id)"
+            @view-result="openResultModal(task)"
+            @view-file="handleViewFile(task.task_id)"
+          />
+        </div>
+      </article>
+    </section>
+
+    <div v-if="resultModalVisible" class="result-modal-mask" @click.self="closeResultModal">
+      <div class="result-modal">
+        <div class="result-modal__header">
+          <h3>任务结果：{{ selectedTask?.uploaded_file_name }}</h3>
+          <button class="icon-btn" @click="closeResultModal">关闭</button>
+        </div>
+        <div class="result-modal__content">
+          <p><strong>任务ID：</strong>{{ selectedTask?.task_id }}</p>
+          <p><strong>状态：</strong>{{ selectedTask?.status }}</p>
+          <p><strong>消息：</strong>{{ selectedTask?.message }}</p>
+          <pre class="result-json">{{ formattedResult }}</pre>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { TaskCard } from '@yamato/components'
+import { computed, defineComponent, h, onMounted, onUnmounted, ref } from 'vue'
+import { config } from '../config'
+import type { QuotationTaskItem } from '../types/quotation'
+import {
+  cancelQuotationTask,
+  createQuotationTask,
+  downloadQuotationTaskFile,
+  getQuotationTask,
+  listQuotationTasks,
+} from '../services/quotation'
+import { createTaskWebSocket } from '../services/ws'
 
-type TaskStatus = 'in_progress' | 'cancelled' | 'completed'
-
-interface TaskItem {
-  id: string
-  name: string
-  status: TaskStatus
-  progress: number
-}
-
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const tasks = ref<QuotationTaskItem[]>([])
+const loading = ref(false)
+const uploading = ref(false)
+const errorMessage = ref('')
 const wsConnections = ref(0)
-let wsTimer: number | null = null
+const selectedTask = ref<QuotationTaskItem | null>(null)
+const resultModalVisible = ref(false)
+const pollingTimer = ref<number | null>(null)
 
-const randInt = (min: number, max: number) => {
-  const low = Math.min(min, max)
-  const high = Math.max(min, max)
-  return Math.floor(low + Math.random() * (high - low + 1))
-}
+const wsMap = new Map<string, WebSocket>()
 
-const createId = () => `task_${Date.now()}_${Math.random().toString(16).slice(2)}`
-
-const createRandomTask = (): TaskItem => {
-  const pool: TaskStatus[] = ['in_progress', 'cancelled', 'completed']
-  const status = pool[randInt(0, pool.length - 1)]
-  const progressBase = randInt(0, 95)
-
-  return {
-    id: createId(),
-    name: `文档处理任务 #${randInt(1000, 9999)}`,
-    status,
-    progress: status === 'completed' ? 100 : progressBase,
+const readUserRole = (): string => {
+  try {
+    const raw = localStorage.getItem(config.settingsStorageKey)
+    if (!raw) return ''
+    const parsed = JSON.parse(raw) as { role?: unknown }
+    return String(parsed.role ?? '').trim()
+  } catch {
+    return ''
   }
 }
 
-const tasks = ref<TaskItem[]>(Array.from({ length: 8 }).map(() => createRandomTask()))
+const currentRole = ref(readUserRole())
+const isAdminLike = computed(() => currentRole.value === 'admin' || currentRole.value === 'superuser')
 
-const statusRank = (s: TaskStatus) => {
-  if (s === 'in_progress') return 0
-  if (s === 'cancelled') return 1
-  return 2
+const statusOrder = (status: string): number => {
+  if (status === 'running') return 0
+  if (status === 'queued') return 1
+  if (status === 'completed') return 2
+  if (status === 'failed') return 3
+  return 4
 }
 
-const sortedTasks = computed(() => {
-  return [...tasks.value].sort((a, b) => {
-    const diff = statusRank(a.status) - statusRank(b.status)
-    if (diff !== 0) return diff
-    return a.name.localeCompare(b.name)
-  })
+const byDateAsc = (a: QuotationTaskItem, b: QuotationTaskItem) => {
+  return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+}
+
+const byDateDesc = (a: QuotationTaskItem, b: QuotationTaskItem) => {
+  return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+}
+
+const queuedTasks = computed(() => {
+  return tasks.value
+    .filter((task) => task.status === 'queued')
+    .sort(byDateAsc)
 })
 
-const handleUpload = () => {
-  tasks.value.unshift({
-    id: createId(),
-    name: `上传处理任务 #${randInt(1000, 9999)}`,
-    status: 'in_progress',
-    progress: randInt(0, 15),
-  })
+const runningTasks = computed(() => {
+  return tasks.value
+    .filter((task) => task.status === 'running')
+    .sort(byDateAsc)
+})
+
+const doneTasks = computed(() => {
+  return tasks.value
+    .filter((task) => ['completed', 'failed', 'cancelled'].includes(task.status))
+    .sort(byDateDesc)
+})
+
+const formattedResult = computed(() => {
+  if (!selectedTask.value?.result) {
+    return '暂无结果数据'
+  }
+  return JSON.stringify(selectedTask.value.result, null, 2)
+})
+
+const syncWsConnections = (): void => {
+  wsConnections.value = wsMap.size
 }
 
-const handleRefresh = (id: string) => {
-  const task = tasks.value.find((t) => t.id === id)
-  if (!task) return
+const upsertTask = (incoming: QuotationTaskItem): void => {
+  const index = tasks.value.findIndex((task) => task.task_id === incoming.task_id)
+  if (index < 0) {
+    tasks.value.unshift(incoming)
+  } else {
+    tasks.value[index] = incoming
+  }
+  tasks.value = [...tasks.value].sort((a, b) => statusOrder(a.status) - statusOrder(b.status))
+}
 
-  if (task.status === 'cancelled') return
-  if (task.status === 'completed') return
+const closeSocket = (taskId: string): void => {
+  const socket = wsMap.get(taskId)
+  if (!socket) return
+  socket.close()
+  wsMap.delete(taskId)
+  syncWsConnections()
+}
 
-  task.progress = Math.min(99, Math.max(task.progress, randInt(task.progress, task.progress + randInt(3, 18))))
-  if (task.progress >= 95 && Math.random() > 0.6) {
-    task.status = 'completed'
-    task.progress = 100
+const refreshSingleTask = async (taskId: string): Promise<void> => {
+  try {
+    const task = await getQuotationTask(taskId)
+    upsertTask(task)
+    if (['completed', 'failed', 'cancelled'].includes(task.status)) {
+      closeSocket(taskId)
+    }
+  } catch (error) {
+    await loadTasks()
   }
 }
 
-const handleCancel = (id: string) => {
-  const task = tasks.value.find((t) => t.id === id)
-  if (!task) return
-  if (task.status !== 'in_progress') return
-  task.status = 'cancelled'
+const ensureTaskSockets = (): void => {
+  const activeTaskIds = new Set(
+    tasks.value
+      .filter((task) => ['queued', 'running'].includes(task.status))
+      .map((task) => task.task_id)
+  )
+
+  for (const existingTaskId of wsMap.keys()) {
+    if (!activeTaskIds.has(existingTaskId)) {
+      closeSocket(existingTaskId)
+    }
+  }
+
+  activeTaskIds.forEach((taskId) => {
+    if (wsMap.has(taskId)) return
+    try {
+      const socket = createTaskWebSocket(taskId, {
+        onMessage: (payload) => {
+          if (!payload || typeof payload !== 'object') return
+          const eventPayload = payload as { type?: string; task_id?: string; event_type?: string; status?: string; progress?: number }
+          if (eventPayload.type === 'task_event' && eventPayload.task_id) {
+            void refreshSingleTask(eventPayload.task_id)
+          }
+        },
+        onError: () => {
+          void refreshSingleTask(taskId)
+        },
+        onClose: () => {
+          wsMap.delete(taskId)
+          syncWsConnections()
+          void refreshSingleTask(taskId)
+        },
+      })
+      wsMap.set(taskId, socket)
+      syncWsConnections()
+    } catch {
+      // Ignore websocket startup failures and keep polling fallback.
+    }
+  })
 }
 
-const handleDelete = (id: string) => {
-  tasks.value = tasks.value.filter((t) => t.id !== id)
+const loadTasks = async (): Promise<void> => {
+  if (loading.value) return
+  loading.value = true
+  errorMessage.value = ''
+  currentRole.value = readUserRole()
+  try {
+    const response = await listQuotationTasks({ limit: 300 })
+    tasks.value = response.items
+    ensureTaskSockets()
+  } catch (error) {
+    errorMessage.value = (error as { message?: string })?.message ?? '加载任务失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+const openFilePicker = (): void => {
+  fileInputRef.value?.click()
+}
+
+const handleFileSelected = async (event: Event): Promise<void> => {
+  const target = event.target as HTMLInputElement
+  const selectedFile = target.files?.[0]
+  target.value = ''
+  if (!selectedFile) return
+
+  if (selectedFile.type !== 'application/pdf' && !selectedFile.name.toLowerCase().endsWith('.pdf')) {
+    errorMessage.value = '仅支持上传 PDF 文件'
+    return
+  }
+
+  uploading.value = true
+  errorMessage.value = ''
+  try {
+    await createQuotationTask(selectedFile)
+    await loadTasks()
+  } catch (error) {
+    errorMessage.value = (error as { message?: string })?.message ?? '创建任务失败'
+  } finally {
+    uploading.value = false
+  }
+}
+
+const canCancel = (task: QuotationTaskItem): boolean => {
+  return ['queued', 'running'].includes(task.status)
+}
+
+const handleCancel = async (taskId: string): Promise<void> => {
+  try {
+    await cancelQuotationTask(taskId)
+    await refreshSingleTask(taskId)
+  } catch (error) {
+    errorMessage.value = (error as { message?: string })?.message ?? '取消任务失败'
+  }
+}
+
+const openResultModal = (task: QuotationTaskItem): void => {
+  selectedTask.value = task
+  resultModalVisible.value = true
+}
+
+const closeResultModal = (): void => {
+  resultModalVisible.value = false
+}
+
+const handleViewFile = async (taskId: string): Promise<void> => {
+  try {
+    const { blob, filename } = await downloadQuotationTaskFile(taskId)
+    const url = URL.createObjectURL(blob)
+    const openWindow = window.open(url, '_blank')
+    if (!openWindow) {
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    }
+    window.setTimeout(() => URL.revokeObjectURL(url), 2000)
+  } catch (error) {
+    errorMessage.value = (error as { message?: string })?.message ?? '查看文件失败'
+  }
 }
 
 onMounted(() => {
-  wsConnections.value = randInt(1, 20)
-  wsTimer = window.setInterval(() => {
-    wsConnections.value = randInt(0, 40)
-  }, 1200)
+  void loadTasks()
+  pollingTimer.value = window.setInterval(() => {
+    void loadTasks()
+  }, 4000)
 })
 
 onUnmounted(() => {
-  if (wsTimer !== null) {
-    window.clearInterval(wsTimer)
-    wsTimer = null
+  if (pollingTimer.value !== null) {
+    window.clearInterval(pollingTimer.value)
+    pollingTimer.value = null
   }
+  for (const [taskId] of wsMap) {
+    closeSocket(taskId)
+  }
+})
+
+const TaskItemCard = defineComponent({
+  name: 'TaskItemCard',
+  props: {
+    task: {
+      type: Object as () => QuotationTaskItem,
+      required: true,
+    },
+    showOwner: {
+      type: Boolean,
+      required: true,
+    },
+    canCancel: {
+      type: Boolean,
+      required: true,
+    },
+  },
+  emits: ['cancel', 'view-result', 'view-file'],
+  setup(props, { emit }) {
+    const RING_RADIUS = 20
+    const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
+    const progress = computed(() => Math.max(0, Math.min(100, props.task.progress ?? 0)))
+    const ringDashOffset = computed(() => RING_CIRCUMFERENCE * (1 - progress.value / 100))
+    const statusText = computed(() => {
+      if (props.task.status === 'queued') return '排队中'
+      if (props.task.status === 'running') return '处理中'
+      if (props.task.status === 'completed') return '已完成'
+      if (props.task.status === 'failed') return '失败'
+      return '已取消'
+    })
+    const progressStrokeClass = computed(() => {
+      if (props.task.status === 'queued') return 'task-progress-ring__value--queued'
+      if (props.task.status === 'running') return 'task-progress-ring__value--running'
+      if (props.task.status === 'completed') return 'task-progress-ring__value--completed'
+      if (props.task.status === 'failed') return 'task-progress-ring__value--failed'
+      return 'task-progress-ring__value--cancelled'
+    })
+    const progressMessage = computed(() => {
+      const raw = String(props.task.message ?? '').trim()
+      if (!raw || raw === statusText.value) {
+        return ''
+      }
+      return raw
+    })
+    const shortTaskId = computed(() => {
+      const raw = String(props.task.task_id ?? '').trim()
+      if (!raw) return '--'
+      return `#${raw.slice(-8)}`
+    })
+
+    const formatTime = (value: string): string => {
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) {
+        return value
+      }
+      return date.toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    }
+
+    return () =>
+      h('article', { class: 'task-card' }, [
+        h('div', { class: 'task-card__title' }, props.task.uploaded_file_name),
+        h('div', { class: 'task-card__meta' }, [h('span', { class: ['status', `status--${props.task.status}`] }, statusText.value)]),
+        h('div', { class: 'task-card__progress' }, [
+          h(
+            'div',
+            {
+              class: 'task-progress-ring',
+              role: 'progressbar',
+              'aria-label': `任务进度 ${progress.value}%`,
+              'aria-valuemin': 0,
+              'aria-valuemax': 100,
+              'aria-valuenow': progress.value,
+            },
+            [
+              h('svg', { class: 'task-progress-ring__svg', viewBox: '0 0 48 48', 'aria-hidden': 'true' }, [
+                h('circle', { class: 'task-progress-ring__track', cx: 24, cy: 24, r: RING_RADIUS }),
+                h('circle', {
+                  class: ['task-progress-ring__value', progressStrokeClass.value],
+                  cx: 24,
+                  cy: 24,
+                  r: RING_RADIUS,
+                  'stroke-dasharray': RING_CIRCUMFERENCE.toFixed(2),
+                  'stroke-dashoffset': ringDashOffset.value.toFixed(2),
+                }),
+              ]),
+              h('span', { class: 'task-progress-ring__label' }, `${progress.value}%`),
+            ]
+          ),
+          h('div', { class: 'task-card__progress-copy' }, [
+            h('p', { class: 'task-card__progress-percent' }, `${progress.value}%`),
+            h('p', { class: 'task-card__progress-caption' }, `当前状态：${statusText.value}`),
+          ]),
+        ]),
+        progressMessage.value ? h('p', { class: 'task-card__progress-text' }, progressMessage.value) : null,
+        h('div', { class: 'task-card__footnote' }, [
+          props.showOwner ? h('span', { class: 'task-card__owner', title: props.task.owner_username }, props.task.owner_username) : null,
+          h('span', { class: 'task-card__id', title: props.task.task_id }, shortTaskId.value),
+          h('span', { class: 'task-card__time' }, formatTime(props.task.created_at)),
+        ]),
+        props.task.error ? h('p', { class: 'task-card__error' }, props.task.error) : null,
+        h('div', { class: 'task-card__actions' }, [
+          h(
+            'button',
+            { class: 'task-action-btn task-action-btn--danger', disabled: !props.canCancel, onClick: () => emit('cancel') },
+            '中断'
+          ),
+          h('button', { class: 'task-action-btn task-action-btn--neutral', onClick: () => emit('view-result') }, '结果'),
+          h('button', { class: 'task-action-btn task-action-btn--accent', onClick: () => emit('view-file') }, '文件'),
+        ]),
+      ])
+  },
 })
 </script>
 
 <style scoped lang="scss">
-.file-manager-page {
-  display: flex;
-  flex-direction: column;
+.quotation-page {
   height: 100%;
-  padding: 32px 32px 24px;
-  box-sizing: border-box;
+  padding: 24px 24px 16px;
   overflow: auto;
+  box-sizing: border-box;
+  background: var(--yamato-color-bg-light);
 }
 
-.file-manager-header {
+.hidden-input {
+  display: none;
+}
+
+.quotation-header {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  margin-bottom: 24px;
-  flex-shrink: 0;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
 }
 
-.file-manager-header__left {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-
-.file-manager-header__title {
+.quotation-title {
   margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  color: #202124;
+  color: var(--yamato-color-text-primary);
+  font-family: var(--yamato-font-display);
+  font-size: 34px;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0;
 }
 
-.file-manager-header__count {
-  font-size: 13px;
-  color: #9aa0a6;
+.quotation-subtitle {
+  margin: 6px 0 0;
+  color: var(--yamato-color-text-secondary);
+  font-size: 14px;
 }
 
 .header-actions {
   display: flex;
-  align-items: center;
-  gap: 20px;
+  gap: 8px;
 }
 
-.ws-metric {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  user-select: none;
-}
-
-.ws-metric__label {
-  font-size: 12px;
-  color: #5f6368;
-}
-
-.ws-metric__value {
-  font-size: 14px;
-  font-weight: 600;
-  color: #202124;
-}
-
-.upload-btn {
-  height: 36px;
-  padding: 0 16px;
-  background: #1a73e8;
-  color: #ffffff;
-  border: none;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 500;
+.primary-btn,
+.secondary-btn {
+  min-height: 36px;
+  padding: 0 14px;
   cursor: pointer;
-  transition: background 0.2s ease;
+  font-size: 14px;
+  border-radius: var(--yamato-radius-md);
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 
-  &:hover {
-    background: #1765cf;
+  &:focus-visible {
+    outline: none;
+    box-shadow: var(--yamato-focus-ring);
   }
 }
 
-.file-manager-content {
+.primary-btn {
+  border: none;
+  background: var(--yamato-color-accent);
+  color: #fff;
+
+  &:hover:not(:disabled) {
+    background: var(--yamato-color-accent-hover);
+  }
+}
+
+.secondary-btn {
+  border: 1px solid var(--yamato-color-border-subtle);
+  background: var(--yamato-color-surface);
+  color: var(--yamato-color-text-primary);
+
+  &:hover:not(:disabled) {
+    background: var(--yamato-color-surface-alt);
+  }
+}
+
+.primary-btn:disabled,
+.secondary-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.error-tip {
+  margin: 0 0 12px;
+  color: var(--yamato-color-danger);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(260px, 1fr));
+  gap: 14px;
+  min-height: 0;
+}
+
+.column {
   background: #ffffff;
-  border-radius: 12px;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
-  padding: 24px;
-  flex: 1;
+  border-radius: var(--yamato-radius-lg);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 420px;
+  box-shadow: var(--yamato-shadow-card);
 }
 
 .task-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 14px;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.column--done .task-list--scroll {
+  max-height: clamp(260px, calc(100vh - 320px), 640px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.column-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.column-header h2 {
+  margin: 0;
+  font-size: 21px;
+  line-height: 1.19;
+  letter-spacing: -0.22px;
+  color: var(--yamato-color-text-primary);
+}
+
+.column-header span {
+  color: var(--yamato-color-text-muted);
+  font-size: 13px;
+}
+
+.dev-tip {
+  margin: 0;
+  color: var(--yamato-color-warning);
+  background: var(--yamato-color-warning-soft);
+  padding: 8px;
+  border-radius: var(--yamato-radius-sm);
+  font-size: 12px;
+}
+
+.empty {
+  color: var(--yamato-color-text-muted);
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+:deep(.task-card) {
+  border-radius: var(--yamato-radius-sm);
+  padding: 10px 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  background: var(--yamato-color-surface-alt);
+}
+
+:deep(.task-card__title) {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--yamato-color-text-primary);
+  word-break: break-all;
+}
+
+:deep(.task-card__owner),
+:deep(.task-card__time),
+:deep(.task-card__progress-text),
+:deep(.task-card__id) {
+  margin: 0;
+  color: var(--yamato-color-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+:deep(.task-card__meta) {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+:deep(.task-card__progress) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: var(--yamato-radius-sm);
+  border: 1px solid var(--yamato-color-border-subtle);
+  background: #ffffff;
+}
+
+:deep(.task-progress-ring) {
+  position: relative;
+  width: 58px;
+  height: 58px;
+  flex: 0 0 58px;
+}
+
+:deep(.task-progress-ring__svg) {
+  width: 58px;
+  height: 58px;
+}
+
+:deep(.task-progress-ring__track),
+:deep(.task-progress-ring__value) {
+  fill: none;
+  stroke-width: 5;
+}
+
+:deep(.task-progress-ring__track) {
+  stroke: #e8e6dc;
+}
+
+:deep(.task-progress-ring__value) {
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
+  transition: stroke-dashoffset 0.28s ease, stroke 0.28s ease;
+}
+
+:deep(.task-progress-ring__value--queued) {
+  stroke: var(--yamato-color-warning);
+}
+
+:deep(.task-progress-ring__value--running) {
+  stroke: var(--yamato-color-accent);
+}
+
+:deep(.task-progress-ring__value--completed) {
+  stroke: var(--yamato-color-success);
+}
+
+:deep(.task-progress-ring__value--failed),
+:deep(.task-progress-ring__value--cancelled) {
+  stroke: var(--yamato-color-danger);
+}
+
+:deep(.task-progress-ring__label) {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--yamato-color-text-primary);
+}
+
+:deep(.task-card__progress-copy) {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+:deep(.task-card__progress-percent) {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--yamato-color-text-primary);
+}
+
+:deep(.task-card__progress-caption) {
+  margin: 0;
+  font-size: 12px;
+  color: var(--yamato-color-text-secondary);
+  line-height: 1.4;
+}
+
+:deep(.status) {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+:deep(.status--queued) {
+  color: var(--yamato-color-warning);
+}
+
+:deep(.status--running) {
+  color: var(--yamato-color-accent);
+}
+
+:deep(.status--completed) {
+  color: var(--yamato-color-success);
+}
+
+:deep(.status--failed),
+:deep(.status--cancelled) {
+  color: var(--yamato-color-danger);
+}
+
+:deep(.task-card__error) {
+  margin: 0;
+  color: var(--yamato-color-danger);
+  font-size: 12px;
+}
+
+:deep(.task-card__footnote) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--yamato-color-text-muted);
+  min-width: 0;
+}
+
+:deep(.task-card__footnote .task-card__owner),
+:deep(.task-card__footnote .task-card__id),
+:deep(.task-card__footnote .task-card__time) {
+  white-space: nowrap;
+}
+
+:deep(.task-card__footnote .task-card__owner) {
+  max-width: 86px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:deep(.task-card__footnote .task-card__id) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+:deep(.task-card__actions) {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+:deep(.task-action-btn) {
+  height: 30px;
+  min-width: 58px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: var(--yamato-radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, opacity 0.18s ease, transform 0.18s ease,
+    box-shadow 0.18s ease;
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: var(--yamato-focus-ring);
+  }
+
+  &:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+:deep(.task-action-btn--danger) {
+  background: var(--yamato-color-danger-soft);
+  color: var(--yamato-color-danger);
+  border-color: rgba(181, 51, 51, 0.24);
+  box-shadow: 0 0 0 1px rgba(181, 51, 51, 0.11);
+
+  &:hover:not(:disabled) {
+    background: rgba(181, 51, 51, 0.14);
+    border-color: rgba(181, 51, 51, 0.32);
+  }
+}
+
+:deep(.task-action-btn--neutral) {
+  background: #ffffff;
+  color: var(--yamato-color-text-primary);
+  border-color: var(--yamato-color-border-subtle);
+  box-shadow: 0 0 0 1px #f0eee6;
+
+  &:hover:not(:disabled) {
+    background: #f4f2ea;
+    border-color: #d1cfc5;
+  }
+}
+
+:deep(.task-action-btn--accent) {
+  background: var(--yamato-color-accent);
+  color: var(--yamato-color-text-on-dark);
+  border-color: rgba(201, 100, 66, 0.88);
+  box-shadow: 0 0 0 1px rgba(201, 100, 66, 0.38);
+
+  &:hover:not(:disabled) {
+    background: var(--yamato-color-accent-hover);
+    border-color: rgba(217, 119, 87, 0.92);
+  }
+}
+
+.result-modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.result-modal {
+  width: min(860px, 92vw);
+  max-height: 85vh;
+  background: var(--yamato-color-surface);
+  border-radius: var(--yamato-radius-lg);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--yamato-shadow-overlay);
+}
+
+.result-modal__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.result-modal__header h3 {
+  margin: 0;
+  font-size: 21px;
+  line-height: 1.19;
+  color: var(--yamato-color-text-primary);
+}
+
+.icon-btn {
+  border: 1px solid var(--yamato-color-border-subtle);
+  background: var(--yamato-color-surface);
+  color: var(--yamato-color-text-primary);
+  border-radius: var(--yamato-radius-sm);
+  padding: 6px 10px;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: var(--yamato-focus-ring);
+  }
+}
+
+.result-modal__content {
+  overflow: auto;
+}
+
+.result-json {
+  background: var(--yamato-color-surface-alt);
+  border-radius: var(--yamato-radius-sm);
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow: auto;
+}
+
+@media (max-width: 1200px) {
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 860px) {
+  .quotation-page {
+    padding: 20px 16px 12px;
+  }
+
+  .quotation-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .quotation-title {
+    font-size: 28px;
+  }
+
+  :deep(.task-card__progress) {
+    gap: 8px;
+    padding: 7px;
+  }
+
+  :deep(.task-progress-ring),
+  :deep(.task-progress-ring__svg) {
+    width: 52px;
+    height: 52px;
+    flex-basis: 52px;
+  }
+
+  :deep(.task-card__actions) {
+    gap: 6px;
+  }
+
+  :deep(.task-action-btn) {
+    flex: 1 1 calc(50% - 6px);
+    min-width: 0;
+  }
 }
 </style>
 

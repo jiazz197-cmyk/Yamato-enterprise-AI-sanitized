@@ -50,13 +50,14 @@ def extract_layout_info(image_url: str, api_url: str = "http://localhost:80/ocr/
     }
     
     response = requests.post(api_url, headers=headers, json=payload)
-    response.raise_for_status()
-    
+    if not response.ok:
+        detail = (response.text or "").strip()
+        if len(detail) > 600:
+            detail = detail[:600] + "..."
+        raise RuntimeError(f"OCR API {response.status_code} error: {detail}")
     result = response.json()
     content_str = result["choices"][0]["message"]["content"]
-    
     content = json.loads(content_str)
-    
     return content
 
 def extract_info(content: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -276,7 +277,7 @@ def extract_info_with_retry(image_url: str, api_url: str = "http://localhost:80/
                 if attempt >= max_retries:
                     break
         
-        except Exception as e:
+        except Exception:
             if attempt >= max_retries:
                 raise
     

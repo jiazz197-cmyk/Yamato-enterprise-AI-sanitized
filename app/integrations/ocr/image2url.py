@@ -6,6 +6,7 @@ from app.core.storage import get_minio_client
 from app.core.config import settings
 
 MINIO_ENDPOINT = settings.MINIO_ENDPOINT
+MINIO_PUBLIC_ENDPOINT = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
 MINIO_ACCESS_KEY = settings.MINIO_ACCESS_KEY
 MINIO_SECRET_KEY = settings.MINIO_SECRET_KEY
 MINIO_BUCKET_NAME = settings.MINIO_BUCKET_NAME
@@ -42,7 +43,7 @@ def upload_file_to_minio(file_data, file_name):
         )
         
         protocol = "https" if MINIO_SECURE else "http"
-        return f"{protocol}://{MINIO_ENDPOINT}/{MINIO_BUCKET_NAME}/{file_name}"
+        return f"{protocol}://{MINIO_PUBLIC_ENDPOINT}/{MINIO_BUCKET_NAME}/{file_name}"
     
     except S3Error as e:
         raise Exception(f"MinIO 上传失败: {e}")
