@@ -44,6 +44,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy import or_
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.api.v1 import api_router
 from app.core.cache import redis_manager
@@ -68,6 +69,87 @@ def require_metrics_access(x_api_key: str | None = Header(default=None, alias="X
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API Key",
         )
+
+
+def _startup_check_sqlserver_connectivity(app: FastAPI) -> None:
+    """Check U8/PDM connectivity at startup without blocking service startup."""
+    try:
+        from app.api.v1.sqlserver_queries import test_sqlserver_connectivity
+
+        sqlserver_checks = test_sqlserver_connectivity()
+        app.state.sqlserver_connectivity = sqlserver_checks
+        for db_name in ("u8", "pdm"):
+            result = sqlserver_checks.get(db_name, {})
+            if result.get("ok"):
+                print(
+                    f"[success] {db_name.upper()} SQLServer 连接成功 "
+                    f"({result.get('latency_ms')}ms)"
+                )
+            else:
+                print(
+                    f"[warning] {db_name.upper()} SQLServer 连接失败: "
+                    f"{result.get('error')}"
+                )
+    except Exception as e:
+        app.state.sqlserver_connectivity = {}
+        print(f"[warning] SQLServer 连通性检查失败: {e}")
+
+
+def _startup_resume_quotation_services() -> None:
+    """
+    Recover quotation task queue after process restart.
+
+    - reset stale running tasks to queued
+    - dispatch queued tasks for each owner
+    """
+    try:
+        from app.api.v1.quotation_generation import _dispatch_for_owner
+        from app.core.database import SessionLocal
+        from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
+
+        db = SessionLocal()
+        try:
+            stale_running_tasks = (
+                db.query(QuotationTask)
+                .filter(QuotationTask.status == QuotationTaskStatus.running.value)
+                .all()
+            )
+            for task in stale_running_tasks:
+                task.status = QuotationTaskStatus.queued.value
+                task.message = "服务重启后重新排队"
+                task.started_at = None
+                task.completed_at = None
+                task.error = None
+                task.progress = 0
+
+            if stale_running_tasks:
+                db.commit()
+                print(f"[info] 已重置 {len(stale_running_tasks)} 个中断中的报价任务为排队状态")
+
+            owner_rows = (
+                db.query(QuotationTask.owner_id)
+                .filter(
+                    or_(
+                        QuotationTask.status == QuotationTaskStatus.queued.value,
+                        QuotationTask.status == QuotationTaskStatus.running.value,
+                    )
+                )
+                .distinct()
+                .all()
+            )
+            owner_ids = [str(row[0]).strip() for row in owner_rows if str(row[0]).strip()]
+        finally:
+            db.close()
+
+        for owner_id in owner_ids:
+            _dispatch_for_owner(owner_id)
+
+        if owner_ids:
+            print(f"[success] 报价任务服务已恢复并调度，影响用户数: {len(owner_ids)}")
+        else:
+            print("[info] 报价任务服务启动完成，无待调度任务")
+    except Exception as e:
+        print(f"[warning] 报价任务服务启动失败: {e}")
 
 
 @asynccontextmanager
@@ -118,6 +200,9 @@ async def lifespan(app: FastAPI):
         
     except Exception as e:
         print(f"[warning] 注册任务观察者失败: {e}")
+
+    _startup_check_sqlserver_connectivity(app)
+    _startup_resume_quotation_services()
     
     try:
         await redis_manager.test_connection()
