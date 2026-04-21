@@ -1,4 +1,33 @@
-export type QuotationTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type QuotationTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'awaiting_approval'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export interface QuotationPdmItem {
+  CHINANAME?: string
+  PARTID?: string
+  QUERY_INDEX?: number
+  QUERY_KEYWORDS?: string[]
+  QUERY_EXPANDED_KEYWORDS?: string[]
+  [key: string]: unknown
+}
+
+export interface QuotationPdmResult {
+  total?: number
+  items?: QuotationPdmItem[]
+  [key: string]: unknown
+}
+
+export interface ApproveQuotationTaskResponse {
+  success: boolean
+  message: string
+  task_id: string
+  status: QuotationTaskStatus
+  approved_count: number
+}
 
 export interface QuotationTaskItem {
   task_id: string

@@ -58,7 +58,9 @@
           :task="task"
           :show-owner="isAdminLike"
           :can-cancel="canCancel(task)"
+          :is-approving="approvingTasks.has(task.task_id)"
           @cancel="handleCancel(task.task_id)"
+          @approve="(partids: string[]) => handleApprove(task.task_id, partids)"
           @view-result="openResultModal(task)"
           @view-file="handleViewFile(task.task_id)"
         />
@@ -104,10 +106,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, onMounted, onUnmounted, ref } from 'vue'
+import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { config } from '../config'
-import type { QuotationTaskItem } from '../types/quotation'
+import type { QuotationPdmItem, QuotationPdmResult, QuotationTaskItem } from '../types/quotation'
 import {
+  approveQuotationTask,
   cancelQuotationTask,
   createQuotationTask,
   downloadQuotationTaskFile,
@@ -144,11 +147,14 @@ const isAdminLike = computed(() => currentRole.value === 'admin' || currentRole.
 
 const statusOrder = (status: string): number => {
   if (status === 'running') return 0
-  if (status === 'queued') return 1
-  if (status === 'completed') return 2
-  if (status === 'failed') return 3
-  return 4
+  if (status === 'awaiting_approval') return 1
+  if (status === 'queued') return 2
+  if (status === 'completed') return 3
+  if (status === 'failed') return 4
+  return 5
 }
+
+const approvingTasks = ref<Set<string>>(new Set())
 
 const byDateAsc = (a: QuotationTaskItem, b: QuotationTaskItem) => {
   return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
@@ -166,7 +172,7 @@ const queuedTasks = computed(() => {
 
 const runningTasks = computed(() => {
   return tasks.value
-    .filter((task) => task.status === 'running')
+    .filter((task) => task.status === 'running' || task.status === 'awaiting_approval')
     .sort(byDateAsc)
 })
 
@@ -220,7 +226,7 @@ const refreshSingleTask = async (taskId: string): Promise<void> => {
 const ensureTaskSockets = (): void => {
   const activeTaskIds = new Set(
     tasks.value
-      .filter((task) => ['queued', 'running'].includes(task.status))
+      .filter((task) => ['queued', 'running', 'awaiting_approval'].includes(task.status))
       .map((task) => task.task_id)
   )
 
@@ -302,7 +308,26 @@ const handleFileSelected = async (event: Event): Promise<void> => {
 }
 
 const canCancel = (task: QuotationTaskItem): boolean => {
-  return ['queued', 'running'].includes(task.status)
+  return ['queued', 'running', 'awaiting_approval'].includes(task.status)
+}
+
+const handleApprove = async (taskId: string, approvedPartids: string[]): Promise<void> => {
+  if (approvingTasks.value.has(taskId)) return
+  if (!approvedPartids.length) {
+    errorMessage.value = '请至少保留一个已批准的 PARTID'
+    return
+  }
+  approvingTasks.value = new Set([...approvingTasks.value, taskId])
+  try {
+    await approveQuotationTask(taskId, approvedPartids)
+    await refreshSingleTask(taskId)
+  } catch (error) {
+    errorMessage.value = (error as { message?: string })?.message ?? '提交审核同意失败'
+  } finally {
+    const next = new Set(approvingTasks.value)
+    next.delete(taskId)
+    approvingTasks.value = next
+  }
 }
 
 const handleCancel = async (taskId: string): Promise<void> => {
@@ -346,7 +371,7 @@ onMounted(() => {
   void loadTasks()
   pollingTimer.value = window.setInterval(() => {
     void loadTasks()
-  }, 4000)
+  }, 20000)
 })
 
 onUnmounted(() => {
@@ -374,8 +399,12 @@ const TaskItemCard = defineComponent({
       type: Boolean,
       required: true,
     },
+    isApproving: {
+      type: Boolean,
+      default: false,
+    },
   },
-  emits: ['cancel', 'view-result', 'view-file'],
+  emits: ['cancel', 'approve', 'view-result', 'view-file'],
   setup(props, { emit }) {
     const RING_RADIUS = 20
     const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
@@ -384,6 +413,7 @@ const TaskItemCard = defineComponent({
     const statusText = computed(() => {
       if (props.task.status === 'queued') return '排队中'
       if (props.task.status === 'running') return '处理中'
+      if (props.task.status === 'awaiting_approval') return '等待审核'
       if (props.task.status === 'completed') return '已完成'
       if (props.task.status === 'failed') return '失败'
       return '已取消'
@@ -391,10 +421,223 @@ const TaskItemCard = defineComponent({
     const progressStrokeClass = computed(() => {
       if (props.task.status === 'queued') return 'task-progress-ring__value--queued'
       if (props.task.status === 'running') return 'task-progress-ring__value--running'
+      if (props.task.status === 'awaiting_approval') return 'task-progress-ring__value--awaiting'
       if (props.task.status === 'completed') return 'task-progress-ring__value--completed'
       if (props.task.status === 'failed') return 'task-progress-ring__value--failed'
       return 'task-progress-ring__value--cancelled'
     })
+
+    const pdmItems = computed<QuotationPdmItem[]>(() => {
+      const result = props.task.result as { pdm_result?: QuotationPdmResult } | null | undefined
+      const items = result?.pdm_result?.items
+      return Array.isArray(items) ? items : []
+    })
+
+    interface PdmApprovalRow {
+      key: string
+      partid: string
+      chinaname: string
+    }
+
+    const makeRowKey = (chinaname: string, partid: string): string =>
+      `${chinaname}\u0000${partid}`
+
+    const uniqueApprovalRows = computed<PdmApprovalRow[]>(() => {
+      const seen = new Set<string>()
+      const ordered: PdmApprovalRow[] = []
+      for (const item of pdmItems.value) {
+        const rawPartid = item?.PARTID
+        if (rawPartid === undefined || rawPartid === null) continue
+        const partid = String(rawPartid).trim()
+        if (!partid) continue
+        const chinaname =
+          item?.CHINANAME === undefined || item?.CHINANAME === null
+            ? ''
+            : String(item.CHINANAME).trim()
+        const key = makeRowKey(chinaname, partid)
+        if (seen.has(key)) continue
+        seen.add(key)
+        ordered.push({ key, partid, chinaname })
+      }
+      return ordered
+    })
+
+    const approvedRowKeys = ref<Set<string>>(new Set())
+
+    watch(
+      uniqueApprovalRows,
+      (next, prev) => {
+        const prevKeys = new Set((prev ?? []).map((row) => row.key))
+        const nextKeys = new Set(next.map((row) => row.key))
+        const updated = new Set<string>()
+        for (const key of approvedRowKeys.value) {
+          if (nextKeys.has(key)) updated.add(key)
+        }
+        for (const row of next) {
+          if (!prevKeys.has(row.key)) updated.add(row.key)
+        }
+        approvedRowKeys.value = updated
+      },
+      { immediate: true }
+    )
+
+    const approvedCount = computed(() => approvedRowKeys.value.size)
+    const allSelected = computed(
+      () =>
+        uniqueApprovalRows.value.length > 0 &&
+        approvedCount.value === uniqueApprovalRows.value.length
+    )
+    const noneSelected = computed(() => approvedCount.value === 0)
+
+    const approvedPartidsPreview = computed<string[]>(() => {
+      const seen = new Set<string>()
+      const ordered: string[] = []
+      for (const row of uniqueApprovalRows.value) {
+        if (!approvedRowKeys.value.has(row.key)) continue
+        if (seen.has(row.partid)) continue
+        seen.add(row.partid)
+        ordered.push(row.partid)
+      }
+      return ordered
+    })
+
+    const toggleRow = (rowKey: string): void => {
+      const next = new Set(approvedRowKeys.value)
+      if (next.has(rowKey)) next.delete(rowKey)
+      else next.add(rowKey)
+      approvedRowKeys.value = next
+    }
+
+    const toggleAll = (): void => {
+      if (allSelected.value) {
+        approvedRowKeys.value = new Set()
+      } else {
+        approvedRowKeys.value = new Set(uniqueApprovalRows.value.map((row) => row.key))
+      }
+    }
+
+    const submitApproval = (): void => {
+      emit('approve', [...approvedPartidsPreview.value])
+    }
+
+    const formatList = (value: unknown): string => {
+      if (Array.isArray(value)) return value.join(' / ')
+      if (value === undefined || value === null) return ''
+      return String(value)
+    }
+
+    const renderPdmTable = () => {
+      if (props.task.status !== 'awaiting_approval') return null
+      const items = pdmItems.value
+      if (items.length === 0) {
+        return h(
+          'div',
+          { class: 'pdm-approval' },
+          [h('p', { class: 'pdm-approval__empty' }, 'PDM 未返回任何数据')]
+        )
+      }
+
+      const columns = [
+        { key: 'CHINANAME', label: '名称' },
+        { key: 'PARTID', label: 'PARTID' },
+        { key: 'QUERY_INDEX', label: '索引' },
+        { key: 'QUERY_KEYWORDS', label: '关键词' },
+        { key: 'QUERY_EXPANDED_KEYWORDS', label: '扩展关键词' },
+      ] as const
+
+      const rowCount = uniqueApprovalRows.value.length
+      const partidCount = approvedPartidsPreview.value.length
+
+      return h('div', { class: 'pdm-approval' }, [
+        h(
+          'p',
+          { class: 'pdm-approval__title' },
+          `PDM 查询结果（共 ${items.length} 条，已批准 ${approvedCount.value}/${rowCount} 组，将提交 ${partidCount} 个 PARTID），请审核后继续`
+        ),
+        h('div', { class: 'pdm-approval__table-wrapper' }, [
+          h('table', { class: 'pdm-approval__table' }, [
+            h('thead', null, [
+              h(
+                'tr',
+                null,
+                [
+                  h('th', { key: '__checkbox', class: 'pdm-approval__checkbox-col' }, [
+                    h('input', {
+                      type: 'checkbox',
+                      class: 'pdm-approval__checkbox',
+                      checked: allSelected.value,
+                      indeterminate: !allSelected.value && !noneSelected.value,
+                      disabled: props.isApproving || rowCount === 0,
+                      'aria-label': '全选/全不选',
+                      onChange: toggleAll,
+                    }),
+                  ]),
+                  ...columns.map((col) => h('th', { key: col.key }, col.label)),
+                ]
+              ),
+            ]),
+            h(
+              'tbody',
+              null,
+              items.map((item, rowIndex) => {
+                const partidRaw = item?.PARTID
+                const partid =
+                  partidRaw === undefined || partidRaw === null ? '' : String(partidRaw).trim()
+                const chinaname =
+                  item?.CHINANAME === undefined || item?.CHINANAME === null
+                    ? ''
+                    : String(item.CHINANAME).trim()
+                const hasPartid = partid.length > 0
+                const rowKey = hasPartid ? makeRowKey(chinaname, partid) : ''
+                const isChecked = hasPartid && approvedRowKeys.value.has(rowKey)
+                return h(
+                  'tr',
+                  {
+                    key: `${rowKey || 'row'}-${rowIndex}`,
+                    class: hasPartid && !isChecked ? 'pdm-approval__row--skipped' : undefined,
+                  },
+                  [
+                    h('td', { key: '__checkbox', class: 'pdm-approval__checkbox-col' }, [
+                      h('input', {
+                        type: 'checkbox',
+                        class: 'pdm-approval__checkbox',
+                        checked: isChecked,
+                        disabled: !hasPartid || props.isApproving,
+                        'aria-label': hasPartid
+                          ? `批准 ${chinaname || '(无名称)'} / ${partid}`
+                          : '该行缺少 PARTID',
+                        onChange: () => hasPartid && toggleRow(rowKey),
+                      }),
+                    ]),
+                    ...columns.map((col) => {
+                      const raw = (item as Record<string, unknown>)[col.key]
+                      const text =
+                        col.key === 'QUERY_KEYWORDS' || col.key === 'QUERY_EXPANDED_KEYWORDS'
+                          ? formatList(raw)
+                          : raw === undefined || raw === null
+                          ? ''
+                          : String(raw)
+                      return h('td', { key: col.key, title: text }, text)
+                    }),
+                  ]
+                )
+              })
+            ),
+          ]),
+        ]),
+        h(
+          'button',
+          {
+            class: 'task-action-btn task-action-btn--accent pdm-approval__approve',
+            disabled: props.isApproving || noneSelected.value,
+            onClick: submitApproval,
+          },
+          props.isApproving
+            ? '提交中...'
+            : `提交已批准项（${partidCount} 个 PARTID）并继续 U8 查询`
+        ),
+      ])
+    }
     const progressMessage = computed(() => {
       const raw = String(props.task.message ?? '').trim()
       if (!raw || raw === statusText.value) {
@@ -457,6 +700,7 @@ const TaskItemCard = defineComponent({
           ]),
         ]),
         progressMessage.value ? h('p', { class: 'task-card__progress-text' }, progressMessage.value) : null,
+        renderPdmTable(),
         h('div', { class: 'task-card__footnote' }, [
           props.showOwner ? h('span', { class: 'task-card__owner', title: props.task.owner_username }, props.task.owner_username) : null,
           h('span', { class: 'task-card__id', title: props.task.task_id }, shortTaskId.value),
@@ -710,6 +954,10 @@ const TaskItemCard = defineComponent({
   stroke: var(--yamato-color-accent);
 }
 
+:deep(.task-progress-ring__value--awaiting) {
+  stroke: var(--yamato-color-warning);
+}
+
 :deep(.task-progress-ring__value--completed) {
   stroke: var(--yamato-color-success);
 }
@@ -764,6 +1012,10 @@ const TaskItemCard = defineComponent({
   color: var(--yamato-color-accent);
 }
 
+:deep(.status--awaiting_approval) {
+  color: var(--yamato-color-warning);
+}
+
 :deep(.status--completed) {
   color: var(--yamato-color-success);
 }
@@ -801,6 +1053,86 @@ const TaskItemCard = defineComponent({
 
 :deep(.task-card__footnote .task-card__id) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+:deep(.pdm-approval) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border-radius: var(--yamato-radius-sm);
+  border: 1px solid var(--yamato-color-border-subtle);
+  background: #fff;
+}
+
+:deep(.pdm-approval__title) {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--yamato-color-text-primary);
+}
+
+:deep(.pdm-approval__empty) {
+  margin: 0;
+  font-size: 12px;
+  color: var(--yamato-color-text-muted);
+}
+
+:deep(.pdm-approval__table-wrapper) {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--yamato-color-border-subtle);
+  border-radius: var(--yamato-radius-sm);
+}
+
+:deep(.pdm-approval__table) {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  color: var(--yamato-color-text-primary);
+}
+
+:deep(.pdm-approval__table th),
+:deep(.pdm-approval__table td) {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--yamato-color-border-subtle);
+  white-space: nowrap;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:deep(.pdm-approval__table thead th) {
+  position: sticky;
+  top: 0;
+  background: var(--yamato-color-surface-alt);
+  font-weight: 600;
+  z-index: 1;
+}
+
+:deep(.pdm-approval__checkbox-col) {
+  width: 28px;
+  padding: 4px 6px;
+  text-align: center;
+}
+
+:deep(.pdm-approval__checkbox) {
+  margin: 0;
+  cursor: pointer;
+}
+
+:deep(.pdm-approval__checkbox:disabled) {
+  cursor: not-allowed;
+}
+
+:deep(.pdm-approval__row--skipped td) {
+  color: var(--yamato-color-text-muted);
+  text-decoration: line-through;
+}
+
+:deep(.pdm-approval__approve) {
+  align-self: flex-start;
 }
 
 :deep(.task-card__actions) {

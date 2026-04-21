@@ -11,6 +11,7 @@ from app.core.database import Base
 class QuotationTaskStatus(str, enum.Enum):
     queued = "queued"
     running = "running"
+    awaiting_approval = "awaiting_approval"
     completed = "completed"
     failed = "failed"
     cancelled = "cancelled"

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from itertools import product
 from time import perf_counter
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 import re
 
 from fastapi import APIRouter
@@ -20,6 +20,15 @@ from app.api.v1.keyword_normalizer import normalize_pdm_keywords
 
 router = APIRouter()
 logger = get_logger("sqlserver_queries")
+
+
+class QueryCancelledError(RuntimeError):
+    """Raised when a SQL query loop is aborted via cancel_checker."""
+
+
+def _raise_if_cancelled(cancel_checker: Optional[Callable[[], bool]]) -> None:
+    if cancel_checker is not None and cancel_checker():
+        raise QueryCancelledError("cancelled")
 
 
 class U8BomInventoryRequest(BaseModel):
@@ -153,28 +162,66 @@ def _get_sql_client(config: Dict[str, Any]):
         ) from exc
 
     class _PymssqlClient:
+        """Reuses a single pymssql connection across queries to avoid repeated
+        TCP/TLS/auth handshakes (each handshake costs multiple seconds)."""
+
         def __init__(self, conf: Dict[str, Any]):
             self.conf = conf
+            self._conn: Any = None
+
+        def _ensure_conn(self) -> Any:
+            if self._conn is None:
+                self._conn = pymssql.connect(
+                    server=self.conf["server"],
+                    port=self.conf.get("port", 1433),
+                    user=self.conf["username"],
+                    password=self.conf["password"],
+                    database=self.conf["database"],
+                    charset="utf8",
+                    as_dict=True,
+                )
+            return self._conn
 
         def query(self, sql: str) -> List[Dict[str, Any]]:
-            conn = pymssql.connect(
-                server=self.conf["server"],
-                port=self.conf.get("port", 1433),
-                user=self.conf["username"],
-                password=self.conf["password"],
-                database=self.conf["database"],
-                charset="utf8",
-                as_dict=True,
-            )
             try:
+                conn = self._ensure_conn()
                 with conn.cursor(as_dict=True) as cursor:
                     cursor.execute(sql)
                     rows = cursor.fetchall()
                 return [dict(row) for row in rows]
-            finally:
+            except Exception:
+                self.close()
+                raise
+
+        def close(self) -> None:
+            conn = self._conn
+            self._conn = None
+            if conn is None:
+                return
+            try:
                 conn.close()
+            except Exception:
+                pass
+
+        def __enter__(self) -> "_PymssqlClient":
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+            self.close()
 
     return _PymssqlClient(config)
+
+
+def _close_sql_client(client: Any) -> None:
+    """Best-effort close for any sql client shape (pymssql wrapper or sqlserver_tools)."""
+    if client is None:
+        return
+    closer = getattr(client, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:
+            pass
 
 
 def test_sqlserver_connectivity() -> Dict[str, Dict[str, Any]]:
@@ -231,7 +278,11 @@ def test_sqlserver_connectivity() -> Dict[str, Dict[str, Any]]:
     return results
 
 
-def _query_u8_bom_inventory(parent_codes: List[str], max_depth: int) -> List[Dict[str, Any]]:
+def _query_u8_bom_inventory(
+    parent_codes: List[str],
+    max_depth: int,
+    cancel_checker: Optional[Callable[[], bool]] = None,
+) -> List[Dict[str, Any]]:
     if not parent_codes:
         return []
 
@@ -259,6 +310,7 @@ def _query_u8_bom_inventory(parent_codes: List[str], max_depth: int) -> List[Dic
         if parent_inv_code in children_cache:
             return children_cache[parent_inv_code]
 
+        _raise_if_cancelled(cancel_checker)
         safe_code = parent_inv_code.replace("'", "''")
         sql = f"""
             ;WITH PartMap AS (
@@ -367,6 +419,7 @@ def _query_u8_bom_inventory(parent_codes: List[str], max_depth: int) -> List[Dic
                 )
 
     for root_code in parent_codes:
+        _raise_if_cancelled(cancel_checker)
         walk(
             root_code=root_code,
             parent_code=root_code,
@@ -413,24 +466,28 @@ def _format_u8_output_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return formatted_rows
 
 
-def _query_pdm_bom(condition: str | List[str]) -> List[Dict[str, Any]]:
+def _query_pdm_bom(
+    condition: str | List[str],
+    client: Any = None,
+) -> List[Dict[str, Any]]:
     where_clauses = _build_pdm_where_clauses(condition)
     if not where_clauses:
         return []
 
     and_conditions = "\n            AND ".join(where_clauses)
 
-    client = _get_sql_client(
-        {
-            "backend": "pymssql",
-            "server": settings.PDM_SQLSERVER_HOST,
-            "port": settings.PDM_SQLSERVER_PORT,
-            "database": settings.PDM_SQLSERVER_DATABASE,
-            "username": settings.PDM_SQLSERVER_USER,
-            "password": settings.PDM_SQLSERVER_PASSWORD,
-            "encrypt": settings.PDM_SQLSERVER_ENCRYPT,
-        }
-    )
+    if client is None:
+        client = _get_sql_client(
+            {
+                "backend": "pymssql",
+                "server": settings.PDM_SQLSERVER_HOST,
+                "port": settings.PDM_SQLSERVER_PORT,
+                "database": settings.PDM_SQLSERVER_DATABASE,
+                "username": settings.PDM_SQLSERVER_USER,
+                "password": settings.PDM_SQLSERVER_PASSWORD,
+                "encrypt": settings.PDM_SQLSERVER_ENCRYPT,
+            }
+        )
 
     query_sql = f"""
         SELECT DISTINCT
@@ -497,17 +554,19 @@ def _expand_pdm_keyword_group(group: List[str]) -> List[List[str]]:
     return expanded_groups
 
 
-@router.post("/u8/bom-inventory", response_model=QueryResponse, summary="U8 BOM + Inventory 递归查询")
-async def query_u8_bom_inventory(payload: U8BomInventoryRequest) -> QueryResponse:
-    """
-    按 parent_inv_codes 递归展开 U8 BOM，并关联 Inventory 成本信息。
-    """
+def run_u8_bom_inventory_query(
+    payload: U8BomInventoryRequest,
+    cancel_checker: Optional[Callable[[], bool]] = None,
+) -> QueryResponse:
+    """Core U8 BOM + Inventory query. Supports cooperative cancellation."""
     parent_codes = _split_codes(payload.parent_inv_codes)
     if not parent_codes:
         raise ValidationError("parent_inv_codes 不能为空")
 
     try:
-        raw_rows = _query_u8_bom_inventory(parent_codes, payload.max_depth)
+        raw_rows = _query_u8_bom_inventory(
+            parent_codes, payload.max_depth, cancel_checker=cancel_checker
+        )
         rows = _format_u8_output_rows(raw_rows)
         logger.info(
             "U8 查询完成: parent_inv_codes=%s, raw_rows=%s, output_rows=%s",
@@ -516,33 +575,47 @@ async def query_u8_bom_inventory(payload: U8BomInventoryRequest) -> QueryRespons
             len(rows),
         )
         return QueryResponse(total=len(rows), items=rows)
-    except ValidationError:
+    except (ValidationError, QueryCancelledError):
         raise
     except Exception as exc:
         logger.error("U8 查询失败: %s", exc, exc_info=True)
         raise ExternalServiceError("U8 SQLServer", f"查询失败: {exc}") from exc
 
 
-@router.post("/pdm/bom", response_model=QueryResponse, summary="PDM BOM_016 条件查询")
-async def query_pdm_bom(payload: PdmBomRequest) -> QueryResponse:
-    """
-    查询 pdm_change_me.BOM_016，支持单组关键词 AND 或多组关键词分批查询。
-    """
+def run_pdm_bom_query(
+    payload: PdmBomRequest,
+    cancel_checker: Optional[Callable[[], bool]] = None,
+) -> QueryResponse:
+    """Core PDM BOM_016 query. Supports cooperative cancellation between SQL calls."""
     keyword_groups = normalize_pdm_keywords(payload.keywords)
     if not keyword_groups:
         raise ValidationError(
             "keywords 不能为空，且仅支持 {type, attr} 或 [{type, attr}, ...]"
         )
 
+    shared_client = _get_sql_client(
+        {
+            "backend": "pymssql",
+            "server": settings.PDM_SQLSERVER_HOST,
+            "port": settings.PDM_SQLSERVER_PORT,
+            "database": settings.PDM_SQLSERVER_DATABASE,
+            "username": settings.PDM_SQLSERVER_USER,
+            "password": settings.PDM_SQLSERVER_PASSWORD,
+            "encrypt": settings.PDM_SQLSERVER_ENCRYPT,
+        }
+    )
+
     try:
         rows: List[Dict[str, Any]] = []
         executed_query_count = 0
 
         for idx, group in enumerate(keyword_groups, start=1):
+            _raise_if_cancelled(cancel_checker)
             expanded_groups = _expand_pdm_keyword_group(group)
             for expanded_group in expanded_groups:
+                _raise_if_cancelled(cancel_checker)
                 executed_query_count += 1
-                group_rows = _query_pdm_bom(expanded_group)
+                group_rows = _query_pdm_bom(expanded_group, client=shared_client)
                 for row in group_rows:
                     item = dict(row)
                     item["QUERY_INDEX"] = idx
@@ -559,8 +632,22 @@ async def query_pdm_bom(payload: PdmBomRequest) -> QueryResponse:
             len(deduplicated_rows),
         )
         return QueryResponse(total=len(deduplicated_rows), items=deduplicated_rows)
-    except ValidationError:
+    except (ValidationError, QueryCancelledError):
         raise
     except Exception as exc:
         logger.error("PDM 查询失败: %s", exc, exc_info=True)
         raise ExternalServiceError("PDM SQLServer", f"查询失败: {exc}") from exc
+    finally:
+        _close_sql_client(shared_client)
+
+
+@router.post("/u8/bom-inventory", response_model=QueryResponse, summary="U8 BOM + Inventory 递归查询")
+def query_u8_bom_inventory(payload: U8BomInventoryRequest) -> QueryResponse:
+    """按 parent_inv_codes 递归展开 U8 BOM，并关联 Inventory 成本信息。"""
+    return run_u8_bom_inventory_query(payload)
+
+
+@router.post("/pdm/bom", response_model=QueryResponse, summary="PDM BOM_016 条件查询")
+def query_pdm_bom(payload: PdmBomRequest) -> QueryResponse:
+    """查询 pdm_change_me.BOM_016，支持单组关键词 AND 或多组关键词分批查询。"""
+    return run_pdm_bom_query(payload)

@@ -32,7 +32,9 @@ from app.core.storage import (
 )
 from app.integrations.Quotation_Generation.quotation_pipeline import (
     QuotationPipelineCancelledError,
-    run_quotation_pipeline,
+    QuotationPipelineError,
+    run_phase1_keywords_and_pdm,
+    run_phase2_u8_bom_inventory,
 )
 from app.models.orm.file_resource import FileResource
 from app.models.orm.platform.user import User, UserRole
@@ -77,6 +79,22 @@ class CancelTaskResponse(BaseModel):
     success: bool
     message: str
     task_id: str
+
+
+class ApproveTaskRequest(BaseModel):
+    approved_partids: List[str] = Field(
+        ...,
+        min_length=1,
+        description="用户勾选的 PARTID 列表，仅这些将被送入 U8 BOM Inventory",
+    )
+
+
+class ApproveTaskResponse(BaseModel):
+    success: bool
+    message: str
+    task_id: str
+    status: str
+    approved_count: int
 
 
 def _is_admin_like(user: User) -> bool:
@@ -200,8 +218,43 @@ def _dispatch_for_owner(owner_id: str) -> None:
         db.close()
 
 
+# `quotation_tasks.message` is VARCHAR(512); keep a safe headroom when writing.
+_MESSAGE_COLUMN_LIMIT = 500
+
+
+def _clamp_message(message: str, limit: int = _MESSAGE_COLUMN_LIMIT) -> str:
+    """Ensure progress messages fit inside quotation_tasks.message (VARCHAR 512)."""
+    if message is None:
+        return ""
+    if len(message) <= limit:
+        return message
+    suffix = "…(truncated)"
+    head = max(0, limit - len(suffix))
+    return message[:head] + suffix
+
+
+def _close_thread_tm(loop: asyncio.AbstractEventLoop, thread_tm: TaskManager) -> None:
+    try:
+        if hasattr(thread_tm, "storage") and hasattr(thread_tm.storage, "redis_client"):
+            if thread_tm.storage.redis_client is not None:
+                async def close_redis() -> None:
+                    if hasattr(thread_tm.storage.redis_client, "connection_pool"):
+                        await thread_tm.storage.redis_client.connection_pool.disconnect()
+                    await thread_tm.storage.redis_client.aclose()
+
+                loop.run_until_complete(close_redis())
+    except Exception:
+        pass
+    finally:
+        try:
+            if not loop.is_closed():
+                loop.close()
+        except Exception:
+            pass
+
+
 def process_quotation_task_background(token: CancellationToken, task_id: str) -> Dict[str, Any]:
-    """Run quotation pipeline in thread pool worker."""
+    """Phase 1 worker: OCR -> keywords_payload -> PDM BOM, then pause for approval."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     thread_tm = TaskManager.create_thread_safe_instance()
@@ -215,11 +268,14 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
         loop.run_until_complete(thread_tm.start_task(task_id))
 
         def update_progress(progress: int, message: str) -> None:
+            safe_message = _clamp_message(message)
             task.progress = max(0, min(100, progress))
-            task.message = message
+            task.message = safe_message
             task.status = QuotationTaskStatus.running.value
             db.commit()
-            loop.run_until_complete(thread_tm.update_task_progress(task_id, task.progress, message))
+            loop.run_until_complete(
+                thread_tm.update_task_progress(task_id, task.progress, safe_message)
+            )
 
         if token.is_cancelled():
             raise QuotationPipelineCancelledError("任务在启动前被取消")
@@ -228,54 +284,69 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
         with download_object_stream(task.uploaded_file_minio_path) as response:
             pdf_bytes = response.read()
 
-        pipeline_result = run_quotation_pipeline(
+        phase1_result = run_phase1_keywords_and_pdm(
             pdf_bytes=pdf_bytes,
             original_filename=task.uploaded_file_name,
             progress_callback=update_progress,
             cancel_checker=token.is_cancelled,
         )
-        task.temp_image_minio_path = pipeline_result.temp_image_minio_path
+        task.temp_image_minio_path = phase1_result.temp_image_minio_path
 
-        cleanup_result = _safe_cleanup_task_files(db, task, task_id)
-        result_payload = pipeline_result.to_dict()
-        result_payload["cleanup"] = cleanup_result
+        result_payload = dict(task.result_payload or {})
+        result_payload.update(phase1_result.to_dict())
 
-        task.status = QuotationTaskStatus.completed.value
-        task.progress = 100
-        task.message = "任务完成（源文件与中间文件已清理）"
+        if not phase1_result.pdm_partids:
+            task.status = QuotationTaskStatus.failed.value
+            task.progress = min(task.progress, 99)
+            task.message = "PDM 查询未返回任何 PARTID"
+            task.error = "PDM 结果为空，无法继续 U8 查询"
+            task.completed_at = datetime.utcnow()
+            task.result_payload = result_payload
+            db.commit()
+            loop.run_until_complete(thread_tm.fail_task(task_id, task.error, task.message))
+            return {"status": "error", "task_id": task_id, "error": task.error}
+
+        task.status = QuotationTaskStatus.awaiting_approval.value
+        task.progress = 50
+        task.message = "等待用户审核 PDM 结果"
         task.result_payload = result_payload
         task.error = None
-        task.completed_at = datetime.utcnow()
         db.commit()
 
-        loop.run_until_complete(thread_tm.complete_task(task_id, result_payload, task.message))
-        return {"status": "success", "task_id": task_id}
+        loop.run_until_complete(
+            thread_tm.update_task_progress(task_id, task.progress, task.message)
+        )
+        return {"status": "awaiting_approval", "task_id": task_id}
 
     except QuotationPipelineCancelledError as exc:
         task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
         if task:
             cleanup_result = _safe_cleanup_task_files(db, task, task_id)
+            existing_payload = dict(task.result_payload or {})
+            existing_payload["cleanup"] = cleanup_result
             task.status = QuotationTaskStatus.cancelled.value
             task.message = "任务已取消"
             task.error = str(exc)
             task.completed_at = datetime.utcnow()
-            task.result_payload = {"cleanup": cleanup_result}
+            task.result_payload = existing_payload
             db.commit()
         loop.run_until_complete(thread_tm.fail_task(task_id, str(exc), "任务已取消"))
         return {"status": "cancelled", "task_id": task_id}
 
     except Exception as exc:
-        logger.error(f"报价任务执行失败 {task_id}: {exc}", exc_info=True)
+        logger.error(f"报价任务 Phase1 执行失败 {task_id}: {exc}", exc_info=True)
         task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
         if task:
             cleanup_result = _safe_cleanup_task_files(db, task, task_id)
+            existing_payload = dict(task.result_payload or {})
+            existing_payload["cleanup"] = cleanup_result
             task.status = QuotationTaskStatus.failed.value
-            task.message = "任务执行失败"
+            task.message = "Phase1 执行失败"
             task.error = str(exc)
             task.completed_at = datetime.utcnow()
-            task.result_payload = {"cleanup": cleanup_result}
+            task.result_payload = existing_payload
             db.commit()
-        loop.run_until_complete(thread_tm.fail_task(task_id, str(exc), "任务执行失败"))
+        loop.run_until_complete(thread_tm.fail_task(task_id, str(exc), "Phase1 执行失败"))
         return {"status": "error", "task_id": task_id, "error": str(exc)}
 
     finally:
@@ -283,23 +354,132 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
             db.close()
         except Exception:
             pass
-        try:
-            if hasattr(thread_tm, "storage") and hasattr(thread_tm.storage, "redis_client"):
-                if thread_tm.storage.redis_client is not None:
-                    async def close_redis() -> None:
-                        if hasattr(thread_tm.storage.redis_client, "connection_pool"):
-                            await thread_tm.storage.redis_client.connection_pool.disconnect()
-                        await thread_tm.storage.redis_client.aclose()
+        _close_thread_tm(loop, thread_tm)
 
-                    loop.run_until_complete(close_redis())
+
+def process_quotation_task_phase2_background(
+    token: CancellationToken, task_id: str
+) -> Dict[str, Any]:
+    """Phase 2 worker: call U8 BOM Inventory using previously-collected PARTIDs."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    thread_tm = TaskManager.create_thread_safe_instance()
+    db = SessionLocal()
+
+    try:
+        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
+        if not task:
+            return {"status": "error", "message": f"任务不存在: {task_id}"}
+
+        loop.run_until_complete(thread_tm.start_task(task_id))
+
+        def update_progress(progress: int, message: str) -> None:
+            safe_message = _clamp_message(message)
+            task.progress = max(0, min(100, progress))
+            task.message = safe_message
+            task.status = QuotationTaskStatus.running.value
+            db.commit()
+            loop.run_until_complete(
+                thread_tm.update_task_progress(task_id, task.progress, safe_message)
+            )
+
+        if token.is_cancelled():
+            raise QuotationPipelineCancelledError("任务在启动前被取消")
+
+        existing_payload = dict(task.result_payload or {})
+        approved_partids = existing_payload.get("approved_partids")
+        if isinstance(approved_partids, list) and approved_partids:
+            selected_partids = [str(partid) for partid in approved_partids if str(partid).strip()]
+        else:
+            fallback = existing_payload.get("pdm_partids") or []
+            selected_partids = [str(partid) for partid in fallback if str(partid).strip()]
+
+        if not selected_partids:
+            raise QuotationPipelineError("任务缺少已批准的 PARTID 列表，无法继续 U8 查询")
+
+        update_progress(60, f"开始 U8 BOM Inventory 查询（{len(selected_partids)} 项）")
+
+        phase2_result = run_phase2_u8_bom_inventory(
+            pdm_partids=selected_partids,
+            progress_callback=update_progress,
+            cancel_checker=token.is_cancelled,
+        )
+
+        cleanup_result = _safe_cleanup_task_files(db, task, task_id)
+
+        existing_payload.update(phase2_result.to_dict())
+        existing_payload["cleanup"] = cleanup_result
+
+        task.status = QuotationTaskStatus.completed.value
+        task.progress = 100
+        task.message = "任务完成（U8 BOM Inventory 已返回）"
+        task.result_payload = existing_payload
+        task.error = None
+        task.completed_at = datetime.utcnow()
+        db.commit()
+
+        loop.run_until_complete(thread_tm.complete_task(task_id, existing_payload, task.message))
+        return {"status": "success", "task_id": task_id}
+
+    except QuotationPipelineCancelledError as exc:
+        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
+        if task:
+            cleanup_result = _safe_cleanup_task_files(db, task, task_id)
+            existing_payload = dict(task.result_payload or {})
+            existing_payload["cleanup"] = cleanup_result
+            task.status = QuotationTaskStatus.cancelled.value
+            task.message = "任务已取消"
+            task.error = str(exc)
+            task.completed_at = datetime.utcnow()
+            task.result_payload = existing_payload
+            db.commit()
+        loop.run_until_complete(thread_tm.fail_task(task_id, str(exc), "任务已取消"))
+        return {"status": "cancelled", "task_id": task_id}
+
+    except Exception as exc:
+        logger.error(f"报价任务 Phase2 执行失败 {task_id}: {exc}", exc_info=True)
+        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
+        if task:
+            # Preserve PDM results for debugging; do not clear result_payload.
+            existing_payload = dict(task.result_payload or {})
+            task.status = QuotationTaskStatus.failed.value
+            task.message = "Phase2 执行失败"
+            task.error = str(exc)
+            task.completed_at = datetime.utcnow()
+            task.result_payload = existing_payload
+            db.commit()
+        loop.run_until_complete(thread_tm.fail_task(task_id, str(exc), "Phase2 执行失败"))
+        return {"status": "error", "task_id": task_id, "error": str(exc)}
+
+    finally:
+        try:
+            db.close()
         except Exception:
             pass
-        finally:
-            try:
-                if not loop.is_closed():
-                    loop.close()
-            except Exception:
-                pass
+        _close_thread_tm(loop, thread_tm)
+
+
+def _dispatch_phase2(task_id: str, owner_id: str) -> None:
+    """Submit the Phase 2 worker. Must be called after the DB status flip.
+
+    The executor retains Phase 1's Future under the same task_id for history,
+    so we evict it first to allow resubmitting with the same business id.
+    """
+    try:
+        executor_manager.forget_task(task_id)
+        future = executor_manager.submit_task(
+            task_id,
+            process_quotation_task_phase2_background,
+            task_id,
+        )
+        executor_manager.set_task_owner(task_id, owner_id)
+        future.add_done_callback(lambda _, oid=owner_id: _dispatch_for_owner(oid))
+    except Exception as exc:
+        logger.error(f"Phase2 提交执行器失败 {task_id}: {exc}", exc_info=True)
+        _mark_task_failed_in_db(task_id, f"执行器提交失败: {exc}")
+        _run_async_task_manager_call(
+            task_manager.fail_task(task_id, str(exc), "Phase2 提交执行器失败")
+        )
 
 
 def _get_task_or_404(db: Session, task_id: str) -> QuotationTask:
@@ -466,6 +646,20 @@ async def cancel_quotation_task(
         _dispatch_for_owner(task.owner_id)
         return CancelTaskResponse(success=True, message="排队任务已取消", task_id=task_id)
 
+    if task.status == QuotationTaskStatus.awaiting_approval.value:
+        cleanup_result = _safe_cleanup_task_files(db, task, task.task_id)
+        existing_payload = dict(task.result_payload or {})
+        existing_payload["cleanup"] = cleanup_result
+        task.status = QuotationTaskStatus.cancelled.value
+        task.message = "任务已取消（审核阶段）"
+        task.error = "用户取消"
+        task.completed_at = datetime.utcnow()
+        task.result_payload = existing_payload
+        db.commit()
+        await task_manager.fail_task(task.task_id, "用户取消", "任务已取消")
+        _dispatch_for_owner(task.owner_id)
+        return CancelTaskResponse(success=True, message="审核阶段任务已取消", task_id=task_id)
+
     cancelled = executor_manager.cancel_task(task.task_id)
     if not cancelled:
         # Executor state can be lost after restart while DB status remains running.
@@ -482,6 +676,80 @@ async def cancel_quotation_task(
     task.message = "任务正在取消"
     db.commit()
     return CancelTaskResponse(success=True, message="取消请求已发送", task_id=task_id)
+
+
+@router.post(
+    "/tasks/{task_id}/approve",
+    response_model=ApproveTaskResponse,
+    summary="同意 PDM 审核并触发 Phase2 (U8 BOM Inventory)",
+)
+async def approve_quotation_task(
+    task_id: str,
+    request: ApproveTaskRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ApproveTaskResponse:
+    task = _get_task_or_404(db, task_id)
+    _check_task_permission(task, current_user)
+
+    if task.status != QuotationTaskStatus.awaiting_approval.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"任务当前状态为 {task.status}，无法执行审核同意",
+        )
+
+    payload = dict(task.result_payload or {})
+    available_partids = payload.get("pdm_partids") if isinstance(payload, dict) else None
+    if not isinstance(available_partids, list) or not available_partids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="任务缺少 PDM PARTID，无法继续 U8 查询",
+        )
+
+    available_set = {str(item).strip() for item in available_partids if str(item).strip()}
+    seen: set[str] = set()
+    approved_partids: List[str] = []
+    unknown_partids: List[str] = []
+    for raw in request.approved_partids:
+        value = str(raw).strip()
+        if not value or value in seen:
+            continue
+        if value not in available_set:
+            unknown_partids.append(value)
+            continue
+        seen.add(value)
+        approved_partids.append(value)
+
+    if unknown_partids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"审核列表包含未知 PARTID: {', '.join(unknown_partids)}",
+        )
+    if not approved_partids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="审核列表为空，至少需要保留 1 个 PARTID",
+        )
+
+    payload["approved_partids"] = approved_partids
+    task.result_payload = payload
+    task.status = QuotationTaskStatus.running.value
+    task.message = f"已同意 {len(approved_partids)}/{len(available_partids)} 项，开始 U8 查询"
+    task.progress = max(task.progress, 55)
+    task.error = None
+    db.commit()
+
+    await task_manager.update_task_progress(task.task_id, task.progress, task.message)
+
+    _dispatch_phase2(task.task_id, task.owner_id)
+
+    return ApproveTaskResponse(
+        success=True,
+        message="已触发 U8 BOM Inventory 查询",
+        task_id=task_id,
+        status=task.status,
+        approved_count=len(approved_partids),
+    )
 
 
 @router.get("/tasks/{task_id}/file", summary="查看或下载任务上传文件")

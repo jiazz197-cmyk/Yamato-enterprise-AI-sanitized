@@ -1,5 +1,6 @@
 import { authorizedFetch, handleApiError, apiRequest } from './api'
 import type {
+  ApproveQuotationTaskResponse,
   CancelQuotationTaskResponse,
   CreateQuotationTaskResponse,
   QuotationTaskItem,
@@ -54,6 +55,16 @@ export const getQuotationTask = async (taskId: string): Promise<QuotationTaskIte
 export const cancelQuotationTask = async (taskId: string): Promise<CancelQuotationTaskResponse> => {
   return apiRequest<CancelQuotationTaskResponse>(`/quotation/tasks/${encodeURIComponent(taskId)}/cancel`, {
     method: 'POST',
+  })
+}
+
+export const approveQuotationTask = async (
+  taskId: string,
+  approvedPartids: string[]
+): Promise<ApproveQuotationTaskResponse> => {
+  return apiRequest<ApproveQuotationTaskResponse>(`/quotation/tasks/${encodeURIComponent(taskId)}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ approved_partids: approvedPartids }),
   })
 }
 

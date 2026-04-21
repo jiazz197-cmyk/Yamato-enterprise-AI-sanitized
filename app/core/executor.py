@@ -115,6 +115,23 @@ class ExecutorManager:
         """清理任务元数据时去掉 owner 映射。"""
         with self._lock:
             self._task_owner_map.pop(task_id, None)
+
+    def forget_task(self, task_id: str) -> bool:
+        """Forget a previously submitted task so the same task_id can be submitted again.
+
+        Only effective if the prior Future has finished; otherwise refuses to avoid
+        orphaning a running worker. Removes Future, cancellation token, and owner.
+        Returns True when the task was present and cleared.
+        """
+        with self._lock:
+            future = self._task_futures.get(task_id)
+            if future is not None and not future.done():
+                return False
+            had_any = task_id in self._task_futures or task_id in self._cancellation_tokens
+            self._task_futures.pop(task_id, None)
+            self._cancellation_tokens.pop(task_id, None)
+            self._task_owner_map.pop(task_id, None)
+            return had_any
     
     def set_task_manager(self, task_manager: Optional['TaskManager'], auto_sync: bool = True):
         """接入或断开 TaskManager；auto_sync 控制是否自动回写任务状态。"""
