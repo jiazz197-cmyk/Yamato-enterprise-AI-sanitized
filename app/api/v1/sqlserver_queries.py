@@ -299,12 +299,37 @@ def _query_u8_bom_inventory(
     )
 
     children_cache: Dict[str, List[Dict[str, Any]]] = {}
+    root_codes_set = set(parent_codes)
 
     def to_float(value: Any, default: float = 0.0) -> float:
         try:
             return float(value)
         except Exception:
             return default
+
+    def _probe_partmap_hits(code: str) -> Dict[str, Optional[int]]:
+        safe_code = code.replace("'", "''")
+        probe_sql = f"""
+            SELECT
+                SUM(CASE WHEN COALESCE(
+                    NULLIF(LTRIM(RTRIM(vp.InvCode)), ''),
+                    NULLIF(LTRIM(RTRIM(vp.cInvCode)), '')
+                ) = N'{safe_code}' THEN 1 ELSE 0 END) AS InvCodeHits,
+                SUM(CASE WHEN CAST(vp.PartId AS NVARCHAR(100)) = N'{safe_code}' THEN 1 ELSE 0 END) AS PartIdHits
+            FROM v_bas_part vp
+        """
+        try:
+            rows = client.query(probe_sql)
+            first = rows[0] if rows else {}
+            inv_hits_raw = first.get("InvCodeHits") if isinstance(first, dict) else None
+            part_hits_raw = first.get("PartIdHits") if isinstance(first, dict) else None
+            return {
+                "inv_code_hits": int(inv_hits_raw) if inv_hits_raw is not None else None,
+                "part_id_hits": int(part_hits_raw) if part_hits_raw is not None else None,
+            }
+        except Exception as exc:
+            logger.warning("U8 PartMap 命中探针失败: code=%s, error=%s", code, exc)
+            return {"inv_code_hits": None, "part_id_hits": None}
 
     def fetch_children(parent_inv_code: str) -> List[Dict[str, Any]]:
         if parent_inv_code in children_cache:
@@ -348,6 +373,14 @@ def _query_u8_bom_inventory(
             ORDER BY oc.SortSeq, child.PartInvCode
         """
         rows = client.query(sql)
+        if not rows and parent_inv_code in root_codes_set:
+            probe = _probe_partmap_hits(parent_inv_code)
+            logger.warning(
+                "U8 根节点无子件: parent_code=%s, inv_code_hits=%s, part_id_hits=%s",
+                parent_inv_code,
+                probe.get("inv_code_hits"),
+                probe.get("part_id_hits"),
+            )
         children_cache[parent_inv_code] = rows
         return rows
 
@@ -418,17 +451,22 @@ def _query_u8_bom_inventory(
                     visited_part_ids=next_visited,
                 )
 
-    for root_code in parent_codes:
-        _raise_if_cancelled(cancel_checker)
-        walk(
-            root_code=root_code,
-            parent_code=root_code,
-            level=1,
-            cumulative_qty=1.0,
-            visited_part_ids=set(),
-        )
+    try:
+        for root_code in parent_codes:
+            _raise_if_cancelled(cancel_checker)
+            before = len(result_rows)
+            walk(
+                root_code=root_code,
+                parent_code=root_code,
+                level=1,
+                cumulative_qty=1.0,
+                visited_part_ids=set(),
+            )
+            logger.info("U8 根节点展开完成: root_code=%s, rows=%s", root_code, len(result_rows) - before)
 
-    return result_rows
+        return result_rows
+    finally:
+        _close_sql_client(client)
 
 
 def _format_u8_output_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

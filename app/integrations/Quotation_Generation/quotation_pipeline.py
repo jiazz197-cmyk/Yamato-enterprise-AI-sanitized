@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from app.core.config import settings
+from app.core.logging import get_logger
 from app.integrations.Quotation_Generation.SpecificationMapping import SpecificationMapping
 from app.integrations.ocr.image2url import upload_file_to_minio
 from app.integrations.ocr.infoextraction import extract_info, extract_layout_info
@@ -33,6 +34,8 @@ class QuotationPipelineError(RuntimeError):
 ProgressCallback = Optional[Callable[[int, str], None]]
 CancelChecker = Optional[Callable[[], bool]]
 
+
+logger = get_logger("quotation_pipeline")
 
 _U8_MAX_DEPTH = 20
 
@@ -193,6 +196,14 @@ def _run_u8_query(
         run_u8_bom_inventory_query,
     )
 
+    parent_codes = [code.strip() for code in parent_inv_codes.split(",") if code.strip()]
+    logger.info(
+        "Phase2 U8 查询开始: parent_codes=%s, max_depth=%s, sample=%s",
+        len(parent_codes),
+        max_depth,
+        parent_codes[:5],
+    )
+
     try:
         response = run_u8_bom_inventory_query(
             U8BomInventoryRequest(parent_inv_codes=parent_inv_codes, max_depth=max_depth),
@@ -200,7 +211,16 @@ def _run_u8_query(
         )
     except QueryCancelledError as exc:
         raise QuotationPipelineCancelledError("U8 查询已取消") from exc
-    return _response_to_dict(response)
+
+    result = _response_to_dict(response)
+    total = result.get("total") if isinstance(result, dict) else None
+    items = result.get("items") if isinstance(result, dict) else None
+    logger.info(
+        "Phase2 U8 查询完成: total=%s, items_len=%s",
+        total,
+        len(items) if isinstance(items, list) else None,
+    )
+    return result
 
 
 def _summarize_pdm_query_params(
@@ -281,6 +301,44 @@ def _collect_pdm_partids(pdm_result: Dict[str, Any]) -> List[str]:
     return partids
 
 
+def map_parent_inv_code(partid: Any) -> str:
+    """PARTID 映射为 U8 ParentInvCode。"""
+    if partid is None:
+        return ""
+    code = str(partid).strip()
+    if not code:
+        return ""
+    if code.startswith("50GB"):
+        return f"Z{code[4:]}"
+    if code.startswith("50CB"):
+        return f"X{code[4:]}"
+    if code.startswith("50JC"):
+        return f"P{code[4:]}"
+    return code
+
+
+def _convert_partids_to_u8_codes(partids: List[str]) -> tuple[List[str], List[Dict[str, str]]]:
+    """将 PDM PARTID 转换为 U8 可查询编码，并对查询编码去重。"""
+    converted_codes: List[str] = []
+    mappings: List[Dict[str, str]] = []
+    seen_codes: set[str] = set()
+
+    for partid in partids:
+        source = str(partid).strip()
+        if not source:
+            continue
+        mapped = map_parent_inv_code(source)
+        if not mapped:
+            continue
+        mappings.append({"pdm_partid": source, "u8_parent_inv_code": mapped})
+        if mapped in seen_codes:
+            continue
+        seen_codes.add(mapped)
+        converted_codes.append(mapped)
+
+    return converted_codes, mappings
+
+
 def run_phase1_keywords_and_pdm(
     pdf_bytes: bytes,
     original_filename: str,
@@ -347,17 +405,47 @@ def run_phase2_u8_bom_inventory(
     if not pdm_partids:
         raise QuotationPipelineError("PDM 结果未包含任何 PARTID，无法继续 U8 查询")
 
-    parent_inv_codes = ",".join(pdm_partids)
-    u8_summary = _summarize_partid_list(pdm_partids)
+    selected_partids = [str(partid).strip() for partid in pdm_partids if str(partid).strip()]
+    if not selected_partids:
+        raise QuotationPipelineError("PDM 结果中的 PARTID 为空，无法继续 U8 查询")
+
+    logger.info(
+        "Phase2 输入 PARTID: raw_count=%s, normalized_count=%s, sample=%s",
+        len(pdm_partids),
+        len(selected_partids),
+        selected_partids[:8],
+    )
+
+    converted_u8_codes, pdm_to_u8_mappings = _convert_partids_to_u8_codes(selected_partids)
+    if not converted_u8_codes:
+        raise QuotationPipelineError("PDM PARTID 转换 U8 编码后为空，无法继续 U8 查询")
+
+    logger.info(
+        "Phase2 PARTID->U8 编码转换: input_count=%s, output_count=%s, sample=%s",
+        len(selected_partids),
+        len(converted_u8_codes),
+        pdm_to_u8_mappings[:8],
+    )
+
+    parent_inv_codes = ",".join(converted_u8_codes)
+    u8_summary = _summarize_partid_list(converted_u8_codes)
     _emit_progress(
         progress_callback,
         70,
-        f"正在执行 U8 BOM Inventory 查询 | 参数: {u8_summary}",
+        f"正在执行 U8 BOM Inventory 查询 | 参数(U8编码): {u8_summary}",
     )
     _check_cancel(cancel_checker)
 
     u8_result = _run_u8_query(parent_inv_codes, _U8_MAX_DEPTH, cancel_checker)
     _check_cancel(cancel_checker)
+
+    total = u8_result.get("total") if isinstance(u8_result, dict) else None
+    if total == 0:
+        logger.warning(
+            "Phase2 U8 查询返回空结果: pdm_partids=%s, u8_parent_codes=%s",
+            selected_partids,
+            converted_u8_codes,
+        )
 
     _emit_progress(progress_callback, 95, "U8 查询完成，正在收尾")
 

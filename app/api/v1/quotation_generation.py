@@ -233,6 +233,44 @@ def _clamp_message(message: str, limit: int = _MESSAGE_COLUMN_LIMIT) -> str:
     return message[:head] + suffix
 
 
+def map_parent_inv_code(partid: Any) -> str:
+    """PARTID 映射为 U8 ParentInvCode。"""
+    if partid is None:
+        return ""
+    code = str(partid).strip()
+    if not code:
+        return ""
+    if code.startswith("50GB"):
+        return f"Z{code[4:]}"
+    if code.startswith("50CB"):
+        return f"X{code[4:]}"
+    if code.startswith("50JC"):
+        return f"P{code[4:]}"
+    return code
+
+
+def _convert_pdm_partids_to_u8_codes(partids: List[str]) -> tuple[List[str], List[Dict[str, str]]]:
+    """将 PDM PARTID 列表转换为 U8 可查询的 parent_inv_codes。"""
+    converted_codes: List[str] = []
+    mappings: List[Dict[str, str]] = []
+    seen_codes: set[str] = set()
+
+    for partid in partids:
+        source = str(partid).strip()
+        if not source:
+            continue
+        mapped = map_parent_inv_code(source)
+        if not mapped:
+            continue
+        mappings.append({"pdm_partid": source, "u8_parent_inv_code": mapped})
+        if mapped in seen_codes:
+            continue
+        seen_codes.add(mapped)
+        converted_codes.append(mapped)
+
+    return converted_codes, mappings
+
+
 def _close_thread_tm(loop: asyncio.AbstractEventLoop, thread_tm: TaskManager) -> None:
     try:
         if hasattr(thread_tm, "storage") and hasattr(thread_tm.storage, "redis_client"):
@@ -305,6 +343,19 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
             db.commit()
             loop.run_until_complete(thread_tm.fail_task(task_id, task.error, task.message))
             return {"status": "error", "task_id": task_id, "error": task.error}
+
+        converted_u8_codes, pdm_to_u8_mappings = _convert_pdm_partids_to_u8_codes(
+            phase1_result.pdm_partids
+        )
+        result_payload["u8_parent_inv_codes"] = converted_u8_codes
+        result_payload["pdm_to_u8_code_mappings"] = pdm_to_u8_mappings
+        logger.info(
+            "Phase1 PDM->U8 编码转换完成: task_id=%s, pdm_count=%s, u8_count=%s, sample=%s",
+            task_id,
+            len(phase1_result.pdm_partids),
+            len(converted_u8_codes),
+            pdm_to_u8_mappings[:8],
+        )
 
         task.status = QuotationTaskStatus.awaiting_approval.value
         task.progress = 50
@@ -390,11 +441,26 @@ def process_quotation_task_phase2_background(
         approved_partids = existing_payload.get("approved_partids")
         if isinstance(approved_partids, list) and approved_partids:
             selected_partids = [str(partid) for partid in approved_partids if str(partid).strip()]
+            source = "approved_partids"
         else:
             fallback = existing_payload.get("pdm_partids") or []
             selected_partids = [str(partid) for partid in fallback if str(partid).strip()]
+            source = "pdm_partids(fallback)"
+
+        logger.info(
+            "Phase2 准备执行 U8 查询: task_id=%s, source=%s, selected_count=%s, sample=%s",
+            task_id,
+            source,
+            len(selected_partids),
+            selected_partids[:8],
+        )
 
         if not selected_partids:
+            logger.warning(
+                "Phase2 缺少可用 PARTID: task_id=%s, payload_keys=%s",
+                task_id,
+                list(existing_payload.keys()),
+            )
             raise QuotationPipelineError("任务缺少已批准的 PARTID 列表，无法继续 U8 查询")
 
         update_progress(60, f"开始 U8 BOM Inventory 查询（{len(selected_partids)} 项）")
@@ -406,6 +472,18 @@ def process_quotation_task_phase2_background(
         )
 
         _safe_cleanup_task_files(db, task, task_id)
+
+        u8_total = None
+        u8_items = None
+        if isinstance(phase2_result.u8_result, dict):
+            u8_total = phase2_result.u8_result.get("total")
+            u8_items = phase2_result.u8_result.get("items")
+        logger.info(
+            "Phase2 U8 查询结果: task_id=%s, total=%s, items_len=%s",
+            task_id,
+            u8_total,
+            len(u8_items) if isinstance(u8_items, list) else None,
+        )
 
         final_payload: Dict[str, Any] = {
             "keywords_payload": existing_payload.get("keywords_payload"),
