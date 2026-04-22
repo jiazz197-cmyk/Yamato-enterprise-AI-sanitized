@@ -467,6 +467,7 @@ def process_quotation_task_phase2_background(
 
         phase2_result = run_phase2_u8_bom_inventory(
             pdm_partids=selected_partids,
+            keywords_payload=existing_payload.get("keywords_payload"),
             progress_callback=update_progress,
             cancel_checker=token.is_cancelled,
         )
@@ -489,6 +490,8 @@ def process_quotation_task_phase2_background(
             "keywords_payload": existing_payload.get("keywords_payload"),
             "approved_partids": selected_partids,
             "u8_result": phase2_result.u8_result,
+            "u8_result_by_type": phase2_result.u8_result_by_type,
+            "u8_result_type_summary": phase2_result.u8_result_type_summary,
         }
 
         task.status = QuotationTaskStatus.completed.value

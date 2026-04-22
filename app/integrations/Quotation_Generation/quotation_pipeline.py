@@ -67,9 +67,15 @@ class Phase2Result:
     """Phase 2 output: final U8 BOM inventory response."""
 
     u8_result: Dict[str, Any]
+    u8_result_by_type: Dict[str, Any] = field(default_factory=dict)
+    u8_result_type_summary: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"u8_result": self.u8_result}
+        return {
+            "u8_result": self.u8_result,
+            "u8_result_by_type": self.u8_result_by_type,
+            "u8_result_type_summary": self.u8_result_type_summary,
+        }
 
 
 def _check_cancel(cancel_checker: CancelChecker) -> None:
@@ -394,8 +400,109 @@ def run_phase1_keywords_and_pdm(
     )
 
 
+def _group_u8_result_by_type(
+    *,
+    keywords_payload: Dict[str, Any],
+    u8_result: Dict[str, Any],
+    pdm_to_u8_mappings: List[Dict[str, str]],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Build type-grouped U8 payload using PDM->U8 mapping + U8 root code.
+
+    Returns:
+        (u8_result_by_type, u8_result_type_summary)
+    """
+    items = u8_result.get("items") if isinstance(u8_result, dict) else None
+    if not isinstance(items, list):
+        return {"total": 0, "items": []}, {"total_types": 0, "types": []}
+
+    keywords = keywords_payload.get("keywords") if isinstance(keywords_payload, dict) else None
+    if isinstance(keywords, dict):
+        keywords = [keywords]
+    if not isinstance(keywords, list):
+        keywords = []
+
+    mapped_order: List[str] = []
+    mapped_set: set[str] = set()
+    for mapping in pdm_to_u8_mappings:
+        if not isinstance(mapping, dict):
+            continue
+        code = str(mapping.get("u8_parent_inv_code") or "").strip()
+        if not code or code in mapped_set:
+            continue
+        mapped_set.add(code)
+        mapped_order.append(code)
+
+    type_entries: List[Dict[str, Any]] = []
+    type_to_codes: Dict[str, List[str]] = {}
+    fallback_name = "未命名"
+
+    for idx, entry in enumerate(keywords, start=1):
+        if not isinstance(entry, dict):
+            continue
+        type_name = str(entry.get("type") or "").strip() or fallback_name
+        part_code = mapped_order[idx - 1] if idx - 1 < len(mapped_order) else ""
+        if not part_code:
+            continue
+        type_to_codes.setdefault(type_name, []).append(part_code)
+        type_entries.append(
+            {
+                "query_index": idx,
+                "type": type_name,
+                "u8_parent_inv_code": part_code,
+                "matched": True,
+            }
+        )
+
+    root_to_rows: Dict[str, List[Dict[str, Any]]] = {}
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        root_code = str(raw.get("__root_inv_code") or "").strip()
+        if not root_code:
+            continue
+        root_to_rows.setdefault(root_code, []).append(raw)
+
+    grouped_items: List[Dict[str, Any]] = []
+    for type_name, codes in type_to_codes.items():
+        rows: List[Dict[str, Any]] = []
+        for code in codes:
+            rows.extend(root_to_rows.get(code, []))
+        grouped_items.append(
+            {
+                "type": type_name,
+                "u8_parent_inv_codes": codes,
+                "total": len(rows),
+                "items": rows,
+            }
+        )
+
+    unmatched_codes = [code for code in mapped_order if code not in root_to_rows]
+    summary = {
+        "total_types": len(grouped_items),
+        "total_items": len(items),
+        "matched_root_codes": len(mapped_order) - len(unmatched_codes),
+        "unmatched_root_codes": unmatched_codes,
+        "types": [
+            {
+                "type": item.get("type"),
+                "u8_parent_inv_codes": item.get("u8_parent_inv_codes"),
+                "total": item.get("total"),
+            }
+            for item in grouped_items
+        ],
+        "mapping": type_entries,
+    }
+
+    grouped = {
+        "total": len(grouped_items),
+        "items": grouped_items,
+    }
+    return grouped, summary
+
+
 def run_phase2_u8_bom_inventory(
     pdm_partids: List[str],
+    keywords_payload: Optional[Dict[str, Any]] = None,
     progress_callback: ProgressCallback = None,
     cancel_checker: CancelChecker = None,
 ) -> Phase2Result:
@@ -449,4 +556,22 @@ def run_phase2_u8_bom_inventory(
 
     _emit_progress(progress_callback, 95, "U8 查询完成，正在收尾")
 
-    return Phase2Result(u8_result=u8_result)
+    u8_result_by_type: Dict[str, Any] = {"total": 0, "items": []}
+    u8_result_type_summary: Dict[str, Any] = {"total_types": 0, "types": []}
+    if isinstance(keywords_payload, dict) and keywords_payload:
+        u8_result_by_type, u8_result_type_summary = _group_u8_result_by_type(
+            keywords_payload=keywords_payload,
+            u8_result=u8_result,
+            pdm_to_u8_mappings=pdm_to_u8_mappings,
+        )
+        logger.info(
+            "Phase2 U8 按 type 分组完成: total_types=%s, total_items=%s",
+            u8_result_by_type.get("total"),
+            u8_result_type_summary.get("total_items"),
+        )
+
+    return Phase2Result(
+        u8_result=u8_result,
+        u8_result_by_type=u8_result_by_type,
+        u8_result_type_summary=u8_result_type_summary,
+    )

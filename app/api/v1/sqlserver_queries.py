@@ -498,6 +498,8 @@ def _format_u8_output_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "规格型号": row.get("cInvStd"),
                 "单价": row.get("iInvNcost"),
                 "总价": row.get("TOTAL_PRICE"),
+                "__root_inv_code": row.get("ROOT_INV_CODE"),
+                "__parent_inv_code": row.get("ParentInvCode"),
             }
         )
 
