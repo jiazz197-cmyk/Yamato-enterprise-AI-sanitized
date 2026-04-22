@@ -405,20 +405,23 @@ def process_quotation_task_phase2_background(
             cancel_checker=token.is_cancelled,
         )
 
-        cleanup_result = _safe_cleanup_task_files(db, task, task_id)
+        _safe_cleanup_task_files(db, task, task_id)
 
-        existing_payload.update(phase2_result.to_dict())
-        existing_payload["cleanup"] = cleanup_result
+        final_payload: Dict[str, Any] = {
+            "keywords_payload": existing_payload.get("keywords_payload"),
+            "approved_partids": selected_partids,
+            "u8_result": phase2_result.u8_result,
+        }
 
         task.status = QuotationTaskStatus.completed.value
         task.progress = 100
         task.message = "任务完成（U8 BOM Inventory 已返回）"
-        task.result_payload = existing_payload
+        task.result_payload = final_payload
         task.error = None
         task.completed_at = datetime.utcnow()
         db.commit()
 
-        loop.run_until_complete(thread_tm.complete_task(task_id, existing_payload, task.message))
+        loop.run_until_complete(thread_tm.complete_task(task_id, final_payload, task.message))
         return {"status": "success", "task_id": task_id}
 
     except QuotationPipelineCancelledError as exc:

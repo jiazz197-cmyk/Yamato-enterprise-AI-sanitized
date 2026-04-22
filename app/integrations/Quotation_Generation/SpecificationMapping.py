@@ -216,13 +216,19 @@ class SpecificationMapping:
 
     def generate_keywords_payload(self, max_retries: int = 3) -> Dict[str, Any]:
         retries = max(1, max_retries)
-        last_payload: Dict[str, Any] = {"keywords": []}
+        best_payload: Dict[str, Any] = {"keywords": []}
+        best_resolved = -1
         for attempt in range(retries):
             payload, missing_count = self._build_keywords_for_attempt(attempt)
-            last_payload = payload
+            resolved_count = sum(
+                len(entry.get("attr") or {}) for entry in payload.get("keywords", [])
+            )
+            if resolved_count > best_resolved:
+                best_resolved = resolved_count
+                best_payload = payload
             if missing_count == 0:
                 return payload
-        return last_payload
+        return best_payload
 
     def generate_output_mapping(self) -> Dict[str, str]:
         payload = self.generate_keywords_payload(max_retries=3)

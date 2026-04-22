@@ -466,6 +466,107 @@ def _format_u8_output_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return formatted_rows
 
 
+def _build_pdm_or_where_clause(alternatives_per_keyword: List[List[str]]) -> str:
+    """Merged WHERE fragment: per keyword OR across its candidates, AND across keywords.
+
+    Each candidate may be prefixed with '!' to switch LIKE to NOT LIKE.
+    Empty candidates / empty keyword groups are silently skipped.
+    """
+    outer_parts: List[str] = []
+    for alts in alternatives_per_keyword:
+        inner: List[str] = []
+        seen_inner: set = set()
+        for candidate in alts:
+            text = str(candidate).strip()
+            if not text:
+                continue
+            negated = text.startswith("!")
+            payload = text[1:].strip() if negated else text
+            if not payload:
+                continue
+            safe_text = payload.replace("'", "''")
+            clause = (
+                f"CHINANAME NOT LIKE '%{safe_text}%'"
+                if negated
+                else f"CHINANAME LIKE '%{safe_text}%'"
+            )
+            if clause in seen_inner:
+                continue
+            seen_inner.add(clause)
+            inner.append(clause)
+        if not inner:
+            continue
+        outer_parts.append(inner[0] if len(inner) == 1 else "(" + " OR ".join(inner) + ")")
+    return "\n            AND ".join(outer_parts)
+
+
+def _query_pdm_bom_merged(
+    alternatives_per_keyword: List[List[str]],
+    client: Any = None,
+) -> List[Dict[str, Any]]:
+    """One SQL per call; WHERE is AND-of-OR across alternatives."""
+    and_conditions = _build_pdm_or_where_clause(alternatives_per_keyword)
+    if not and_conditions:
+        return []
+
+    if client is None:
+        client = _get_sql_client(
+            {
+                "backend": "pymssql",
+                "server": settings.PDM_SQLSERVER_HOST,
+                "port": settings.PDM_SQLSERVER_PORT,
+                "database": settings.PDM_SQLSERVER_DATABASE,
+                "username": settings.PDM_SQLSERVER_USER,
+                "password": settings.PDM_SQLSERVER_PASSWORD,
+                "encrypt": settings.PDM_SQLSERVER_ENCRYPT,
+            }
+        )
+
+    query_sql = f"""
+        SELECT DISTINCT
+            CHINANAME,
+            PARTID
+        FROM BOM_016
+        WHERE
+            SEQNUM LIKE '1.[0-9]%'
+            AND SEQNUM NOT LIKE '1.[0-9]%.%'
+            AND {and_conditions}
+        ORDER BY CHINANAME, PARTID
+    """
+
+    rows = client.query(query_sql)
+    return _deduplicate_rows(rows)
+
+
+def _match_row_to_candidates(
+    row: Dict[str, Any],
+    alternatives_per_keyword: List[List[str]],
+) -> List[str]:
+    """For a returned row, pick the first candidate per keyword that actually matched
+    the CHINANAME. Negated ('!X') candidates are reported back with the leading '!'
+    preserved. Empty string is reported when no candidate of a keyword matched
+    (shouldn't happen since the SQL enforced it, but we stay defensive).
+    """
+    chinaname = str(row.get("CHINANAME") or "")
+    result: List[str] = []
+    for alts in alternatives_per_keyword:
+        hit = ""
+        for candidate in alts:
+            text = str(candidate).strip()
+            if not text:
+                continue
+            negated = text.startswith("!")
+            payload = text[1:].strip() if negated else text
+            if not payload:
+                continue
+            matched = (payload not in chinaname) if negated else (payload in chinaname)
+            if matched:
+                hit = text
+                break
+        result.append(hit)
+    return result
+
+
 def _query_pdm_bom(
     condition: str | List[str],
     client: Any = None,
@@ -611,16 +712,26 @@ def run_pdm_bom_query(
 
         for idx, group in enumerate(keyword_groups, start=1):
             _raise_if_cancelled(cancel_checker)
-            expanded_groups = _expand_pdm_keyword_group(group)
-            for expanded_group in expanded_groups:
+            product_types = detect_product_type(group) or [""]
+            for product_type in product_types:
                 _raise_if_cancelled(cancel_checker)
+                alts_per_keyword: List[List[str]] = []
+                for keyword in group:
+                    mapped = expand_keyword_mapping(keyword, product_type=product_type)
+                    if mapped:
+                        alts_per_keyword.append(mapped)
+                if not alts_per_keyword:
+                    continue
+
                 executed_query_count += 1
-                group_rows = _query_pdm_bom(expanded_group, client=shared_client)
+                group_rows = _query_pdm_bom_merged(alts_per_keyword, client=shared_client)
                 for row in group_rows:
                     item = dict(row)
                     item["QUERY_INDEX"] = idx
                     item["QUERY_KEYWORDS"] = group
-                    item["QUERY_EXPANDED_KEYWORDS"] = expanded_group
+                    item["QUERY_EXPANDED_KEYWORDS"] = _match_row_to_candidates(
+                        row, alts_per_keyword
+                    )
                     rows.append(item)
 
         deduplicated_rows = _deduplicate_pdm_result_rows(rows)
