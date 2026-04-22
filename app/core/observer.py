@@ -71,6 +71,8 @@ class TaskSubject:
         self._observers: List[TaskObserver] = []
         self._filtered_observers: Dict[TaskEventType, Set[TaskObserver]] = {}
         self._lock = asyncio.Lock()
+        # asyncio.Lock is not re-entrant: nested notify in the same task would deadlock.
+        self._notify_depth = 0
         
         self._event_count = 0
         self._error_count = 0
@@ -116,28 +118,40 @@ class TaskSubject:
     
     async def notify(self, event: TaskEvent) -> None:
         """并发调用相关观察者的 on_task_event。"""
-        self._event_count += 1
-        
-        async with self._lock:
-            observers_to_notify = self._get_observers_for_event(event)
-        
-        if not observers_to_notify:
-            logger.debug(f"[event] 事件 {event.event_type.value} 无订阅者")
-            return
-        
-        logger.debug(
-            f"[event] 发布事件: {event.event_type.value} "
-            f"[task_id={event.task_id}] → {len(observers_to_notify)} 个观察者"
-        )
-        
-        tasks = []
-        for observer in observers_to_notify:
-            task = asyncio.create_task(
-                self._notify_observer(observer, event)
+        if self._notify_depth > 0:
+            logger.warning(
+                "Skipped re-entrant TaskSubject.notify for %s (task_id=%s)",
+                event.event_type.value,
+                event.task_id,
             )
-            tasks.append(task)
-        
-        await asyncio.gather(*tasks, return_exceptions=True)
+            return
+
+        self._notify_depth += 1
+        try:
+            self._event_count += 1
+
+            async with self._lock:
+                observers_to_notify = self._get_observers_for_event(event)
+
+            if not observers_to_notify:
+                logger.debug(f"[event] 事件 {event.event_type.value} 无订阅者")
+                return
+
+            logger.debug(
+                f"[event] 发布事件: {event.event_type.value} "
+                f"[task_id={event.task_id}] → {len(observers_to_notify)} 个观察者"
+            )
+
+            tasks = []
+            for observer in observers_to_notify:
+                task = asyncio.create_task(
+                    self._notify_observer(observer, event)
+                )
+                tasks.append(task)
+
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._notify_depth -= 1
     
     def _get_observers_for_event(self, event: TaskEvent) -> List[TaskObserver]:
         """有过滤器的只收匹配类型；无过滤器收全部。"""

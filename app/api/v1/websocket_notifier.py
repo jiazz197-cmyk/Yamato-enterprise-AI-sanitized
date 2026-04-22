@@ -61,15 +61,27 @@ class WebSocketConnectionManager:
                     self.ip_connections[client_ip] = next_count
             logger.info(f"[error] WebSocket client disconnected: task_id={task_id}")
 
+    def _trim_message_counters_if_needed(self) -> None:
+        """Prevent unbounded growth of ip_message_counters under many unique IPs."""
+        cap = settings.WS_MAX_TRACKED_IPS_FOR_COUNTERS
+        if len(self.ip_message_counters) <= cap:
+            return
+        overflow = len(self.ip_message_counters) - cap + max(10, cap // 10)
+        for key in list(self.ip_message_counters.keys())[:overflow]:
+            self.ip_message_counters.pop(key, None)
+
     def allow_message(self, client_ip: str) -> bool:
         """按 IP 每分钟固定窗口计数。"""
         current_window = int(time.time()) // 60
         counter = self.ip_message_counters.get(client_ip)
         if not counter or counter["window"] != current_window:
             self.ip_message_counters[client_ip] = {"window": current_window, "count": 1}
+            self._trim_message_counters_if_needed()
             return True
         counter["count"] += 1
-        return counter["count"] <= settings.WS_MAX_MESSAGES_PER_MINUTE
+        ok = counter["count"] <= settings.WS_MAX_MESSAGES_PER_MINUTE
+        self._trim_message_counters_if_needed()
+        return ok
 
     async def send_to_task(self, task_id: str, message: dict):
         """JSON 文本推给订阅该 task 的全部连接；失败则 disconnect。"""

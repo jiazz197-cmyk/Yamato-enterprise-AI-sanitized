@@ -22,6 +22,21 @@ logger = get_logger("executor")
 
 # shutdown(cancel_futures=...) 需 Python 3.9+
 PYTHON_39_PLUS = sys.version_info >= (3, 9)
+
+
+def _run_coro_in_fresh_event_loop(coro: Any) -> Any:
+    """Run a single coroutine in a new loop and always close the loop."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
+
+
 logger.info(f"[info] Python 版本: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}, 支持高级 shutdown: {PYTHON_39_PLUS}")
 
 
@@ -207,10 +222,7 @@ class ExecutorManager:
                     # 在工作线程里起事件循环回写 TaskManager，避免 submit 持锁 await
                     if needs_task_manager:
                         try:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            loop.run_until_complete(self._task_manager.start_task(task_id))
-                            loop.close()
+                            _run_coro_in_fresh_event_loop(self._task_manager.start_task(task_id))
                             logger.debug(f"[{task_id}] 已同步状态到 TaskManager: running")
                         except Exception as e:
                             logger.warning(f"[{task_id}] 同步启动状态到 TaskManager 失败: {e}")
@@ -219,13 +231,10 @@ class ExecutorManager:
                     
                     if needs_task_manager:
                         try:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
                             task_result = result if isinstance(result, dict) else {"result": result}
-                            loop.run_until_complete(
+                            _run_coro_in_fresh_event_loop(
                                 self._task_manager.complete_task(task_id, task_result, "任务完成")
                             )
-                            loop.close()
                             logger.debug(f"[{task_id}] 已同步完成状态到 TaskManager")
                         except Exception as e:
                             logger.warning(f"[{task_id}] 同步完成状态到 TaskManager 失败: {e}")
@@ -238,13 +247,10 @@ class ExecutorManager:
                     
                     if needs_task_manager:
                         try:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            loop.run_until_complete(
+                            _run_coro_in_fresh_event_loop(
                                 self._task_manager.fail_task(task_id, "KeyboardInterrupt", "任务被中断")
                             )
-                            loop.close()
-                        except:
+                        except Exception:
                             pass
                     
                     raise
@@ -256,12 +262,9 @@ class ExecutorManager:
                     
                     if needs_task_manager:
                         try:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            loop.run_until_complete(
+                            _run_coro_in_fresh_event_loop(
                                 self._task_manager.fail_task(task_id, str(e), "任务执行失败")
                             )
-                            loop.close()
                             logger.debug(f"[{task_id}] 已同步失败状态到 TaskManager")
                         except Exception as e2:
                             logger.warning(f"[{task_id}] 同步失败状态到 TaskManager 失败: {e2}")

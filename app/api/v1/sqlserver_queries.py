@@ -9,10 +9,12 @@ from time import perf_counter
 from typing import Any, Callable, Dict, List, Optional, Sequence
 import re
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
+from app.core.security import get_current_user
+from app.models.orm.platform.user import User
 from app.core.exceptions import ExternalServiceError, ValidationError
 from app.core.logging import get_logger
 from app.api.v1.keyword_mapping import detect_product_type, expand_keyword_mapping
@@ -179,6 +181,8 @@ def _get_sql_client(config: Dict[str, Any]):
                     database=self.conf["database"],
                     charset="utf8",
                     as_dict=True,
+                    timeout=settings.SQLSERVER_QUERY_TIMEOUT_SEC,
+                    login_timeout=settings.SQLSERVER_LOGIN_TIMEOUT_SEC,
                 )
             return self._conn
 
@@ -793,12 +797,18 @@ def run_pdm_bom_query(
 
 
 @router.post("/u8/bom-inventory", response_model=QueryResponse, summary="U8 BOM + Inventory 递归查询")
-def query_u8_bom_inventory(payload: U8BomInventoryRequest) -> QueryResponse:
-    """按 parent_inv_codes 递归展开 U8 BOM，并关联 Inventory 成本信息。"""
+def query_u8_bom_inventory(
+    payload: U8BomInventoryRequest,
+    _current_user: User = Depends(get_current_user),
+) -> QueryResponse:
+    """按 parent_inv_codes 递归展开 U8 BOM，并关联 Inventory 成本信息。需登录。"""
     return run_u8_bom_inventory_query(payload)
 
 
 @router.post("/pdm/bom", response_model=QueryResponse, summary="PDM BOM_016 条件查询")
-def query_pdm_bom(payload: PdmBomRequest) -> QueryResponse:
-    """查询 pdm_change_me.BOM_016，支持单组关键词 AND 或多组关键词分批查询。"""
+def query_pdm_bom(
+    payload: PdmBomRequest,
+    _current_user: User = Depends(get_current_user),
+) -> QueryResponse:
+    """查询 pdm_change_me.BOM_016，支持单组关键词 AND 或多组关键词分批查询。需登录。"""
     return run_pdm_bom_query(payload)

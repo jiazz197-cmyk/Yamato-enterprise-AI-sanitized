@@ -34,6 +34,7 @@ class RateLimiter:
             f"{settings.API_V1_STR}/retriever",
             f"{settings.API_V1_STR}/chat-summary",
             f"{settings.API_V1_STR}/context-compression",
+            f"{settings.API_V1_STR}/sqlserver",
         )
         self.trust_proxy_headers = settings.TRUST_PROXY_HEADERS
         self.trusted_proxy_networks = self._build_trusted_proxy_networks(settings.TRUSTED_PROXIES)

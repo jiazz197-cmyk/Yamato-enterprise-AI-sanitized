@@ -21,7 +21,11 @@ class DispatchCandidate:
 
 
 class QuotationDispatcher:
-    """Controls per-user running quota and dequeues queued tasks."""
+    """Controls per-user running quota and dequeues queued tasks.
+
+    The lock only covers ORM queries and commit; avoid taking other locks
+    (e.g. executor) while inside dequeue_for_owner to keep ordering obvious.
+    """
 
     def __init__(self, max_running_per_user: int = 3):
         self._max_running_per_user = max_running_per_user

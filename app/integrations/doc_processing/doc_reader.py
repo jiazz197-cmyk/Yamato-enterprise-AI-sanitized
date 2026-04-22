@@ -24,6 +24,8 @@ import langchain_compat  # noqa: F401
 from .exceptions import DocumentParseError
 from .text_splitter import TagGenerator, TokenAwareTextSplitter, ExcelHeaderPreservingSplitter
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -105,32 +107,39 @@ class LibreOfficeConverter:
                 env["SAL_NO_SPLASH"] = "1"  # 禁用启动画面
                 env["OFFICE_PROCESS_TYPE"] = "headless"  # 标记为无头模式
                 
-                proc = subprocess.run(
-                    [
-                        self.soffice_path,
-                        "--headless",
-                        "--invisible",
-                        "--nocrashreport",
-                        "--nodefault",
-                        "--nofirststartwizard",
-                        "--nolockcheck",
-                        "--nologo",
-                        "--norestore",
-                        "--accept=socket,host=localhost,port=0;urp;",  # 避免端口冲突
-                        "--convert-to",
-                        "docx:Office Open XML Text",
-                        "--outdir",
-                        out_dir,
-                        doc_path,
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    stdin=subprocess.DEVNULL,  # 关闭标准输入
-                    check=True,
-                    text=True,
-                    env=env,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-                )
+                try:
+                    proc = subprocess.run(
+                        [
+                            self.soffice_path,
+                            "--headless",
+                            "--invisible",
+                            "--nocrashreport",
+                            "--nodefault",
+                            "--nofirststartwizard",
+                            "--nolockcheck",
+                            "--nologo",
+                            "--norestore",
+                            "--accept=socket,host=localhost,port=0;urp;",  # 避免端口冲突
+                            "--convert-to",
+                            "docx:Office Open XML Text",
+                            "--outdir",
+                            out_dir,
+                            doc_path,
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        stdin=subprocess.DEVNULL,  # 关闭标准输入
+                        check=True,
+                        text=True,
+                        env=env,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                        timeout=settings.LIBREOFFICE_SUBPROCESS_TIMEOUT_SEC,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    logger.error("LibreOffice convert timed out after %ss", exc.timeout)
+                    raise RuntimeError(
+                        f"LibreOffice conversion timed out after {settings.LIBREOFFICE_SUBPROCESS_TIMEOUT_SEC}s"
+                    ) from exc
                 if proc.returncode != 0:
                     raise RuntimeError(proc.stderr)
                 result_path = os.path.join(out_dir, Path(doc_path).with_suffix(".docx").name)

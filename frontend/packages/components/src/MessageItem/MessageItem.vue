@@ -8,7 +8,7 @@
   4. AI 流式输出：支持从 &lt;think&gt;...&lt;/think&gt; 中分离“思考过程”和“最终答案”
   5. 流式阶段：当 &lt;think&gt; 尚未闭合时，实时展示思考内容；闭合后自动切换到答案流
   6. 思考区可折叠，并在答案开始后自动收起（仍可手动展开）
-  7. 显示头像（用户 / AI）
+  7. 以暖色底区分角色（无头像，见 DESIGN.md）
   8. 可选显示消息时间
 
   使用场景：
@@ -17,17 +17,8 @@
  
 <template>
   <div :class="['message-item', `message-item--${role}`]">
-    <div class="message-item__avatar">
-      <div v-if="role === 'user'" class="avatar avatar--user">U</div>
-      <img
-        v-else-if="assistantAvatarUrl"
-        :src="assistantAvatarUrl"
-        class="avatar avatar--assistant-img"
-        alt="AI"
-      />
-      <div v-else class="avatar avatar--assistant">AI</div>
-    </div>
     <div class="message-item__content">
+      <div class="message-item__bubble" :class="`message-item__bubble--${role}`">
       <template v-if="role === 'assistant'">
         <details
           v-if="hasThought"
@@ -59,6 +50,7 @@
         <div v-else class="message-item__text message-item__markdown" v-html="renderedAnswerMarkdown"></div>
       </template>
       <div v-else class="message-item__text">{{ content }}</div>
+      </div>
       <div v-if="timestamp" class="message-item__time">{{ timestamp }}</div>
     </div>
   </div>
@@ -74,7 +66,6 @@ interface Props {
   content: string
   timestamp?: string
   isStreaming?: boolean
-  assistantAvatarUrl?: string
 }
 
 const props = defineProps<Props>()
@@ -182,48 +173,68 @@ const toggleThought = () => {
 </script>
 
 <style lang="scss" scoped>
+/* Colors from frontend/DESIGN.md — warm neutrals, no cool blue-grays */
+$color-parchment: #f5f4ed;
+$color-ivory: #faf9f5;
+$color-warm-sand: #e8e6dc;
+$color-near-black: #141413;
+$color-charcoal-warm: #4d4c48;
+$color-olive-gray: #5e5d59;
+$color-stone-gray: #87867f;
+$color-border-cream: #f0eee6;
+$color-border-warm: #e8e6dc;
+$color-terracotta: #c96442;
+$color-ring: #d1cfc5;
+
 .message-item {
   display: flex;
-  gap: 16px;
-  padding: 16px;
-  border-radius: 8px;
-  transition: none;
+  width: 100%;
+  padding: 10px 16px;
+  box-sizing: border-box;
 
   &--user {
-    flex-direction: row-reverse;
+    justify-content: flex-end;
 
     .message-item__content {
       align-items: flex-end;
     }
-
-    .message-item__text {
-      background: transparent;
-      color: #202124;
-    }
   }
 
   &--assistant {
+    justify-content: flex-start;
+
     .message-item__content {
-      max-width: 80%;
+      align-items: flex-start;
     }
-
-    .message-item__text {
-      background: transparent;
-      color: #202124;
-      border: none;
-    }
-  }
-
-  &__avatar {
-    flex-shrink: 0;
   }
 
   &__content {
-    flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    max-width: 70%;
+    gap: 6px;
+    max-width: min(100%, 720px);
+    width: fit-content;
+  }
+
+  &__bubble {
+    border-radius: 12px;
+    padding: 12px 16px;
+    line-height: 1.6;
+    text-align: left;
+    /* ring shadow = border-like halo (DESIGN.md depth) */
+    box-shadow: 0 0 0 1px $color-border-cream;
+
+    &--user {
+      background: $color-warm-sand;
+      color: $color-charcoal-warm;
+      box-shadow: 0 0 0 1px $color-ring;
+    }
+
+    &--assistant {
+      background: $color-ivory;
+      color: $color-near-black;
+      max-width: 100%;
+    }
   }
 
   &__text {
@@ -236,8 +247,9 @@ const toggleThought = () => {
 
   &__time {
     font-size: 12px;
-    color: #9aa0a6;
-    padding: 0 4px;
+    color: $color-stone-gray;
+    padding: 0 2px 0 6px;
+    letter-spacing: 0.12px;
   }
 }
 
@@ -260,7 +272,8 @@ const toggleThought = () => {
     margin: 0 0 12px;
     padding: 12px;
     border-radius: 8px;
-    background: #f5f5f5;
+    background: $color-parchment;
+    border: 1px solid $color-border-cream;
     overflow-x: auto;
   }
 
@@ -278,14 +291,15 @@ const toggleThought = () => {
 
   :deep(th),
   :deep(td) {
-    border: 1px solid #e0e0e0;
+    border: 1px solid $color-border-warm;
     padding: 8px 10px;
     text-align: left;
     vertical-align: top;
   }
 
   :deep(th) {
-    background: #fafafa;
+    background: $color-parchment;
+    color: $color-near-black;
     font-weight: 600;
   }
 
@@ -295,7 +309,7 @@ const toggleThought = () => {
     overflow-y: hidden;
     margin: 0 0 12px;
     scrollbar-width: thin;
-    scrollbar-color: #cfd3d9 #f5f6f8;
+    scrollbar-color: $color-ring $color-parchment;
   }
 
   :deep(.message-item__table-scroll::-webkit-scrollbar) {
@@ -303,25 +317,27 @@ const toggleThought = () => {
   }
 
   :deep(.message-item__table-scroll::-webkit-scrollbar-track) {
-    background: #f5f6f8;
+    background: $color-parchment;
     border-radius: 999px;
   }
 
   :deep(.message-item__table-scroll::-webkit-scrollbar-thumb) {
-    background: #cfd3d9;
+    background: $color-ring;
     border-radius: 999px;
   }
 
   :deep(.message-item__table-scroll::-webkit-scrollbar-thumb:hover) {
-    background: #bfc5cc;
+    background: $color-stone-gray;
   }
 }
 
 .message-item__thought {
   border-radius: 8px;
-  background: #f1f5f9;
-  border-left: 4px solid #3b82f6;
+  background: $color-parchment;
+  border: 1px solid $color-border-cream;
+  border-left: 4px solid $color-terracotta;
   padding: 10px 12px;
+  margin-bottom: 10px;
 
   &[open] {
     padding-bottom: 12px;
@@ -330,7 +346,7 @@ const toggleThought = () => {
 
 .message-item__thought-summary {
   cursor: pointer;
-  color: #1e40af;
+  color: $color-olive-gray;
   font-size: 13px;
   font-weight: 600;
   user-select: none;
@@ -345,34 +361,5 @@ const toggleThought = () => {
 .message-item__stream-text {
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 500;
-  font-size: 14px;
-
-  &--user {
-    background: #4285f4;
-    color: white;
-  }
-
-  &--assistant {
-    background: #34a853;
-    color: white;
-  }
-
-  &--assistant-img {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    object-fit: cover;
-    display: block;
-  }
 }
 </style>

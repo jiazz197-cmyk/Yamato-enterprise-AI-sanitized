@@ -170,6 +170,9 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     PDM_SQLSERVER_USER: str = Field("sa", env="PDM_SQLSERVER_USER")
     PDM_SQLSERVER_PASSWORD: str = Field("change_me_pdm_sqlserver_password", env="PDM_SQLSERVER_PASSWORD")
     PDM_SQLSERVER_ENCRYPT: bool = Field(False, env="PDM_SQLSERVER_ENCRYPT")
+    # pymssql: query timeout (seconds) and connection/login timeout
+    SQLSERVER_QUERY_TIMEOUT_SEC: int = Field(120, ge=1, le=3600, env="SQLSERVER_QUERY_TIMEOUT_SEC")
+    SQLSERVER_LOGIN_TIMEOUT_SEC: int = Field(30, ge=1, le=300, env="SQLSERVER_LOGIN_TIMEOUT_SEC")
 
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
@@ -222,6 +225,11 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     RATE_LIMIT_REDIS_ERROR_STATUS: int = Field(503, env="RATE_LIMIT_REDIS_ERROR_STATUS")
     WS_MAX_CONNECTIONS_PER_IP: int = Field(20, env="WS_MAX_CONNECTIONS_PER_IP")
     WS_MAX_MESSAGES_PER_MINUTE: int = Field(120, env="WS_MAX_MESSAGES_PER_MINUTE")
+    # Cap in-memory per-IP message counter entries to avoid unbounded growth
+    WS_MAX_TRACKED_IPS_FOR_COUNTERS: int = Field(2000, ge=100, le=100000, env="WS_MAX_TRACKED_IPS_FOR_COUNTERS")
+
+    # Headless document conversion; abort hung soffice processes
+    LIBREOFFICE_SUBPROCESS_TIMEOUT_SEC: int = Field(300, ge=30, le=3600, env="LIBREOFFICE_SUBPROCESS_TIMEOUT_SEC")
 
     ENABLE_RATE_LIMIT: bool = Field(False, env="ENABLE_RATE_LIMIT")
     ENABLE_REQUEST_SIZE_LIMIT: bool = Field(True, env="ENABLE_REQUEST_SIZE_LIMIT")
