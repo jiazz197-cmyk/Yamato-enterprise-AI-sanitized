@@ -196,14 +196,22 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
         auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""
         return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
+    # This process connects to MinIO for put_object / bucket (use loopback or published port when API is on the host).
+    MINIO_APP_ENDPOINT: str = Field("127.0.0.1:9000", env="MINIO_APP_ENDPOINT")
+    # Legacy: presign / anonymous URL fallback when MINIO_PUBLIC_ENDPOINT is unset. Not used for application upload.
     MINIO_ENDPOINT: str = Field("127.0.0.1:9000", env="MINIO_ENDPOINT")
+    # Host:port (or full http URL) that other containers (OCR) use to GET objects — presign is signed for this host only.
     MINIO_PUBLIC_ENDPOINT: Optional[str] = Field(default=None, env="MINIO_PUBLIC_ENDPOINT")
     MINIO_ACCESS_KEY: str = Field("change_me_minio_access_key", env="MINIO_ACCESS_KEY")
     MINIO_SECRET_KEY: str = Field("change_me_minio_secret_key", env="MINIO_SECRET_KEY")
     MINIO_SECURE: bool = Field(False, env="MINIO_SECURE")
+    # Set so minio-py does not call GetBucketLocation on presign; MinIO S3 default is us-east-1
+    MINIO_REGION: str = Field("us-east-1", env="MINIO_REGION")
     MINIO_BUCKET_NAME: str = Field("yamatodev", env="MINIO_BUCKET_NAME")
     # Presigned GetObject for OCR / temp files (replaces bucket-wide anonymous read by default)
     MINIO_PRESIGN_EXPIRES_HOURS: int = Field(12, ge=1, le=168, env="MINIO_PRESIGN_EXPIRES_HOURS")
+    # Override TLS for presign only (e.g. internal MINIO_ON https but public http). None = infer from URL or MINIO_SECURE
+    MINIO_PRESIGN_SECURE: Optional[bool] = Field(default=None, env="MINIO_PRESIGN_SECURE")
     # Optional: upload temp OCR images to a dedicated bucket (still uses presign, no public policy)
     MINIO_OCR_TEMP_BUCKET: Optional[str] = Field(default=None, env="MINIO_OCR_TEMP_BUCKET")
     # Opt-in only: if True, set anonymous s3:GetObject on MINIO_OCR_ANONYMOUS_BUCKET (never on default bucket)

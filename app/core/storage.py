@@ -1,9 +1,10 @@
 """MinIO：按线程 TLS 建 client，bucket 懒检查；分块阈值见 DEFAULT_CHUNK_SIZE。"""
 import tempfile
 import threading
+import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
-from typing import IO, Optional, Generator, Dict
+from typing import IO, Optional, Generator, Dict, Tuple
 
 from minio import Minio
 from minio.error import S3Error
@@ -46,13 +47,15 @@ class MinioClientPool:
         self.__class__._initialized = True
     
     def get_client(self) -> Minio:
-        """当前线程懒创建 Minio。"""
+        """当前线程懒创建 Minio。仅使用 MINIO_APP_ENDPOINT（默认 127.0.0.1:9000），与预签名里的 MINIO_PUBLIC_ENDPOINT 分离。"""
         if not hasattr(self._local, 'client'):
+            host, secure = _minio_host_and_secure_for_app()
             self._local.client = Minio(
-                MINIO_ENDPOINT,
+                host,
                 access_key=MINIO_ACCESS_KEY,
                 secret_key=MINIO_SECRET_KEY,
-                secure=MINIO_SECURE,
+                secure=secure,
+                region=settings.MINIO_REGION,
             )
             logger.debug(f"创建 MinIO 客户端: 线程 {threading.current_thread().name}")
         
@@ -92,6 +95,55 @@ _minio_pool = MinioClientPool()
 def get_minio_client() -> Minio:
     """取当前线程 client；勿模块级缓存以免跨线程复用。"""
     return _minio_pool.get_client()
+
+
+def _parse_s3_endpoint_for_presign(raw: str) -> Tuple[str, Optional[bool]]:
+    """Return (host:port, inferred_https_or_none). If URL has no scheme, second is None (use settings)."""
+    r = (raw or "").strip()
+    if not r:
+        return "127.0.0.1:9000", None
+    if "://" in r:
+        p = urllib.parse.urlparse(r)
+        if not p.hostname:
+            return r, None
+        default_port = 443 if p.scheme == "https" else 80
+        port = p.port if p.port is not None else default_port
+        return f"{p.hostname}:{port}", p.scheme == "https"
+    return r, None
+
+
+def _minio_host_and_secure_for_app() -> Tuple[str, bool]:
+    """SDK upload/bucket: only MINIO_APP_ENDPOINT (default 127.0.0.1:9000). Do not use MINIO_ENDPOINT or minio:9000 here unless explicitly set in MINIO_APP_ENDPOINT."""
+    raw = (settings.MINIO_APP_ENDPOINT or "127.0.0.1:9000").strip() or "127.0.0.1:9000"
+    host_port, scheme_https = _parse_s3_endpoint_for_presign(raw)
+    if scheme_https is not None:
+        return host_port, scheme_https
+    return host_port, bool(MINIO_SECURE)
+
+
+def get_minio_client_for_presign() -> Minio:
+    """Minio client for presigned_get_object only.
+
+    Presigned URLs: host must be whatever OCR fetches (e.g. ``http://minio:9000``). Upload uses
+    ``MINIO_APP_ENDPOINT`` only, never ``MINIO_PUBLIC_ENDPOINT`` or ``minio`` unless you set
+    ``MINIO_APP_ENDPOINT`` to that.
+    """
+    source = (settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT or "127.0.0.1:9000").strip()
+    host_port, scheme_https = _parse_s3_endpoint_for_presign(source)
+    if settings.MINIO_PRESIGN_SECURE is not None:
+        secure = bool(settings.MINIO_PRESIGN_SECURE)
+    elif scheme_https is not None:
+        secure = scheme_https
+    else:
+        secure = bool(settings.MINIO_SECURE)
+    return Minio(
+        host_port,
+        access_key=MINIO_ACCESS_KEY,
+        secret_key=MINIO_SECRET_KEY,
+        secure=secure,
+        # Without region, minio-py calls GET /bucket?location= against this endpoint (breaks if host is e.g. minio and not resolvable here)
+        region=settings.MINIO_REGION,
+    )
 
 
 def upload_to_minio(file_path: str, file_name: str) -> str:

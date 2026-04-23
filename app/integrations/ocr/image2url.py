@@ -3,7 +3,7 @@
 import io
 from datetime import timedelta
 from minio.error import S3Error
-from app.core.storage import get_minio_client
+from app.core.storage import get_minio_client, get_minio_client_for_presign
 from app.core.config import settings
 from app.core.logging import get_logger
 
@@ -87,7 +87,11 @@ def upload_file_to_minio(file_data, file_name):
             return _public_http_url(bucket, file_name)
 
         expires = timedelta(hours=settings.MINIO_PRESIGN_EXPIRES_HOURS)
-        return client.presigned_get_object(bucket, file_name, expires=expires)
+        # Sign with MINIO_PUBLIC_ENDPOINT (see get_minio_client_for_presign) so fetchers (OCR) are not
+        # given 127.0.0.1 when they run outside the app host.
+        return get_minio_client_for_presign().presigned_get_object(
+            bucket, file_name, expires=expires
+        )
 
     except S3Error as e:
         raise Exception(f"MinIO 上传失败: {e}")
