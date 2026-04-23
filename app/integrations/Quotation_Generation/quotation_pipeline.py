@@ -145,11 +145,13 @@ def _extract_info_with_fallback(
     for attempt in range(1, retries + 1):
         _check_cancel(cancel_checker)
         try:
-            content = extract_layout_info(image_url, api_url)
+            content = extract_layout_info(image_url, api_url, cancel_checker=cancel_checker)
             info = extract_info(content)
             last_info = info
             if _is_ocr_result_complete(info):
                 return info
+        except QuotationPipelineCancelledError:
+            raise
         except Exception as exc:
             last_error = exc
 

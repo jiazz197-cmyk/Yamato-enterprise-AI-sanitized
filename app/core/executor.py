@@ -99,18 +99,21 @@ class ExecutorManager:
         logger.info(f"初始化全局线程池: {self._max_workers} workers")
 
     def _trim_task_history_locked(self):
-        """在持锁状态下裁剪任务历史，防止 Future 无限增长。"""
+        """在持锁状态下裁剪任务历史。只驱逐已结束（Future.done()）的项，绝不删除运行中任务的 Future/token/owner。"""
         while len(self._task_futures) > self._max_task_history:
-            oldest_task_id = None
-            for candidate_task_id, candidate_future in self._task_futures.items():
-                if candidate_future.done():
-                    oldest_task_id = candidate_task_id
-                    break
-            if oldest_task_id is None:
-                oldest_task_id = next(iter(self._task_futures))
-            self._task_futures.pop(oldest_task_id, None)
-            self._task_owner_map.pop(oldest_task_id, None)
-            self._cancellation_tokens.pop(oldest_task_id, None)
+            evict_id = next(
+                (tid for tid, fut in self._task_futures.items() if fut.done()),
+                None,
+            )
+            if evict_id is None:
+                logger.warning(
+                    "任务历史超过上限 %s 且均为运行中，跳过驱逐，避免破坏取消与鉴权",
+                    self._max_task_history,
+                )
+                break
+            self._task_futures.pop(evict_id, None)
+            self._task_owner_map.pop(evict_id, None)
+            self._cancellation_tokens.pop(evict_id, None)
 
     def set_task_owner(self, task_id: str, owner_id: str):
         """记录任务归属用户，并触发历史裁剪。"""

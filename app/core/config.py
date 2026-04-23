@@ -202,6 +202,16 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     MINIO_SECRET_KEY: str = Field("change_me_minio_secret_key", env="MINIO_SECRET_KEY")
     MINIO_SECURE: bool = Field(False, env="MINIO_SECURE")
     MINIO_BUCKET_NAME: str = Field("yamatodev", env="MINIO_BUCKET_NAME")
+    # Presigned GetObject for OCR / temp files (replaces bucket-wide anonymous read by default)
+    MINIO_PRESIGN_EXPIRES_HOURS: int = Field(12, ge=1, le=168, env="MINIO_PRESIGN_EXPIRES_HOURS")
+    # Optional: upload temp OCR images to a dedicated bucket (still uses presign, no public policy)
+    MINIO_OCR_TEMP_BUCKET: Optional[str] = Field(default=None, env="MINIO_OCR_TEMP_BUCKET")
+    # Opt-in only: if True, set anonymous s3:GetObject on MINIO_OCR_ANONYMOUS_BUCKET (never on default bucket)
+    MINIO_OCR_ENABLE_ANONYMOUS_BUCKET: bool = Field(False, env="MINIO_OCR_ENABLE_ANONYMOUS_BUCKET")
+    MINIO_OCR_ANONYMOUS_BUCKET: Optional[str] = Field(default=None, env="MINIO_OCR_ANONYMOUS_BUCKET")
+
+    OCR_HTTP_CONNECT_TIMEOUT: float = Field(10.0, ge=1.0, le=300.0, env="OCR_HTTP_CONNECT_TIMEOUT")
+    OCR_HTTP_READ_TIMEOUT: float = Field(300.0, ge=5.0, le=3600.0, env="OCR_HTTP_READ_TIMEOUT")
 
     SECRET_KEY: str = Field(default_factory=lambda: secrets.token_urlsafe(32), env="SECRET_KEY")
     ALGORITHM: str = Field("HS256", env="ALGORITHM")

@@ -86,6 +86,12 @@ def process_documents_background(
     try:
         if token.is_cancelled():
             logger.info(f"[{task_id}] 任务在启动前被取消")
+            try:
+                loop.run_until_complete(
+                    thread_tm.fail_task(task_id, "用户取消任务", "任务在启动前被取消")
+                )
+            except Exception as e:
+                logger.warning(f"[{task_id}] 回写取消状态失败: {e}")
             return {"status": "cancelled", "message": "任务在启动前被取消"}
         
         task_exists = False
@@ -103,6 +109,12 @@ def process_documents_background(
         
         if not task_exists:
             logger.error(f"[{task_id}] 任务创建超时，无法启动")
+            try:
+                loop.run_until_complete(
+                    thread_tm.fail_task(task_id, "任务记录同步超时，无法启动", "任务创建超时")
+                )
+            except Exception as e:
+                logger.warning(f"[{task_id}] 回写超时失败状态失败: {e}")
             return {"status": "error", "message": "任务创建超时"}
         
         loop.run_until_complete(thread_tm.start_task(task_id))
@@ -121,8 +133,10 @@ def process_documents_background(
             chunk_overlap=chunk_overlap,
         )
         
-        logger.info(f"[{task_id}] 正在从 MinIO 下载 {len(file_ids)} 个文件...")
-        streams = []
+        logger.info(f"[{task_id}] 正在从 MinIO 下载并逐文件处理 {len(file_ids)} 个文件...")
+        downloaded_count = 0
+        total_processed = 0
+        n_files = len(file_ids)
         
         from app.core.database import SessionLocal
         db = SessionLocal()
@@ -141,10 +155,10 @@ def process_documents_background(
                     logger.warning(f"[{task_id}] 文件 ID {file_id} 不存在，跳过")
                     continue
                 
-                progress = int((i / len(file_ids)) * 30)
+                progress = int((i / max(n_files, 1)) * 30)
                 loop.run_until_complete(
                     thread_tm.update_task_progress(
-                        task_id, progress, f"正在下载第 {i+1}/{len(file_ids)} 个文件: {file_record.file_name}"
+                        task_id, progress, f"正在下载第 {i+1}/{n_files} 个文件: {file_record.file_name}"
                     )
                 )
                 
@@ -152,12 +166,38 @@ def process_documents_background(
                     with download_object_stream(file_record.minio_object_path) as response:
                         stream = BytesIO(response.read())
                         stream.name = file_record.file_name
-                        streams.append(stream)
+                    downloaded_count += 1
                 except Exception as e:
                     logger.error(f"[{task_id}] 下载文件失败 {file_record.file_name}: {e}")
                     continue
+                
+                if token.is_cancelled():
+                    loop.run_until_complete(
+                        thread_tm.fail_task(task_id, "用户取消任务", "任务已取消")
+                    )
+                    return {"status": "cancelled", "message": "任务被取消"}
+                
+                # Process one file at a time to cap memory at ~single file size
+                mid = 30 + int((i + 1) / max(n_files, 1) * 55)
+                loop.run_until_complete(
+                    thread_tm.update_task_progress(
+                        task_id, min(mid, 85), f"处理文件 {i+1}/{n_files}: {file_record.file_name}"
+                    )
+                )
+                try:
+                    one_result = pipeline.process(
+                        input_data=[stream],
+                        instance_id=instance_id,
+                    )
+                    total_processed += int(one_result.get("processed_files", 0) or 0)
+                except Exception as e:
+                    logger.error(f"[{task_id}] 处理文件失败 {file_record.file_name}: {e}", exc_info=True)
+                    raise
+                finally:
+                    stream.close()
+                    del stream
             
-            if not streams:
+            if not downloaded_count:
                 raise ValueError("没有成功下载任何文件")
             
             if token.is_cancelled():
@@ -167,23 +207,16 @@ def process_documents_background(
                 )
                 return {"status": "cancelled", "message": "任务被取消"}
             
-            logger.info(f"[{task_id}] 成功下载 {len(streams)} 个文件，开始处理...")
-            
-            loop.run_until_complete(
-                thread_tm.update_task_progress(task_id, 30, f"开始处理 {len(streams)} 个文件...")
-            )
-            
-            result = pipeline.process(
-                input_data=streams,
-                instance_id=instance_id,
-            )
+            logger.info(f"[{task_id}] 已处理 {downloaded_count} 个文件，向量化成功段数: {total_processed}")
             
             loop.run_until_complete(
                 thread_tm.update_task_progress(task_id, 90, "正在保存结果...")
             )
             
+            result = {"status": "success", "processed_files": total_processed, "total_files": downloaded_count}
+            
             final_result = {
-                "processed_files": result.get("processed_files", 0),
+                "processed_files": total_processed,
                 "total_files": len(file_ids),
                 "status": result.get("status"),
                 "instance_id": instance_id,
@@ -339,6 +372,7 @@ async def submit_document_processing(
             chunk_size,
             chunk_overlap,
         )
+        executor_manager.set_task_owner(task_id, str(current_user.id))
         
         return TaskSubmitResponse(
             task_id=task_id,
@@ -460,12 +494,18 @@ async def cancel_task_endpoint(
             }
         
         success = executor_manager.cancel_task(task_id)
-        
+
         if success:
-            if task_status.status == "running":
+            fut = executor_manager.get_task_future(task_id)
+            # ThreadPoolExecutor: cancel() True means the callable never ran — no fail_task from worker
+            if fut is not None and fut.cancelled():
+                await task_manager.fail_task(
+                    task_id, "用户取消任务", "任务在队列中已取消"
+                )
+            elif task_status.status in ("running", "pending"):
                 task_status.message = "正在取消任务..."
                 await task_manager._save_task_status(task_status)
-            
+
             return {
                 "success": True,
                 "message": "任务取消请求已发送"

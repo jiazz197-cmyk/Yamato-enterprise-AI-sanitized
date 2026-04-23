@@ -1,12 +1,29 @@
 import requests
 import json
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable
 import re
-import time 
+import time
+
+from app.core.config import settings
 
 
-def extract_layout_info(image_url: str, api_url: str = "http://localhost:80/ocr/dotsocr/v1/chat/completions") -> List[Dict[str, Any]]:
-    """POST chat/completions; parse message content JSON to layout list."""
+def extract_layout_info(
+    image_url: str,
+    api_url: str = "http://localhost:80/ocr/dotsocr/v1/chat/completions",
+    cancel_checker: Optional[Callable[[], bool]] = None,
+    connect_timeout: Optional[float] = None,
+    read_timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """POST chat/completions; parse message content JSON to layout list. Uses HTTP timeouts; cancel_checker runs before the request only."""
+    if cancel_checker and cancel_checker():
+        # Lazy import: quotation_pipeline imports this module at load time
+        from app.integrations.Quotation_Generation.quotation_pipeline import QuotationPipelineCancelledError
+
+        raise QuotationPipelineCancelledError("任务已取消")
+
+    ct = connect_timeout if connect_timeout is not None else settings.OCR_HTTP_CONNECT_TIMEOUT
+    rt = read_timeout if read_timeout is not None else settings.OCR_HTTP_READ_TIMEOUT
+
     headers = {
         "Content-Type": "application/json"
     }
@@ -49,7 +66,12 @@ def extract_layout_info(image_url: str, api_url: str = "http://localhost:80/ocr/
         ]
     }
     
-    response = requests.post(api_url, headers=headers, json=payload)
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=(ct, rt))
+    except requests.Timeout as e:
+        raise RuntimeError(
+            f"OCR API request timed out (connect={ct}s, read={rt}s): {e}"
+        ) from e
     if not response.ok:
         detail = (response.text or "").strip()
         if len(detail) > 600:
