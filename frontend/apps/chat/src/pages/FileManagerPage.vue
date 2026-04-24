@@ -437,35 +437,129 @@ const TaskItemCard = defineComponent({
       key: string
       partid: string
       chinaname: string
+      typeName: string
+      raw: QuotationPdmItem
     }
 
-    const makeRowKey = (chinaname: string, partid: string): string =>
-      `${chinaname}\u0000${partid}`
+    interface PdmApprovalGroup {
+      key: string
+      typeName: string
+      rows: PdmApprovalRow[]
+    }
 
-    const uniqueApprovalRows = computed<PdmApprovalRow[]>(() => {
-      const seen = new Set<string>()
-      const ordered: PdmApprovalRow[] = []
+    const parseQueryIndex = (value: unknown): number | null => {
+      if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
+      if (typeof value === 'string') {
+        const parsed = Number.parseInt(value.trim(), 10)
+        return Number.isFinite(parsed) ? parsed : null
+      }
+      return null
+    }
+
+    const makeRowKey = (groupKey: string, chinaname: string, partid: string): string =>
+      `${groupKey}\u0000${chinaname}\u0000${partid}`
+
+    const keywordTypeByIndex = computed<Map<number, string>>(() => {
+      const map = new Map<number, string>()
+      const result = props.task.result as
+        | {
+            keywords_payload?: {
+              keywords?: unknown
+            }
+          }
+        | null
+        | undefined
+      const keywords = result?.keywords_payload?.keywords
+      if (!Array.isArray(keywords)) return map
+
+      keywords.forEach((entry, idx) => {
+        if (!entry || typeof entry !== 'object') return
+        const typeName = String((entry as Record<string, unknown>).type ?? '').trim()
+        if (!typeName) return
+        map.set(idx, typeName)
+      })
+
+      return map
+    })
+
+    const resolveTypeName = (item: QuotationPdmItem): string => {
+      const queryIndex = parseQueryIndex(item?.QUERY_INDEX)
+      if (queryIndex !== null) {
+        const exactType = keywordTypeByIndex.value.get(queryIndex)
+        if (exactType) return exactType
+        const oneBasedType = keywordTypeByIndex.value.get(queryIndex - 1)
+        if (oneBasedType) return oneBasedType
+      }
+
+      const fallbackKeywords = item?.QUERY_KEYWORDS
+      if (Array.isArray(fallbackKeywords)) {
+        const firstKeyword = fallbackKeywords.find(
+          (keyword) => String(keyword ?? '').trim().length > 0
+        )
+        if (firstKeyword !== undefined && firstKeyword !== null) {
+          const text = String(firstKeyword).trim()
+          if (text) return text
+        }
+      }
+
+      return '未分组'
+    }
+
+    const approvalGroups = computed<PdmApprovalGroup[]>(() => {
+      const orderedGroups: PdmApprovalGroup[] = []
+      const groupMap = new Map<string, { group: PdmApprovalGroup; seenRowKeys: Set<string> }>()
+
       for (const item of pdmItems.value) {
         const rawPartid = item?.PARTID
         if (rawPartid === undefined || rawPartid === null) continue
         const partid = String(rawPartid).trim()
         if (!partid) continue
+
         const chinaname =
           item?.CHINANAME === undefined || item?.CHINANAME === null
             ? ''
             : String(item.CHINANAME).trim()
-        const key = makeRowKey(chinaname, partid)
-        if (seen.has(key)) continue
-        seen.add(key)
-        ordered.push({ key, partid, chinaname })
+
+        const typeName = resolveTypeName(item)
+        const groupKey = typeName
+
+        if (!groupMap.has(groupKey)) {
+          const group: PdmApprovalGroup = {
+            key: groupKey,
+            typeName,
+            rows: [],
+          }
+          groupMap.set(groupKey, { group, seenRowKeys: new Set<string>() })
+          orderedGroups.push(group)
+        }
+
+        const hit = groupMap.get(groupKey)
+        if (!hit) continue
+        const innerDedupKey = `${chinaname}\u0000${partid}`
+        if (hit.seenRowKeys.has(innerDedupKey)) continue
+        hit.seenRowKeys.add(innerDedupKey)
+
+        hit.group.rows.push({
+          key: makeRowKey(groupKey, chinaname, partid),
+          partid,
+          chinaname,
+          typeName,
+          raw: item,
+        })
       }
-      return ordered
+
+      return orderedGroups
     })
 
+    const allApprovalRows = computed<PdmApprovalRow[]>(() =>
+      approvalGroups.value.flatMap((group) => group.rows)
+    )
+
     const approvedRowKeys = ref<Set<string>>(new Set())
+    const expandedGroupKeys = ref<Set<string>>(new Set())
 
     watch(
-      uniqueApprovalRows,
+      allApprovalRows,
       (next, prev) => {
         const prevKeys = new Set((prev ?? []).map((row) => row.key))
         const nextKeys = new Set(next.map((row) => row.key))
@@ -481,18 +575,35 @@ const TaskItemCard = defineComponent({
       { immediate: true }
     )
 
+    watch(
+      approvalGroups,
+      (next, prev) => {
+        const nextKeys = new Set(next.map((group) => group.key))
+        const updated = new Set<string>()
+        for (const key of expandedGroupKeys.value) {
+          if (nextKeys.has(key)) updated.add(key)
+        }
+
+        const hadPrev = Array.isArray(prev) && prev.length > 0
+        if (!hadPrev && next.length > 0 && updated.size === 0) {
+          updated.add(next[0].key)
+        }
+
+        expandedGroupKeys.value = updated
+      },
+      { immediate: true }
+    )
+
     const approvedCount = computed(() => approvedRowKeys.value.size)
     const allSelected = computed(
-      () =>
-        uniqueApprovalRows.value.length > 0 &&
-        approvedCount.value === uniqueApprovalRows.value.length
+      () => allApprovalRows.value.length > 0 && approvedCount.value === allApprovalRows.value.length
     )
     const noneSelected = computed(() => approvedCount.value === 0)
 
     const approvedPartidsPreview = computed<string[]>(() => {
       const seen = new Set<string>()
       const ordered: string[] = []
-      for (const row of uniqueApprovalRows.value) {
+      for (const row of allApprovalRows.value) {
         if (!approvedRowKeys.value.has(row.key)) continue
         if (seen.has(row.partid)) continue
         seen.add(row.partid)
@@ -500,6 +611,29 @@ const TaskItemCard = defineComponent({
       }
       return ordered
     })
+
+    const isGroupExpanded = (groupKey: string): boolean => expandedGroupKeys.value.has(groupKey)
+
+    const toggleGroupExpanded = (groupKey: string): void => {
+      const next = new Set(expandedGroupKeys.value)
+      if (next.has(groupKey)) next.delete(groupKey)
+      else next.add(groupKey)
+      expandedGroupKeys.value = next
+    }
+
+    const allExpanded = computed(
+      () =>
+        approvalGroups.value.length > 0 &&
+        approvalGroups.value.every((group) => expandedGroupKeys.value.has(group.key))
+    )
+
+    const toggleExpandAll = (): void => {
+      if (allExpanded.value) {
+        expandedGroupKeys.value = new Set()
+      } else {
+        expandedGroupKeys.value = new Set(approvalGroups.value.map((group) => group.key))
+      }
+    }
 
     const toggleRow = (rowKey: string): void => {
       const next = new Set(approvedRowKeys.value)
@@ -512,8 +646,44 @@ const TaskItemCard = defineComponent({
       if (allSelected.value) {
         approvedRowKeys.value = new Set()
       } else {
-        approvedRowKeys.value = new Set(uniqueApprovalRows.value.map((row) => row.key))
+        approvedRowKeys.value = new Set(allApprovalRows.value.map((row) => row.key))
       }
+    }
+
+    const getGroupSelectedCount = (group: PdmApprovalGroup): number => {
+      let count = 0
+      for (const row of group.rows) {
+        if (approvedRowKeys.value.has(row.key)) count += 1
+      }
+      return count
+    }
+
+    const getGroupApprovedPartidCount = (group: PdmApprovalGroup): number => {
+      const seen = new Set<string>()
+      for (const row of group.rows) {
+        if (!approvedRowKeys.value.has(row.key)) continue
+        seen.add(row.partid)
+      }
+      return seen.size
+    }
+
+    const isGroupAllSelected = (group: PdmApprovalGroup): boolean =>
+      group.rows.length > 0 && getGroupSelectedCount(group) === group.rows.length
+
+    const isGroupNoneSelected = (group: PdmApprovalGroup): boolean => getGroupSelectedCount(group) === 0
+
+    const toggleGroupSelection = (group: PdmApprovalGroup): void => {
+      const next = new Set(approvedRowKeys.value)
+      if (isGroupAllSelected(group)) {
+        for (const row of group.rows) {
+          next.delete(row.key)
+        }
+      } else {
+        for (const row of group.rows) {
+          next.add(row.key)
+        }
+      }
+      approvedRowKeys.value = next
     }
 
     const submitApproval = (): void => {
@@ -526,105 +696,148 @@ const TaskItemCard = defineComponent({
       return String(value)
     }
 
+    const renderPdmGroupTable = (group: PdmApprovalGroup) => {
+      if (!isGroupExpanded(group.key)) return null
+
+      return h('div', { class: 'pdm-approval-group__table-wrapper' }, [
+        h('table', { class: 'pdm-approval__table' }, [
+          h('thead', null, [
+            h('tr', null, [
+              h('th', { key: '__checkbox', class: 'pdm-approval__checkbox-col' }),
+              h('th', { key: 'CHINANAME' }, '名称'),
+              h('th', { key: 'PARTID' }, 'PARTID'),
+              h('th', { key: 'QUERY_KEYWORDS' }, '关键词'),
+              h('th', { key: 'QUERY_EXPANDED_KEYWORDS' }, '扩展关键词'),
+            ]),
+          ]),
+          h(
+            'tbody',
+            null,
+            group.rows.map((row) => {
+              const isChecked = approvedRowKeys.value.has(row.key)
+              const queryKeywordsText = formatList(row.raw?.QUERY_KEYWORDS)
+              const queryExpandedKeywordsText = formatList(row.raw?.QUERY_EXPANDED_KEYWORDS)
+
+              return h(
+                'tr',
+                {
+                  key: row.key,
+                  class: !isChecked ? 'pdm-approval__row--skipped' : undefined,
+                },
+                [
+                  h('td', { key: '__checkbox', class: 'pdm-approval__checkbox-col' }, [
+                    h('input', {
+                      type: 'checkbox',
+                      class: 'pdm-approval__checkbox',
+                      checked: isChecked,
+                      disabled: props.isApproving,
+                      'aria-label': `批准 ${row.chinaname || '(无名称)'} / ${row.partid}`,
+                      onChange: () => toggleRow(row.key),
+                    }),
+                  ]),
+                  h('td', { key: 'CHINANAME', title: row.chinaname }, row.chinaname),
+                  h('td', { key: 'PARTID', title: row.partid }, row.partid),
+                  h('td', { key: 'QUERY_KEYWORDS', title: queryKeywordsText }, queryKeywordsText),
+                  h(
+                    'td',
+                    { key: 'QUERY_EXPANDED_KEYWORDS', title: queryExpandedKeywordsText },
+                    queryExpandedKeywordsText
+                  ),
+                ]
+              )
+            })
+          ),
+        ]),
+      ])
+    }
+
     const renderPdmTable = () => {
       if (props.task.status !== 'awaiting_approval') return null
       const items = pdmItems.value
       if (items.length === 0) {
-        return h(
-          'div',
-          { class: 'pdm-approval' },
-          [h('p', { class: 'pdm-approval__empty' }, 'PDM 未返回任何数据')]
-        )
+        return h('div', { class: 'pdm-approval' }, [h('p', { class: 'pdm-approval__empty' }, 'PDM 未返回任何数据')])
       }
 
-      const columns = [
-        { key: 'CHINANAME', label: '名称' },
-        { key: 'PARTID', label: 'PARTID' },
-        { key: 'QUERY_INDEX', label: '索引' },
-        { key: 'QUERY_KEYWORDS', label: '关键词' },
-        { key: 'QUERY_EXPANDED_KEYWORDS', label: '扩展关键词' },
-      ] as const
-
-      const rowCount = uniqueApprovalRows.value.length
+      const groups = approvalGroups.value
+      const rowCount = allApprovalRows.value.length
       const partidCount = approvedPartidsPreview.value.length
 
       return h('div', { class: 'pdm-approval' }, [
         h(
           'p',
           { class: 'pdm-approval__title' },
-          `PDM 查询结果（共 ${items.length} 条，已批准 ${approvedCount.value}/${rowCount} 组，将提交 ${partidCount} 个 PARTID），请审核后继续`
+          `PDM 候选审核（按 type 折叠，${groups.length} 组） · 共 ${items.length} 条，已批准 ${approvedCount.value}/${rowCount} 行，将提交 ${partidCount} 个 PARTID`
         ),
-        h('div', { class: 'pdm-approval__table-wrapper' }, [
-          h('table', { class: 'pdm-approval__table' }, [
-            h('thead', null, [
-              h(
-                'tr',
-                null,
-                [
-                  h('th', { key: '__checkbox', class: 'pdm-approval__checkbox-col' }, [
-                    h('input', {
-                      type: 'checkbox',
-                      class: 'pdm-approval__checkbox',
-                      checked: allSelected.value,
-                      indeterminate: !allSelected.value && !noneSelected.value,
-                      disabled: props.isApproving || rowCount === 0,
-                      'aria-label': '全选/全不选',
-                      onChange: toggleAll,
-                    }),
-                  ]),
-                  ...columns.map((col) => h('th', { key: col.key }, col.label)),
-                ]
-              ),
-            ]),
-            h(
-              'tbody',
-              null,
-              items.map((item, rowIndex) => {
-                const partidRaw = item?.PARTID
-                const partid =
-                  partidRaw === undefined || partidRaw === null ? '' : String(partidRaw).trim()
-                const chinaname =
-                  item?.CHINANAME === undefined || item?.CHINANAME === null
-                    ? ''
-                    : String(item.CHINANAME).trim()
-                const hasPartid = partid.length > 0
-                const rowKey = hasPartid ? makeRowKey(chinaname, partid) : ''
-                const isChecked = hasPartid && approvedRowKeys.value.has(rowKey)
-                return h(
-                  'tr',
+        h('div', { class: 'pdm-approval__toolbar' }, [
+          h('label', { class: 'pdm-approval__toolbar-main' }, [
+            h('input', {
+              type: 'checkbox',
+              class: 'pdm-approval__checkbox',
+              checked: allSelected.value,
+              indeterminate: !allSelected.value && !noneSelected.value,
+              disabled: props.isApproving || rowCount === 0,
+              'aria-label': '全选/全不选',
+              onChange: toggleAll,
+            }),
+            h('span', null, `全选候选（${approvedCount.value}/${rowCount}）`),
+          ]),
+          h(
+            'button',
+            {
+              type: 'button',
+              class: 'pdm-approval__ghost-btn',
+              disabled: props.isApproving || groups.length === 0,
+              onClick: toggleExpandAll,
+            },
+            allExpanded.value ? '全部收起' : '全部展开'
+          ),
+        ]),
+        h(
+          'div',
+          { class: 'pdm-approval__groups' },
+          groups.map((group) => {
+            const isExpanded = isGroupExpanded(group.key)
+            const groupSelectedCount = getGroupSelectedCount(group)
+            const groupPartidCount = getGroupApprovedPartidCount(group)
+            const groupAllSelected = isGroupAllSelected(group)
+            const groupNoneSelected = isGroupNoneSelected(group)
+
+            return h('section', { key: group.key, class: 'pdm-approval-group' }, [
+              h('div', { class: 'pdm-approval-group__header' }, [
+                h(
+                  'button',
                   {
-                    key: `${rowKey || 'row'}-${rowIndex}`,
-                    class: hasPartid && !isChecked ? 'pdm-approval__row--skipped' : undefined,
+                    type: 'button',
+                    class: 'pdm-approval-group__toggle',
+                    onClick: () => toggleGroupExpanded(group.key),
                   },
                   [
-                    h('td', { key: '__checkbox', class: 'pdm-approval__checkbox-col' }, [
-                      h('input', {
-                        type: 'checkbox',
-                        class: 'pdm-approval__checkbox',
-                        checked: isChecked,
-                        disabled: !hasPartid || props.isApproving,
-                        'aria-label': hasPartid
-                          ? `批准 ${chinaname || '(无名称)'} / ${partid}`
-                          : '该行缺少 PARTID',
-                        onChange: () => hasPartid && toggleRow(rowKey),
-                      }),
-                    ]),
-                    ...columns.map((col) => {
-                      const raw = (item as Record<string, unknown>)[col.key]
-                      const text =
-                        col.key === 'QUERY_KEYWORDS' || col.key === 'QUERY_EXPANDED_KEYWORDS'
-                          ? formatList(raw)
-                          : raw === undefined || raw === null
-                          ? ''
-                          : String(raw)
-                      return h('td', { key: col.key, title: text }, text)
-                    }),
+                    h('span', { class: 'pdm-approval-group__chevron', 'aria-hidden': 'true' }, isExpanded ? '▾' : '▸'),
+                    h('span', { class: 'pdm-approval-group__type', title: group.typeName }, group.typeName),
+                    h(
+                      'span',
+                      { class: 'pdm-approval-group__meta' },
+                      `已选 ${groupSelectedCount}/${group.rows.length} · 提交 ${groupPartidCount} PARTID`
+                    ),
                   ]
-                )
-              })
-            ),
-          ]),
-        ]),
+                ),
+                h('label', { class: 'pdm-approval-group__pickall' }, [
+                  h('input', {
+                    type: 'checkbox',
+                    class: 'pdm-approval__checkbox',
+                    checked: groupAllSelected,
+                    indeterminate: !groupAllSelected && !groupNoneSelected,
+                    disabled: props.isApproving || group.rows.length === 0,
+                    'aria-label': `全选 ${group.typeName} 候选`,
+                    onChange: () => toggleGroupSelection(group),
+                  }),
+                  h('span', null, '本组全选'),
+                ]),
+              ]),
+              renderPdmGroupTable(group),
+            ])
+          })
+        ),
         h(
           'button',
           {
@@ -1058,47 +1271,157 @@ const TaskItemCard = defineComponent({
 :deep(.pdm-approval) {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px;
-  border-radius: var(--yamato-radius-sm);
-  border: 1px solid var(--yamato-color-border-subtle);
-  background: #fff;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #f0eee6;
+  background: #faf9f5;
+  box-shadow: 0 0 0 1px #f0eee6;
 }
 
 :deep(.pdm-approval__title) {
   margin: 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--yamato-color-text-primary);
+  color: #141413;
+  font-family: var(--yamato-font-display), Georgia, serif;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.25;
 }
 
 :deep(.pdm-approval__empty) {
   margin: 0;
   font-size: 12px;
-  color: var(--yamato-color-text-muted);
+  color: #87867f;
 }
 
-:deep(.pdm-approval__table-wrapper) {
-  max-height: 220px;
+:deep(.pdm-approval__toolbar) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+:deep(.pdm-approval__toolbar-main) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #4d4c48;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+:deep(.pdm-approval__ghost-btn) {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #d1cfc5;
+  border-radius: 8px;
+  background: #e8e6dc;
+  color: #4d4c48;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px #d1cfc5;
+
+  &:hover:not(:disabled) {
+    background: #f0eee6;
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+}
+
+:deep(.pdm-approval__groups) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+:deep(.pdm-approval-group) {
+  border: 1px solid #e8e6dc;
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+:deep(.pdm-approval-group__header) {
+  min-height: 40px;
+  background: #faf9f5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #f0eee6;
+}
+
+:deep(.pdm-approval-group__toggle) {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    opacity: 0.86;
+  }
+}
+
+:deep(.pdm-approval-group__chevron) {
+  color: #5e5d59;
+  font-size: 12px;
+}
+
+:deep(.pdm-approval-group__type) {
+  color: #141413;
+  font-family: var(--yamato-font-display), Georgia, serif;
+  font-size: 15px;
+  font-weight: 500;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:deep(.pdm-approval-group__meta) {
+  color: #5e5d59;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+:deep(.pdm-approval-group__pickall) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #4d4c48;
+  font-size: 12px;
+}
+
+:deep(.pdm-approval-group__table-wrapper) {
+  max-height: 240px;
   overflow: auto;
-  border: 1px solid var(--yamato-color-border-subtle);
-  border-radius: var(--yamato-radius-sm);
 }
 
 :deep(.pdm-approval__table) {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11px;
-  color: var(--yamato-color-text-primary);
+  font-size: 12px;
+  color: #141413;
 }
 
 :deep(.pdm-approval__table th),
 :deep(.pdm-approval__table td) {
-  padding: 6px 8px;
+  padding: 7px 8px;
   text-align: left;
-  border-bottom: 1px solid var(--yamato-color-border-subtle);
+  border-bottom: 1px solid #f0eee6;
   white-space: nowrap;
-  max-width: 180px;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1106,13 +1429,14 @@ const TaskItemCard = defineComponent({
 :deep(.pdm-approval__table thead th) {
   position: sticky;
   top: 0;
-  background: var(--yamato-color-surface-alt);
-  font-weight: 600;
+  background: #faf9f5;
+  color: #4d4c48;
+  font-weight: 500;
   z-index: 1;
 }
 
 :deep(.pdm-approval__checkbox-col) {
-  width: 28px;
+  width: 30px;
   padding: 4px 6px;
   text-align: center;
 }
@@ -1120,6 +1444,7 @@ const TaskItemCard = defineComponent({
 :deep(.pdm-approval__checkbox) {
   margin: 0;
   cursor: pointer;
+  accent-color: #c96442;
 }
 
 :deep(.pdm-approval__checkbox:disabled) {
@@ -1127,12 +1452,13 @@ const TaskItemCard = defineComponent({
 }
 
 :deep(.pdm-approval__row--skipped td) {
-  color: var(--yamato-color-text-muted);
+  color: #87867f;
   text-decoration: line-through;
 }
 
 :deep(.pdm-approval__approve) {
   align-self: flex-start;
+  margin-top: 2px;
 }
 
 :deep(.task-card__actions) {
