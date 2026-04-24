@@ -43,14 +43,8 @@
               :role="message.role"
               :content="message.content"
               :timestamp="message.role === 'user' ? message.timestamp : undefined"
+              :answer-pending="isLoading && index === messages.length - 1 && message.role === 'assistant'"
             />
-            <div v-if="isLoading" class="loading-indicator">
-              <div class="loading-dots">
-                <span></span>
-                <span></span>
-                <span></span>
-              </div>
-            </div>
           </MessageList>
         </div>
 
@@ -1533,45 +1527,6 @@ onBeforeUnmount(() => {
   color: var(--yamato-color-text-primary);
   letter-spacing: 0;
   text-align: center;
-}
-
-.loading-indicator {
-  display: flex;
-  justify-content: flex-start;
-  padding: 16px;
-}
-
-.loading-dots {
-  display: flex;
-  gap: 4px;
-
-  span {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--yamato-color-accent);
-    animation: bounce 1.4s infinite ease-in-out both;
-
-    &:nth-child(1) {
-      animation-delay: -0.32s;
-    }
-
-    &:nth-child(2) {
-      animation-delay: -0.16s;
-    }
-  }
-}
-
-@keyframes bounce {
-  0%,
-  80%,
-  100% {
-    transform: scale(0);
-  }
-  40% {
-    transform: scale(1);
-    opacity: 1;
-  }
 }
 
 .search-mode-dropdown {

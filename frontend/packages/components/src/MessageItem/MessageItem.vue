@@ -46,8 +46,17 @@
             v-html="renderedThoughtMarkdown"
           ></div>
         </details>
-        <div v-if="isStreaming" class="message-item__text message-item__stream-text">{{ parsedAssistantContent.answer }}</div>
-        <div v-else class="message-item__text message-item__markdown" v-html="renderedAnswerMarkdown"></div>
+        <div v-if="answerPending && !hasAnswer" class="message-item__answer-pending" aria-busy="true">
+          <div class="message-item__loading-dots">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+        </div>
+        <template v-else>
+          <div v-if="isStreaming" class="message-item__text message-item__stream-text">{{ parsedAssistantContent.answer }}</div>
+          <div v-else class="message-item__text message-item__markdown" v-html="renderedAnswerMarkdown"></div>
+        </template>
       </template>
       <div v-else class="message-item__text">{{ content }}</div>
       </div>
@@ -66,10 +75,13 @@ interface Props {
   content: string
   timestamp?: string
   isStreaming?: boolean
+  /** True while the assistant reply is in flight but no answer text is visible yet */
+  answerPending?: boolean
 }
 
 const props = defineProps<Props>()
 const isStreaming = computed(() => Boolean(props.isStreaming))
+const answerPending = computed(() => Boolean(props.answerPending))
 
 const md = new MarkdownIt({
   html: false,
@@ -361,5 +373,44 @@ $color-ring: #d1cfc5;
 .message-item__stream-text {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.message-item__answer-pending {
+  min-height: 1.5em;
+  display: flex;
+  align-items: center;
+}
+
+.message-item__loading-dots {
+  display: flex;
+  gap: 4px;
+
+  span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: $color-terracotta;
+    animation: message-item-dot-bounce 1.4s infinite ease-in-out both;
+
+    &:nth-child(1) {
+      animation-delay: -0.32s;
+    }
+
+    &:nth-child(2) {
+      animation-delay: -0.16s;
+    }
+  }
+}
+
+@keyframes message-item-dot-bounce {
+  0%,
+  80%,
+  100% {
+    transform: scale(0);
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 </style>
