@@ -484,11 +484,12 @@ const TaskItemCard = defineComponent({
 
     const resolveTypeName = (item: QuotationPdmItem): string => {
       const queryIndex = parseQueryIndex(item?.QUERY_INDEX)
+      // PDM API sets QUERY_INDEX with enumerate(keyword_groups, start=1) — map keywords_payload by (index - 1).
       if (queryIndex !== null) {
-        const exactType = keywordTypeByIndex.value.get(queryIndex)
-        if (exactType) return exactType
-        const oneBasedType = keywordTypeByIndex.value.get(queryIndex - 1)
-        if (oneBasedType) return oneBasedType
+        const typeFromOneBasedPdm = keywordTypeByIndex.value.get(queryIndex - 1)
+        if (typeFromOneBasedPdm) return typeFromOneBasedPdm
+        const typeFromZeroBasedIndex = keywordTypeByIndex.value.get(queryIndex)
+        if (typeFromZeroBasedIndex) return typeFromZeroBasedIndex
       }
 
       const fallbackKeywords = item?.QUERY_KEYWORDS
@@ -1024,7 +1025,8 @@ const TaskItemCard = defineComponent({
 
 .columns {
   display: grid;
-  grid-template-columns: repeat(3, minmax(260px, 1fr));
+  /* Slightly narrow queue column; give space to in-progress (处理中) column; done column share unchanged */
+  grid-template-columns: minmax(220px, 0.6fr) minmax(260px, 1.4fr) minmax(220px, 1fr);
   gap: 14px;
   min-height: 0;
 }
