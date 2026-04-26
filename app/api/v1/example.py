@@ -6,10 +6,10 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db
+from app.core.dependencies import forbid_in_production, get_db
 from app.core.logging import get_logger
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(forbid_in_production)])
 logger = get_logger("example")
 
 

@@ -4,6 +4,7 @@ from collections.abc import Generator
 from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
 
@@ -31,3 +32,10 @@ def get_db() -> Generator[Session, None, None]:
 def get_rag_instance(request: Request):
     """从 app.state.rag 取 RAG；未初始化则为 None。"""
     return getattr(request.app.state, 'rag', None)
+
+
+def forbid_in_production() -> None:
+    """Hide dev/demo routes in production (return 404; do not reveal existence)."""
+    env = str(getattr(settings, "ENVIRONMENT", "") or "").strip().lower()
+    if env in ("production", "prod"):
+        raise HTTPException(status_code=404, detail="Not found")

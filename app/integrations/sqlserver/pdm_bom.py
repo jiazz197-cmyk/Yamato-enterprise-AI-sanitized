@@ -1,4 +1,9 @@
-"""PDM BOM_016 query helpers."""
+"""PDM BOM_016 query helpers.
+
+Text fragments embedded in CHINANAME LIKE/NOT LIKE use single-quote doubling for SQL
+Server string literals; user % / _ in keywords still act as wildcard metacharacters
+in LIKE (semantic breadth, not classic injection). Tighten at API layer if needed.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,7 @@ from app.integrations.sqlserver.client import get_sql_client
 
 
 def build_pdm_where_clauses(condition: str | List[str]) -> List[str]:
+    """Build LIKE clauses; strings are SQL-quoted via `.replace(\"'\", \"''\")` only."""
     clauses: List[str] = []
 
     if isinstance(condition, str):

@@ -1,4 +1,8 @@
-"""U8 BOM + Inventory recursive walk."""
+"""U8 BOM + Inventory recursive walk.
+
+`InvCode` / PartId style codes use `.replace(\"'\", \"''\")` before embedding in N'...' SQL
+literals. Parent codes are normalized from trusted API input, not ad-hoc SQL.
+"""
 
 from __future__ import annotations
 

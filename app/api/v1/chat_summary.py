@@ -67,7 +67,7 @@ def create_chat_summary(
         if request_user_id in current_aliases:
             # 本人操作统一落到 username，避免 UUID 与 username 键不一致
             request_user_id = (current_user.username or "").strip() or str(current_user.id)
-        elif current_user.role != UserRole.superuser:
+        elif current_user.role not in (UserRole.admin, UserRole.superuser):
             # 普通用户仅允许本人
             normalize_self_user_identifier(request_user_id, current_user)
             request_user_id = (current_user.username or "").strip() or str(current_user.id)
@@ -153,7 +153,7 @@ def query_user_summary(
         if target_user_id in current_aliases:
             # 本人查询统一落到 username
             target_user_id = (current_user.username or "").strip() or str(current_user.id)
-        elif current_user.role != UserRole.superuser:
+        elif current_user.role not in (UserRole.admin, UserRole.superuser):
             # 普通用户仅允许本人
             normalize_self_user_identifier(target_user_id, current_user)
             target_user_id = (current_user.username or "").strip() or str(current_user.id)

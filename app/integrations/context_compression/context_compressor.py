@@ -1,6 +1,7 @@
 """LangChain + OpenAI 兼容接口调本地/配置里的 LLM，从 Dify 拉变量后压缩上下文。"""
 import logging
-from typing import Dict, Any, List, Optional
+import re
+from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -10,6 +11,70 @@ from app.core.config import settings
 from app.integrations.Chat_message_archive.message_extractor import MessageExtractor
 
 logger = logging.getLogger(__name__)
+
+# Path segment for Dify: avoid "/" and ".." in URL; soft caps reduce memory/DoS on huge variables.
+_MAX_CONV_ID_LEN = 128
+_CONV_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_MAX_N_RECENT = 100
+_MAX_TOTAL_DIALOGUE_CHARS = 400_000
+_MAX_SINGLE_DIALOGUE_ITEM_CHARS = 80_000
+_TRUNCATE_NOTE = "\n[truncated]"
+
+
+def _clamp_n_recent(value: Any) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = 5
+    return max(1, min(n, _MAX_N_RECENT))
+
+
+def validate_conversation_id(value: str) -> str:
+    """Return stripped id or raise ValueError (safe single path segment for Dify URL)."""
+    s = (value or "").strip()
+    if not s or len(s) > _MAX_CONV_ID_LEN or ".." in s or not _CONV_ID_PATTERN.fullmatch(s):
+        raise ValueError(
+            "conversation_id must be 1-128 characters: letters, digits, . _ - only"
+        )
+    return s
+
+
+def _truncate_string(s: str, max_len: int) -> str:
+    if len(s) <= max_len:
+        return s
+    keep = max(0, max_len - len(_TRUNCATE_NOTE))
+    return s[:keep] + _TRUNCATE_NOTE
+
+
+def _truncate_dialogue_lists(
+    recent: List[str], older: List[str]
+) -> tuple[List[str], List[str]]:
+    r = [_truncate_string(str(x), _MAX_SINGLE_DIALOGUE_ITEM_CHARS) for x in recent]
+    o = [_truncate_string(str(x), _MAX_SINGLE_DIALOGUE_ITEM_CHARS) for x in older]
+
+    def char_total() -> int:
+        return sum(len(s) for s in r) + sum(len(s) for s in o)
+
+    if char_total() <= _MAX_TOTAL_DIALOGUE_CHARS:
+        return r, o
+    logger.warning(
+        "Dify dialogue text exceeded soft cap (total_chars=%s, max=%s); dropping from end",
+        char_total(),
+        _MAX_TOTAL_DIALOGUE_CHARS,
+    )
+    while r and char_total() > _MAX_TOTAL_DIALOGUE_CHARS:
+        r.pop()
+    while o and char_total() > _MAX_TOTAL_DIALOGUE_CHARS:
+        o.pop()
+    if r and char_total() > _MAX_TOTAL_DIALOGUE_CHARS:
+        r[-1] = _truncate_string(
+            r[-1], _MAX_TOTAL_DIALOGUE_CHARS - (char_total() - len(r[-1]))
+        )
+    if o and char_total() > _MAX_TOTAL_DIALOGUE_CHARS:
+        o[-1] = _truncate_string(
+            o[-1], _MAX_TOTAL_DIALOGUE_CHARS - (char_total() - len(o[-1]))
+        )
+    return r, o
 
 
 def _is_upstream_html_response(exc: BaseException) -> bool:
@@ -60,13 +125,16 @@ class ContextCompressor:
         
         self.extractor = MessageExtractor(api_key=self.dify_api_key)
         
-    def _fetch_and_split_dialogues(self, user_id: str, conversation_id: str, n: int = 5) -> Dict[str, List[str]]:
+    def _fetch_and_split_dialogues(
+        self, user_id: str, conversation_id: str, _n_recent: int = 5
+    ) -> Dict[str, List[str]]:
         """GET /conversations/{id}/variables，解析 long_memory、recent_dialogs 两个变量。"""
         import requests
         import ast
 
+        cid = validate_conversation_id(str(conversation_id))
         decoded_user_id = _decode_user_id(str(user_id))
-        url = f"{self.extractor.base_url}/conversations/{conversation_id}/variables"
+        url = f"{self.extractor.base_url}/conversations/{cid}/variables"
         params = {'user': decoded_user_id}
         
         try:
@@ -106,7 +174,9 @@ class ContextCompressor:
 
         older = safe_eval_list(long_memory_str)
         recent = safe_eval_list(recent_dialogs_str)
-        
+
+        recent, older = _truncate_dialogue_lists(recent, older)
+
         return {
             "recent": recent,
             "older": older
@@ -116,15 +186,22 @@ class ContextCompressor:
         """有 user_id+conversation_id 则拉 Dify；否则用入参里的 recent/older 列表。返回去掉 think 标签后的文本。"""
         user_id = context_data.get("user_id")
         conversation_id = context_data.get("conversation_id")
-        n_recent = context_data.get("n_recent", 5)
-        
+        n_recent = _clamp_n_recent(context_data.get("n_recent", 5))
+
         if user_id and conversation_id:
-            dialogues = self._fetch_and_split_dialogues(user_id, conversation_id, n_recent)
-            recent_dialogues = dialogues["recent"]
+            dialogues = self._fetch_and_split_dialogues(
+                str(user_id), str(conversation_id), n_recent
+            )
+            recent_dialogues = dialogues["recent"][-n_recent:]
             older_dialogues = dialogues["older"]
         else:
-            recent_dialogues = context_data.get("recent_dialogues", [])
-            older_dialogues = context_data.get("older_dialogues", [])
+            r = context_data.get("recent_dialogues", [])
+            o = context_data.get("older_dialogues", [])
+            r_list = [str(x) for x in r] if isinstance(r, list) else []
+            o_list = [str(x) for x in o] if isinstance(o, list) else []
+            r2, o2 = _truncate_dialogue_lists(r_list, o_list)
+            recent_dialogues = r2[-n_recent:]
+            older_dialogues = o2
 
         system_template = """你是一个专业的上下文压缩助手。你的任务是将冗长的对话和背景信息压缩成极其精简且高密度的格式。
 

@@ -1,10 +1,14 @@
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, Field
-from typing import List, Optional
 import logging
 from urllib.parse import unquote
 
-from app.integrations.context_compression import LlmEndpointMisconfiguredError, compress_context
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field, field_validator
+
+from app.integrations.context_compression import (
+    LlmEndpointMisconfiguredError,
+    compress_context,
+    validate_conversation_id,
+)
 from app.schemas.base import FormatJSONResponse
 from app.core.security import get_current_user, normalize_self_user_identifier
 from app.models.orm.platform.user import User
@@ -14,9 +18,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 class ContextCompressionRequest(BaseModel):
-    user_id: str = Field(..., description="User ID for fetching conversation")
-    conversation_id: str = Field(..., description="Dify conversation ID")
-    n_recent: int = Field(5, description="Number of recent dialogue turns to keep")
+    user_id: str = Field(
+        ..., min_length=1, max_length=512, description="User ID for fetching conversation"
+    )
+    conversation_id: str = Field(
+        ..., min_length=1, max_length=128, description="Dify conversation ID"
+    )
+    n_recent: int = Field(
+        5, ge=1, le=100, description="Number of recent dialogue turns to keep"
+    )
+
+    @field_validator("conversation_id")
+    @classmethod
+    def conversation_id_path_safe(cls, v: str) -> str:
+        return validate_conversation_id(v)
 
 @router.post("/compress")
 def compress_chat_context(
@@ -40,8 +55,8 @@ def compress_chat_context(
         )
 
         context_data = request.model_dump()
-        if current_user.role == UserRole.superuser:
-            # superuser can run compression for any target user
+        if current_user.role in (UserRole.admin, UserRole.superuser):
+            # admin/superuser can run compression for any target business user_id
             effective_user_id = decoded_user_id
         else:
             # normal users can only access their own identity aliases
@@ -63,6 +78,8 @@ def compress_chat_context(
             str(e)[:500],
         )
         raise HTTPException(status_code=502, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.error("Failed to compress context for conversation %s: %s", request.conversation_id, str(e)[:2000])
         raise HTTPException(

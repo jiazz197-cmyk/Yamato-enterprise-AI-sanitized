@@ -60,6 +60,7 @@ async def convert_pdf_to_images(
         logger.info("PDF 文件大小: %.2f MB", file_size_mb)
         normalized_uploader = normalize_self_uploader(uploader, current_user)
         task_id = executor_manager.generate_task_id("pdf_convert")
+        executor_manager.set_task_owner(task_id, str(current_user.id))
         executor_manager.submit_task(
             task_id,
             background_pdf_convert_task,
@@ -74,7 +75,6 @@ async def convert_pdf_to_images(
             request.file_name_prefix,
             normalized_uploader,
         )
-        executor_manager.set_task_owner(task_id, str(current_user.id))
         logger.info("启动 PDF 转图片任务: %s", task_id)
         return PdfConvertResponse(
             task_id=task_id,

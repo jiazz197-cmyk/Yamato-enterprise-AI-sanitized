@@ -49,6 +49,7 @@ async def upload_image(
             )
         file_data = await file.read()
         task_id = executor_manager.generate_task_id("image_upload")
+        executor_manager.set_task_owner(task_id, str(current_user.id))
         executor_manager.submit_task(
             task_id,
             background_image_upload_task,
@@ -58,7 +59,6 @@ async def upload_image(
             file.content_type,
             request.file_name_prefix,
         )
-        executor_manager.set_task_owner(task_id, str(current_user.id))
         logger.info("启动图片上传任务: %s", task_id)
         return ImageUploadResponse(
             task_id=task_id,

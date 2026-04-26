@@ -88,6 +88,8 @@ async def submit_document_processing(
             },
         )
         logger.info("创建文档处理任务: %s, 文件数: %s", task_id, len(file_ids))
+        # Register owner before worker starts so WebSocket can authorize immediately.
+        executor_manager.set_task_owner(task_id, str(current_user.id))
         executor_manager.submit_task(
             task_id,
             process_documents_background,
@@ -97,7 +99,6 @@ async def submit_document_processing(
             chunk_size,
             chunk_overlap,
         )
-        executor_manager.set_task_owner(task_id, str(current_user.id))
         return TaskSubmitResponse(
             task_id=task_id,
             status="pending",
