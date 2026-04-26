@@ -434,6 +434,18 @@ class TaskManager:
             logger.error(f"更新任务进度时发生错误 {task_id}: {e}")
             return False
 
+    async def update_task_message(self, task_id: str, message: str) -> bool:
+        """Update task message only (preserves status and progress)."""
+        try:
+            task_status = await self.get_task_status(task_id)
+            if not task_status:
+                return False
+            task_status.message = message
+            return await self._save_task_status(task_status)
+        except Exception as e:
+            logger.error(f"更新任务消息时发生错误 {task_id}: {e}")
+            return False
+
     async def complete_task(self, task_id: str, result: Dict[str, Any], message: str = "任务完成") -> bool:
         """标记任务为完成状态"""
         try:

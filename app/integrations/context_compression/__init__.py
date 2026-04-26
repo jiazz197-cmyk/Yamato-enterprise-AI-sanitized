@@ -2,11 +2,12 @@
 Context Compression Integration
 """
 
+from app.core.validators.conversation_id import validate_conversation_id
+
 from .context_compressor import (
     ContextCompressor,
     LlmEndpointMisconfiguredError,
     compress_context,
-    validate_conversation_id,
 )
 
 __all__ = [

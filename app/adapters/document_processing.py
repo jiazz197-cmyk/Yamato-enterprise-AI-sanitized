@@ -1,0 +1,42 @@
+"""Adapters for document processing (integrations + executor)."""
+
+from __future__ import annotations
+
+from typing import Any, List
+
+from sqlalchemy.orm import Session
+
+from app.core.executor import executor_manager
+from app.integrations.doc_processing.document_task_runner import (
+    process_documents_background,
+    upload_and_register_documents,
+)
+from app.ports.domains.document_processing import DocumentProcessWorkerPort, DocumentRegistrationPort
+
+
+class SqlAlchemyDocumentRegistrationAdapter(DocumentRegistrationPort):
+    def __init__(self, db: Session):
+        self._db = db
+
+    def register_uploaded_files(self, files: Any, normalized_uploader: str) -> List[int]:
+        return upload_and_register_documents(self._db, files, normalized_uploader)
+
+
+class DocumentProcessWorkerAdapter(DocumentProcessWorkerPort):
+    def submit_process_documents(
+        self,
+        task_id: str,
+        file_ids: List[int],
+        instance_id: int,
+        chunk_size: int,
+        chunk_overlap: int,
+    ) -> None:
+        executor_manager.submit_task(
+            task_id,
+            process_documents_background,
+            task_id,
+            file_ids,
+            instance_id,
+            chunk_size,
+            chunk_overlap,
+        )

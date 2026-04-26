@@ -1,21 +1,19 @@
 import logging
-from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
-from app.integrations.context_compression import (
-    LlmEndpointMisconfiguredError,
-    compress_context,
-    validate_conversation_id,
-)
-from app.schemas.base import FormatJSONResponse
-from app.core.security import get_current_user, normalize_self_user_identifier
+from app.adapters.context_compression import IntegrationContextCompressorAdapter
+from app.core.exceptions import APIException, ExternalServiceError
+from app.core.security import get_current_user
+from app.core.validators.conversation_id import validate_conversation_id
 from app.models.orm.platform.user import User
-from app.models.orm.platform.user import UserRole
+from app.schemas.base import FormatJSONResponse
+from app.usecases.context_compression.compress import CompressContextCommand, CompressContextUseCase
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
 
 class ContextCompressionRequest(BaseModel):
     user_id: str = Field(
@@ -33,55 +31,47 @@ class ContextCompressionRequest(BaseModel):
     def conversation_id_path_safe(cls, v: str) -> str:
         return validate_conversation_id(v)
 
+
 @router.post("/compress")
 def compress_chat_context(
     request: ContextCompressionRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     """
     Compress chat context based on Dify conversation ID.
-    The result includes:
-    1. Working context (Recent N turns)
-    2. Session summary (Older messages)
-    3. Durable memory
-    Total length will be between 500-700 words.
     """
     try:
-        decoded_user_id = unquote(request.user_id).strip()
-        logger.info(
-            "Received context compression request for conversation %s from user %s",
-            request.conversation_id,
-            decoded_user_id,
+        result = CompressContextUseCase(IntegrationContextCompressorAdapter()).execute(
+            CompressContextCommand(
+                user_id=request.user_id,
+                conversation_id=request.conversation_id,
+                n_recent=request.n_recent,
+                current_user=current_user,
+            )
         )
-
-        context_data = request.model_dump()
-        if current_user.role in (UserRole.admin, UserRole.superuser):
-            # admin/superuser can run compression for any target business user_id
-            effective_user_id = decoded_user_id
-        else:
-            # normal users can only access their own identity aliases
-            normalize_self_user_identifier(decoded_user_id, current_user)
-            effective_user_id = decoded_user_id
-
-        # Dify variables endpoint expects business user_id, not auth UUID.
-        context_data["user_id"] = effective_user_id
-        compressed_result = compress_context(context_data)
-
         return FormatJSONResponse(
-            data={"compressed_context": compressed_result},
+            data={"compressed_context": result.compressed},
             message="Context compressed successfully",
         )
-    except LlmEndpointMisconfiguredError as e:
+    except ExternalServiceError as e:
         logger.warning(
             "Context compression misconfigured for conversation %s: %s",
             request.conversation_id,
             str(e)[:500],
         )
-        raise HTTPException(status_code=502, detail=str(e)) from e
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=e.message) from e
+    except HTTPException:
+        raise
+    except APIException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        logger.error("Failed to compress context for conversation %s: %s", request.conversation_id, str(e)[:2000])
+        logger.error(
+            "Failed to compress context for conversation %s: %s",
+            request.conversation_id,
+            str(e)[:2000],
+        )
         raise HTTPException(
             status_code=500,
             detail="Failed to compress context",

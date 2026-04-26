@@ -5,10 +5,11 @@ from typing import Callable
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.adapters.monitoring import get_request_metrics
 from app.core.logging import get_logger
-from app.integrations.monitoring.prometheus import metrics
 
 logger = get_logger("monitoring")
+request_metrics = get_request_metrics()
 
 
 def _normalize_endpoint(request: Request) -> str:
@@ -30,7 +31,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
         except Exception:
             duration = time.perf_counter() - start_time
             logger.exception("Request failed: %s %s", request.method, request.url.path)
-            metrics.record_request(
+            request_metrics.record_request(
                 method=request.method,
                 endpoint=_normalize_endpoint(request),
                 status_code=500,
@@ -39,7 +40,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
             raise
 
         duration = time.perf_counter() - start_time
-        metrics.record_request(
+        request_metrics.record_request(
             method=request.method,
             endpoint=_normalize_endpoint(request),
             status_code=response.status_code,

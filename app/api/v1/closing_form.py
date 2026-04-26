@@ -1,16 +1,14 @@
 """
 智能组合秤订单填表 API
-
-数据流见 app.integrations.closing_form.service。
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.adapters.closing_form import IntegrationClosingFormAdapter
 from app.core.dependencies import get_db
 from app.core.exceptions import APIException, NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.core.security import get_current_user, require_roles
-from app.integrations.closing_form import service as closing_form_service
 from app.models.orm.platform.user import User, UserRole
 from app.schemas.endpoints.closing_form import (
     ClosingFormApproveResponse,
@@ -21,9 +19,20 @@ from app.schemas.endpoints.closing_form import (
     ClosingFormSubmitResponse,
     Collection2ListResponse,
 )
+from app.usecases.closing_form.operations import (
+    ApproveClosingFormUseCase,
+    DeleteApprovedClosingFormUseCase,
+    DeleteCollection2RecordUseCase,
+    ListClosingFormsUseCase,
+    ListCollection2UseCase,
+    RejectClosingFormUseCase,
+    SubmitClosingFormUseCase,
+)
 
 router = APIRouter()
 logger = get_logger("closing_form")
+
+_svc = IntegrationClosingFormAdapter()
 
 
 @router.post("/submit", response_model=ClosingFormSubmitResponse)
@@ -33,9 +42,7 @@ def submit_closing_form(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        return closing_form_service.submit_closing_form(
-            db, current_user.username, form_data
-        )
+        return SubmitClosingFormUseCase(_svc).execute(db, current_user, form_data)
     except Exception:
         logger.exception("填表提交失败")
         raise HTTPException(status_code=500, detail="提交失败，请稍后重试")
@@ -47,10 +54,7 @@ def list_closing_forms(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        is_privileged = current_user.role in (UserRole.admin, UserRole.superuser)
-        return closing_form_service.list_merged_forms(
-            db, uploader=current_user.username, is_privileged=is_privileged
-        )
+        return ListClosingFormsUseCase(_svc).execute(db, current_user)
     except Exception:
         logger.exception("查询填表记录失败")
         raise HTTPException(status_code=500, detail="查询失败，请稍后重试")
@@ -67,9 +71,7 @@ def approve_closing_form(
     current_user: User = Depends(require_roles(UserRole.admin, UserRole.superuser)),
 ):
     try:
-        return closing_form_service.approve_pending_form(
-            db, form_id, current_user.username
-        )
+        return ApproveClosingFormUseCase(_svc).execute(db, form_id, current_user)
     except (NotFoundError, ValidationError, APIException):
         raise
     except Exception:
@@ -88,9 +90,7 @@ def reject_closing_form(
     current_user: User = Depends(require_roles(UserRole.admin, UserRole.superuser)),
 ):
     try:
-        return closing_form_service.reject_pending_form(
-            db, form_id, current_user.username
-        )
+        return RejectClosingFormUseCase(_svc).execute(db, form_id, current_user)
     except (NotFoundError, ValidationError, APIException):
         raise
     except Exception:
@@ -109,7 +109,7 @@ def list_collection2_records(
 ):
     _ = current_user
     try:
-        return closing_form_service.list_collection2(db)
+        return ListCollection2UseCase(_svc).execute(db)
     except Exception:
         logger.exception("查询 data_doc_collection_2 列表失败")
         raise HTTPException(status_code=500, detail="查询失败，请稍后重试")
@@ -126,9 +126,7 @@ def delete_collection2_record(
     current_user: User = Depends(require_roles(UserRole.admin, UserRole.superuser)),
 ):
     try:
-        return closing_form_service.delete_collection2_record(
-            db, record_id, current_user.username
-        )
+        return DeleteCollection2RecordUseCase(_svc).execute(db, record_id, current_user)
     except (NotFoundError, APIException):
         raise
     except Exception:
@@ -147,9 +145,7 @@ def delete_approved_closing_form(
     current_user: User = Depends(require_roles(UserRole.superuser)),
 ):
     try:
-        return closing_form_service.delete_approved_closing_form(
-            db, record_id, current_user.username
-        )
+        return DeleteApprovedClosingFormUseCase(_svc).execute(db, record_id, current_user)
     except (NotFoundError, APIException):
         raise
     except Exception:

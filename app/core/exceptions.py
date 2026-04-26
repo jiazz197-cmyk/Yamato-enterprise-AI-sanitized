@@ -44,6 +44,13 @@ class NotFoundError(APIException):
         super().__init__(message, status_code=404, error_code="NOT_FOUND")
 
 
+class PermissionDeniedError(APIException):
+    """无权访问资源或执行操作。"""
+
+    def __init__(self, message: str = "Permission denied"):
+        super().__init__(message, status_code=403, error_code="PERMISSION_DENIED")
+
+
 class ConflictError(APIException):
     """资源冲突。"""
 

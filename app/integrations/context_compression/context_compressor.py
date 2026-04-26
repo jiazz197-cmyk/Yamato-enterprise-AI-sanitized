@@ -8,13 +8,12 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from app.core.config import settings
+from app.core.validators.conversation_id import validate_conversation_id
 from app.integrations.Chat_message_archive.message_extractor import MessageExtractor
 
 logger = logging.getLogger(__name__)
 
 # Path segment for Dify: avoid "/" and ".." in URL; soft caps reduce memory/DoS on huge variables.
-_MAX_CONV_ID_LEN = 128
-_CONV_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _MAX_N_RECENT = 100
 _MAX_TOTAL_DIALOGUE_CHARS = 400_000
 _MAX_SINGLE_DIALOGUE_ITEM_CHARS = 80_000
@@ -27,16 +26,6 @@ def _clamp_n_recent(value: Any) -> int:
     except (TypeError, ValueError):
         n = 5
     return max(1, min(n, _MAX_N_RECENT))
-
-
-def validate_conversation_id(value: str) -> str:
-    """Return stripped id or raise ValueError (safe single path segment for Dify URL)."""
-    s = (value or "").strip()
-    if not s or len(s) > _MAX_CONV_ID_LEN or ".." in s or not _CONV_ID_PATTERN.fullmatch(s):
-        raise ValueError(
-            "conversation_id must be 1-128 characters: letters, digits, . _ - only"
-        )
-    return s
 
 
 def _truncate_string(s: str, max_len: int) -> str:

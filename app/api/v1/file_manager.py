@@ -1,29 +1,42 @@
 """
-File management API routes. Business logic: app.integrations.file_manager.service.
+File management API routes.
 """
 from __future__ import annotations
 
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.adapters.file_manager import SqlAlchemyFileManagerAdapter
 from app.core.dependencies import get_db
-from app.core.exceptions import NotFoundError, ValidationError
+from app.core.exceptions import APIException, NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.core.security import get_current_user
 from app.core.storage import STREAM_CHUNK_SIZE, download_object_stream
-from app.integrations.file_manager import service as file_service
-from app.models.orm.platform.user import User, UserRole
+from app.models.orm.platform.user import User
+from app.usecases.file_manager.operations import (
+    BatchDeleteFilesCommand,
+    BatchDeleteFilesUseCase,
+    DeleteFileCommand,
+    DeleteFileUseCase,
+    GetFileByIdQuery,
+    GetFileForAccessUseCase,
+    ListFilesQuery,
+    ListFilesUseCase,
+    SearchFilesQuery,
+    SearchFilesUseCase,
+    UploadFileCommand,
+    UploadFileUseCase,
+)
 
 router = APIRouter()
 logger = get_logger("file_manager")
 
 
-# ==================== 响应模型 ====================
 class FileUploadResponse(BaseModel):
     """文件上传响应"""
     id: int
@@ -38,7 +51,7 @@ class FileUploadResponse(BaseModel):
 
 
 class FileInfoResponse(BaseModel):
-    """文件信息响应"""
+    """文件信息"""
     id: int
     file_name: str
     unique_name: str
@@ -72,7 +85,10 @@ class BatchDeleteResponse(BaseModel):
     message: str
 
 
-# ==================== 路由定义 ====================
+def _fm_port(db: Session) -> SqlAlchemyFileManagerAdapter:
+    return SqlAlchemyFileManagerAdapter(db)
+
+
 @router.post("/upload", response_model=FileUploadResponse, summary="上传文件")
 async def upload_file(
     file: UploadFile = File(..., description="要上传的文件"),
@@ -81,13 +97,10 @@ async def upload_file(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        if not file.filename:
-            raise ValidationError("文件名不能为空")
         file_size = getattr(file, "size", None) or -1
         content_type = file.content_type or "application/octet-stream"
-        try:
-            rec = file_service.upload_stream_persist(
-                db,
+        rec = UploadFileUseCase(_fm_port(db)).execute(
+            UploadFileCommand(
                 file_stream=file.file,
                 original_filename=file.filename,
                 file_size=file_size,
@@ -95,11 +108,7 @@ async def upload_file(
                 uploader=uploader,
                 current_user=current_user,
             )
-        except RuntimeError as e:
-            err = str(e)
-            if err.startswith("Error"):
-                raise HTTPException(status_code=500, detail=err) from e
-            raise
+        )
         return FileUploadResponse(
             id=rec.id,
             file_name=rec.file_name,
@@ -113,6 +122,8 @@ async def upload_file(
     except ValidationError:
         raise
     except NotFoundError:
+        raise
+    except APIException:
         raise
     except HTTPException:
         raise
@@ -129,13 +140,13 @@ async def download_file(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        file_record = file_service.get_file_or_not_found(db, file_id)
-        try:
-            file_service.assert_can_access_file(file_record, current_user)
-        except PermissionError:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="无权下载该文件"
-            ) from None
+        file_record = GetFileForAccessUseCase(_fm_port(db)).execute(
+            GetFileByIdQuery(
+                file_id=file_id,
+                current_user=current_user,
+                forbidden_detail="无权下载该文件",
+            )
+        )
 
         def file_stream_generator():
             with download_object_stream(file_record.minio_object_path) as response:
@@ -150,6 +161,8 @@ async def download_file(
         )
     except NotFoundError:
         raise
+    except APIException:
+        raise
     except HTTPException:
         raise
     except Exception as e:
@@ -163,13 +176,13 @@ async def get_file_info(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    file_record = file_service.get_file_or_not_found(db, file_id)
-    try:
-        file_service.assert_can_access_file(file_record, current_user)
-    except PermissionError:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该文件信息"
-        ) from None
+    file_record = GetFileForAccessUseCase(_fm_port(db)).execute(
+        GetFileByIdQuery(
+            file_id=file_id,
+            current_user=current_user,
+            forbidden_detail="无权查看该文件信息",
+        )
+    )
     return FileInfoResponse(
         id=file_record.id,
         file_name=file_record.file_name,
@@ -191,8 +204,13 @@ async def list_files(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        total, items = file_service.list_files_page(
-            db, current_user=current_user, page=page, page_size=page_size, uploader=uploader
+        total, items = ListFilesUseCase(_fm_port(db)).execute(
+            ListFilesQuery(
+                current_user=current_user,
+                page=page,
+                page_size=page_size,
+                uploader=uploader,
+            )
         )
         file_list = [
             FileInfoResponse(
@@ -213,6 +231,8 @@ async def list_files(
             page_size=page_size,
             items=file_list,
         )
+    except APIException:
+        raise
     except HTTPException:
         raise
     except Exception as e:
@@ -227,17 +247,13 @@ async def delete_file(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        file_record = file_service.get_file_or_not_found(db, file_id)
-        try:
-            file_service.assert_can_access_file(file_record, current_user)
-        except PermissionError:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="无权删除该文件"
-            ) from None
-        file_service.delete_file_and_object(db, file_record)
-        logger.info("文件删除成功: %s (ID: %s)", file_record.file_name, file_id)
+        DeleteFileUseCase(_fm_port(db)).execute(
+            DeleteFileCommand(file_id=file_id, current_user=current_user)
+        )
         return DeleteResponse(success=True, message="文件删除成功", deleted_id=file_id)
     except NotFoundError:
+        raise
+    except APIException:
         raise
     except HTTPException:
         raise
@@ -253,17 +269,14 @@ async def batch_delete_files(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role != UserRole.superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="仅超级管理员可批量删除"
-        )
-    success_count, failed_count, failed_ids = file_service.batch_delete_ids(db, file_ids)
-    logger.info("批量删除完成: 成功 %s, 失败 %s", success_count, failed_count)
+    result = BatchDeleteFilesUseCase(_fm_port(db)).execute(
+        BatchDeleteFilesCommand(file_ids=file_ids, current_user=current_user)
+    )
     return BatchDeleteResponse(
-        success_count=success_count,
-        failed_count=failed_count,
-        failed_ids=failed_ids,
-        message=f"批量删除完成: 成功 {success_count} 个, 失败 {failed_count} 个",
+        success_count=result.success_count,
+        failed_count=result.failed_count,
+        failed_ids=result.failed_ids,
+        message=f"批量删除完成: 成功 {result.success_count} 个, 失败 {result.failed_count} 个",
     )
 
 
@@ -276,12 +289,13 @@ async def search_files(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        total, items = file_service.search_files_page(
-            db,
-            current_user=current_user,
-            keyword=keyword,
-            page=page,
-            page_size=page_size,
+        total, items = SearchFilesUseCase(_fm_port(db)).execute(
+            SearchFilesQuery(
+                current_user=current_user,
+                keyword=keyword,
+                page=page,
+                page_size=page_size,
+            )
         )
         file_list = [
             FileInfoResponse(
@@ -299,6 +313,8 @@ async def search_files(
         return FileListResponse(
             total=total, page=page, page_size=page_size, items=file_list
         )
+    except APIException:
+        raise
     except HTTPException:
         raise
     except Exception as e:
