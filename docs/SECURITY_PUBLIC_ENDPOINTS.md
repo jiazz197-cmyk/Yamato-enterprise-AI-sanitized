@@ -27,21 +27,22 @@ This document inventories HTTP routes by authentication requirement. Paths are r
 | Path | Method | Auth mechanism | Sensitivity |
 |------|--------|----------------|-------------|
 | `/api/v1/metrics` | GET | `X-API-KEY` when `METRICS_REQUIRE_API_KEY` | High |
-| `/api/v1/docs/ws/{task_id}` | WebSocket | `token` query (JWT) + task ownership | High |
+| `/api/v1/document-tasks/ws/{task_id}` | WebSocket | `token` query (JWT) + task ownership | High |
+| `/api/v1/docs/ws/{task_id}` | WebSocket | Legacy alias; same as `document-tasks` | High |
 
 ## JWT required (`Depends(get_current_user)` or stricter `require_roles`)
 
-All routes under: `/files`, `/quotation`, `/docs` (HTTP), `/image2url`, `/pdf2image`, `/retriever`, `/chat-summary`, `/closing-form` (as per each handler), `/context-compression`, `/sqlserver` (U8/PDM queries).
+All routes under: `/files`, `/quotation`, `/document-tasks` (HTTP; legacy `/docs`), `/ocr` (legacy `/image2url` and `/pdf2image` aliases), `/retriever`, `/chat-summary`, `/closing-form` (as per each handler), `/context-compression`, `/sqlserver` (U8/PDM queries).
 
 Role-restricted examples:
 
-- `GET /api/v1/docs/ws/stats` — superuser only
+- `GET /api/v1/document-tasks/ws/stats` (and legacy `GET /api/v1/docs/ws/stats`) — superuser only
 - `GET /api/v1/auth/users` — superuser; user delete/role — superuser
 - Parts of `closing-form` — admin or superuser per handler
 
 ## Review checklist
 
-- Re-audit when adding new routers in `app/api/v1/__init__.py`.
+- Re-audit when adding new routers in `app/api/v1/registry.py`.
 - In production, disable or protect `/example` if not needed.
 - Keep `TRUST_PROXY_HEADERS` off unless the reverse proxy is in `TRUSTED_PROXIES`.
 

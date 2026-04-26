@@ -603,7 +603,7 @@ const pollKnowledgeTaskStatus = async (taskId: string) => {
   knowledgeStatusAbortController = abortController
 
   try {
-    const response = await fetch(`${config.apiBaseUrl}/docs/status/${encodeURIComponent(taskId)}`, {
+    const response = await fetch(`${config.apiBaseUrl}/document-tasks/status/${encodeURIComponent(taskId)}`, {
       method: 'GET',
       headers: {
         Authorization: getUploadAuthorization(),
@@ -685,7 +685,7 @@ const handleKnowledgeUploadChange = async (event: Event) => {
       uploader,
     })
 
-    const response = await fetch(`${config.apiBaseUrl}/docs/process?${query.toString()}`, {
+    const response = await fetch(`${config.apiBaseUrl}/document-tasks/process?${query.toString()}`, {
       method: 'POST',
       headers: {
         Authorization: getUploadAuthorization(),

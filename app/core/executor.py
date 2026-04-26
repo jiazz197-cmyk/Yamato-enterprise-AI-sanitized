@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 
 if TYPE_CHECKING:
-    from app.api.taskmanager import TaskManager
+    from app.core.task_manager import TaskManager
 
 logger = get_logger("executor")
 

@@ -49,7 +49,7 @@ upstream yamato_backend {
 
 Notes for multi-instance setups:
 
-- **WebSockets** (`/api/v1/docs/ws/`): sticky routing may be required if the app assumes a fixed backend; consider `ip_hash` or `hash $cookie_... consistent;` on the upstream, or ensure the app is stateless with respect to which worker handles the socket.
+- **WebSockets** (`/api/v1/document-tasks/ws/`; legacy `/api/v1/docs/ws/`): sticky routing may be required if the app assumes a fixed backend; consider `ip_hash` or `hash $cookie_... consistent;` on the upstream, or ensure the app is stateless with respect to which worker handles the socket.
 - **Health**: open-source Nginx uses `max_fails` / `fail_timeout` on `server`; active health checks need a module or an external load balancer.
 - **Dify / Vite**: scale those services the same way by adding more `server` entries to `yamato_dify` or `yamato_vite` (or terminate TLS on a cloud LB and point Nginx at internal addresses).
 

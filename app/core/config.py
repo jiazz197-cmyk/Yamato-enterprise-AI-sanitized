@@ -286,7 +286,16 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     LOCAL_MODEL_GPU_DEVICE: int = Field(3, env="LOCAL_MODEL_GPU_DEVICE")
 
     QWEN3_8B_API_URL: str = Field("http://localhost:80/llm/qwen8b/v1", env="QWEN3_8B_API_URL")
-    QWEN3_5_27B_API_URL: str = Field("http://localhost:80/llm/qwen35b/v1", env="QWEN3_5_27B_API_URL")
+    QWEN3_6_35B_API_URL: str = Field(
+        "http://localhost:80/llm/qwen36b/v1",
+        env="QWEN3_6_35B_API_URL",
+        description="OpenAI-compatible API root (…/v1) for Qwen3.6-35B; proxy must target vLLM, not Dify/Next static routes.",
+    )
+    QWEN3_6_35B_MODEL: str = Field(
+        "/models/Qwen3.6-35B-A3B",
+        env="QWEN3_6_35B_MODEL",
+        description="Served model id (GET /v1/models on the same base as QWEN3_6_35B_API_URL). vLLM often uses path-style ids, not Hub names.",
+    )
 
     N8N_BASE_URL: str = Field("http://localhost:5678", env="N8N_BASE_URL")
     N8N_API_KEY: Optional[str] = Field(default=None, env="N8N_API_KEY")

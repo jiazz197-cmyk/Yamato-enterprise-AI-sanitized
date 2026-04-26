@@ -1,27 +1,21 @@
-"""文档异步处理与任务查询路由。"""
-import asyncio
-from io import BytesIO
+"""Document async processing API."""
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.taskmanager import task_manager, TaskManager
-from app.core.config import settings
+from app.core.task_manager import task_manager
 from app.core.dependencies import get_db
 from app.core.exceptions import NotFoundError, ValidationError
-from app.core.executor import executor_manager, CancellationToken
+from app.core.executor import executor_manager
 from app.core.logging import get_logger
-from app.core.storage import (
-    download_object_stream,
-    upload_stream_to_minio,
-    get_minio_client,
-    MINIO_BUCKET_NAME,
-)
-from app.models.orm.file_resource import FileResource
-from app.models.orm.platform.user import User, UserRole
 from app.core.security import get_current_user, normalize_self_uploader
+from app.integrations.doc_processing.document_task_runner import (
+    process_documents_background,
+    upload_and_register_documents,
+)
+from app.models.orm.platform.user import User, UserRole
 
 router = APIRouter()
 logger = get_logger("document_processing")
@@ -62,216 +56,6 @@ class TaskListResponse(BaseModel):
     total: int
 
 
-def process_documents_background(
-    token: CancellationToken,
-    task_id: str,
-    file_ids: List[int],
-    instance_id: int,
-    chunk_size: int,
-    chunk_overlap: int,
-):
-    """在线程池里跑 pipeline：首参 token 由 ExecutorManager 注入；内含独立 asyncio 循环与线程内 TaskManager。此处勿直接 await。"""
-    import asyncio
-    import time
-    from app.integrations.doc_processing.pipeline import DocumentProcessingPipeline
-    from app.api.taskmanager import TaskManager
-    
-    logger.info(f"[{task_id}] 开始后台处理，文件数: {len(file_ids)}")
-    
-    thread_tm = TaskManager.create_thread_safe_instance()
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    try:
-        if token.is_cancelled():
-            logger.info(f"[{task_id}] 任务在启动前被取消")
-            try:
-                loop.run_until_complete(
-                    thread_tm.fail_task(task_id, "用户取消任务", "任务在启动前被取消")
-                )
-            except Exception as e:
-                logger.warning(f"[{task_id}] 回写取消状态失败: {e}")
-            return {"status": "cancelled", "message": "任务在启动前被取消"}
-        
-        task_exists = False
-        for attempt in range(5):
-            try:
-                task_status = loop.run_until_complete(thread_tm.get_task_status(task_id))
-                if task_status:
-                    task_exists = True
-                    logger.info(f"[{task_id}] 任务已找到，开始处理")
-                    break
-            except Exception as e:
-                logger.warning(f"[{task_id}] 查询任务状态失败 (尝试 {attempt + 1}/5): {e}")
-            
-            time.sleep(0.3)
-        
-        if not task_exists:
-            logger.error(f"[{task_id}] 任务创建超时，无法启动")
-            try:
-                loop.run_until_complete(
-                    thread_tm.fail_task(task_id, "任务记录同步超时，无法启动", "任务创建超时")
-                )
-            except Exception as e:
-                logger.warning(f"[{task_id}] 回写超时失败状态失败: {e}")
-            return {"status": "error", "message": "任务创建超时"}
-        
-        loop.run_until_complete(thread_tm.start_task(task_id))
-        
-        db_config = {
-            "host": settings.POSTGRES_SERVER,
-            "user": settings.POSTGRES_USER,
-            "password": settings.POSTGRES_PASSWORD,
-            "database": settings.POSTGRES_DB,
-            "port": settings.POSTGRES_PORT,
-        }
-        
-        pipeline = DocumentProcessingPipeline(
-            db_config=db_config,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
-        
-        logger.info(f"[{task_id}] 正在从 MinIO 下载并逐文件处理 {len(file_ids)} 个文件...")
-        downloaded_count = 0
-        total_processed = 0
-        n_files = len(file_ids)
-        
-        from app.core.database import SessionLocal
-        db = SessionLocal()
-        
-        try:
-            for i, file_id in enumerate(file_ids):
-                if token.is_cancelled():
-                    logger.info(f"[{task_id}] 任务被取消，停止下载")
-                    loop.run_until_complete(
-                        thread_tm.fail_task(task_id, "用户取消任务", "任务已取消")
-                    )
-                    return {"status": "cancelled", "message": "任务被取消"}
-                
-                file_record = db.query(FileResource).filter(FileResource.id == file_id).first()
-                if not file_record:
-                    logger.warning(f"[{task_id}] 文件 ID {file_id} 不存在，跳过")
-                    continue
-                
-                progress = int((i / max(n_files, 1)) * 30)
-                loop.run_until_complete(
-                    thread_tm.update_task_progress(
-                        task_id, progress, f"正在下载第 {i+1}/{n_files} 个文件: {file_record.file_name}"
-                    )
-                )
-                
-                try:
-                    with download_object_stream(file_record.minio_object_path) as response:
-                        stream = BytesIO(response.read())
-                        stream.name = file_record.file_name
-                    downloaded_count += 1
-                except Exception as e:
-                    logger.error(f"[{task_id}] 下载文件失败 {file_record.file_name}: {e}")
-                    continue
-                
-                if token.is_cancelled():
-                    loop.run_until_complete(
-                        thread_tm.fail_task(task_id, "用户取消任务", "任务已取消")
-                    )
-                    return {"status": "cancelled", "message": "任务被取消"}
-                
-                # Process one file at a time to cap memory at ~single file size
-                mid = 30 + int((i + 1) / max(n_files, 1) * 55)
-                loop.run_until_complete(
-                    thread_tm.update_task_progress(
-                        task_id, min(mid, 85), f"处理文件 {i+1}/{n_files}: {file_record.file_name}"
-                    )
-                )
-                try:
-                    one_result = pipeline.process(
-                        input_data=[stream],
-                        instance_id=instance_id,
-                    )
-                    total_processed += int(one_result.get("processed_files", 0) or 0)
-                except Exception as e:
-                    logger.error(f"[{task_id}] 处理文件失败 {file_record.file_name}: {e}", exc_info=True)
-                    raise
-                finally:
-                    stream.close()
-                    del stream
-            
-            if not downloaded_count:
-                raise ValueError("没有成功下载任何文件")
-            
-            if token.is_cancelled():
-                logger.info(f"[{task_id}] 任务被取消，停止处理")
-                loop.run_until_complete(
-                    thread_tm.fail_task(task_id, "用户取消任务", "任务已取消")
-                )
-                return {"status": "cancelled", "message": "任务被取消"}
-            
-            logger.info(f"[{task_id}] 已处理 {downloaded_count} 个文件，向量化成功段数: {total_processed}")
-            
-            loop.run_until_complete(
-                thread_tm.update_task_progress(task_id, 90, "正在保存结果...")
-            )
-            
-            result = {"status": "success", "processed_files": total_processed, "total_files": downloaded_count}
-            
-            final_result = {
-                "processed_files": total_processed,
-                "total_files": len(file_ids),
-                "status": result.get("status"),
-                "instance_id": instance_id,
-            }
-            
-            loop.run_until_complete(
-                thread_tm.complete_task(task_id, final_result, "文档处理完成")
-            )
-            
-            logger.info(f"[{task_id}] 处理完成: {final_result}")
-            return final_result
-            
-        finally:
-            try:
-                db.commit()
-            except Exception:
-                db.rollback()
-            finally:
-                db.close()
-        
-    except Exception as e:
-        logger.error(f"[{task_id}] 处理失败: {e}", exc_info=True)
-        try:
-            loop.run_until_complete(
-                thread_tm.fail_task(task_id, str(e), "文档处理失败")
-            )
-        except Exception as e2:
-            logger.error(f"[{task_id}] 标记失败状态时出错: {e2}")
-        return {"status": "error", "message": str(e)}
-    finally:
-        try:
-            if hasattr(thread_tm, 'storage') and hasattr(thread_tm.storage, 'redis_client'):
-                if thread_tm.storage.redis_client is not None:
-                    try:
-                        async def close_redis_with_timeout():
-                            if hasattr(thread_tm.storage.redis_client, 'connection_pool'):
-                                await thread_tm.storage.redis_client.connection_pool.disconnect()
-                            await thread_tm.storage.redis_client.aclose()
-                        
-                        loop.run_until_complete(
-                            asyncio.wait_for(close_redis_with_timeout(), timeout=2.0)
-                        )
-                        logger.debug(f"[{task_id}] Redis连接已关闭")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"[{task_id}] Redis关闭超时，强制继续")
-                    except Exception as e:
-                        logger.warning(f"[{task_id}] 关闭Redis连接失败: {e}")
-            
-            if loop and not loop.is_closed():
-                loop.close()
-                logger.debug(f"[{task_id}] 事件循环已关闭")
-        except Exception as e:
-            logger.warning(f"[{task_id}] 清理资源时出错: {e}")
-
-
 @router.post("/process", response_model=TaskSubmitResponse, summary="提交文档处理任务")
 async def submit_document_processing(
     files: List[UploadFile] = File(..., description="要处理的文档文件"),
@@ -282,72 +66,15 @@ async def submit_document_processing(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """上传 MinIO、落库、建 task、丢进线程池；接口立即返回 task_id。"""
+    """Upload to MinIO, persist rows, create task, submit to thread pool; returns task_id."""
     try:
         if not files:
             raise ValidationError("至少需要上传一个文件")
-        
-        logger.info(f"收到文档处理请求: {len(files)} 个文件, instance_id={instance_id}")
-
+        logger.info("收到文档处理请求: %s 个文件, instance_id=%s", len(files), instance_id)
         normalized_uploader = normalize_self_uploader(uploader, current_user)
-
-        file_ids = []
-        for file in files:
-            if not file.filename:
-                logger.warning("跳过没有文件名的文件")
-                continue
-            
-            try:
-                from datetime import datetime
-                import uuid
-                from pathlib import Path
-                
-                suffix = Path(file.filename).suffix
-                unique_id = uuid.uuid4().hex
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                unique_name = f"{timestamp}_{unique_id}{suffix}"
-                minio_path = f"documents/{unique_name}"
-                
-                file_size = getattr(file, 'size', None) or -1
-                
-                content_type = file.content_type or "application/octet-stream"
-                result = upload_stream_to_minio(file.file, minio_path, file_size, content_type)
-                
-                if result.startswith("Error"):
-                    logger.error(f"上传文件失败: {file.filename} - {result}")
-                    continue
-                
-                if file_size == -1:
-                    try:
-                        client = get_minio_client()
-                        stat = client.stat_object(MINIO_BUCKET_NAME, minio_path)
-                        file_size = stat.size
-                    except:
-                        file_size = 0
-                
-                file_record = FileResource(
-                    file_name=file.filename,
-                    unique_name=unique_name,
-                    minio_object_path=minio_path,
-                    content_type=content_type,
-                    file_size=file_size,
-                    uploader=normalized_uploader,
-                )
-                db.add(file_record)
-                db.commit()
-                db.refresh(file_record)
-                
-                file_ids.append(file_record.id)
-                logger.info(f"文件上传成功: {file.filename} (ID: {file_record.id})")
-                
-            except Exception as e:
-                logger.error(f"上传文件失败 {file.filename}: {e}", exc_info=True)
-                db.rollback()
-                continue
-        
+        file_ids = upload_and_register_documents(db, files, normalized_uploader)
         if not file_ids:
             raise ValidationError("没有成功上传任何文件")
-        
         task_id = await task_manager.create_task(
             task_type="doc_process",
             metadata={
@@ -358,11 +85,9 @@ async def submit_document_processing(
                 "uploader": normalized_uploader,
                 "owner_id": str(current_user.id),
                 "files_count": len(file_ids),
-            }
+            },
         )
-        
-        logger.info(f"创建文档处理任务: {task_id}, 文件数: {len(file_ids)}")
-        
+        logger.info("创建文档处理任务: %s, 文件数: %s", task_id, len(file_ids))
         executor_manager.submit_task(
             task_id,
             process_documents_background,
@@ -373,20 +98,18 @@ async def submit_document_processing(
             chunk_overlap,
         )
         executor_manager.set_task_owner(task_id, str(current_user.id))
-        
         return TaskSubmitResponse(
             task_id=task_id,
             status="pending",
             message="任务已创建，开始处理",
             files_count=len(file_ids),
         )
-        
     except ValidationError:
         raise
     except Exception as e:
-        logger.error(f"提交文档处理任务失败: {e}", exc_info=True)
+        logger.error("提交文档处理任务失败: %s", e, exc_info=True)
         db.rollback()
-        raise HTTPException(status_code=500, detail="提交任务失败")
+        raise HTTPException(status_code=500, detail="提交任务失败") from e
 
 
 @router.get("/status/{task_id}", response_model=TaskStatusResponse, summary="查询任务状态")
@@ -394,17 +117,15 @@ async def get_task_status(
     task_id: str,
     current_user: User = Depends(get_current_user),
 ):
-    """按 task_id 查状态；非 superuser 仅能看自己的任务。"""
     try:
         task_status = await task_manager.get_task_status(task_id)
-        
         if not task_status:
             raise NotFoundError(f"任务 {task_id} 不存在")
-        
         owner_id = str(task_status.metadata.get("owner_id", "")).strip()
         if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该任务")
-
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该任务"
+            )
         return TaskStatusResponse(
             task_id=task_status.task_id,
             status=task_status.status,
@@ -416,35 +137,33 @@ async def get_task_status(
             result=task_status.result,
             error=task_status.error,
         )
-        
     except NotFoundError:
         raise
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"查询任务状态失败 {task_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="查询任务状态失败")
+        logger.error("查询任务状态失败 %s: %s", task_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="查询任务状态失败") from e
 
 
 @router.get("/tasks", response_model=TaskListResponse, summary="获取任务列表")
 async def list_tasks(
-    status: Optional[str] = Query(None, description="按状态筛选 (pending/running/completed/failed)"),
+    status: Optional[str] = Query(
+        None, description="按状态筛选 (pending/running/completed/failed)"
+    ),
     limit: int = Query(10, ge=1, le=100, description="返回数量限制"),
     current_user: User = Depends(get_current_user),
 ):
-    """doc_process 类型任务列表，可按 status 过滤。"""
     try:
         tasks = await task_manager.list_tasks(task_type="doc_process", limit=limit)
-        
         if status:
             tasks = [t for t in tasks if t.status == status]
-
         if current_user.role != UserRole.superuser:
             tasks = [
-                t for t in tasks
+                t
+                for t in tasks
                 if str(t.metadata.get("owner_id", "")).strip() == str(current_user.id)
             ]
-        
         task_responses = [
             TaskStatusResponse(
                 task_id=t.task_id,
@@ -459,17 +178,12 @@ async def list_tasks(
             )
             for t in tasks
         ]
-        
-        return TaskListResponse(
-            tasks=task_responses,
-            total=len(task_responses),
-        )
-        
+        return TaskListResponse(tasks=task_responses, total=len(task_responses))
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"获取任务列表失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="获取任务列表失败")
+        logger.error("获取任务列表失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="获取任务列表失败") from e
 
 
 @router.post("/tasks/{task_id}/cancel", summary="取消任务")
@@ -477,27 +191,23 @@ async def cancel_task_endpoint(
     task_id: str,
     current_user: User = Depends(get_current_user),
 ):
-    """协作式取消：ExecutorManager.cancel_task + 必要时更新 TaskManager 文案。"""
     try:
         task_status = await task_manager.get_task_status(task_id)
         if not task_status:
             raise NotFoundError(f"任务 {task_id} 不存在")
-        
         owner_id = str(task_status.metadata.get("owner_id", "")).strip()
         if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权取消该任务")
-
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="无权取消该任务"
+            )
         if task_status.status in ["completed", "failed"]:
             return {
                 "success": False,
-                "message": f"任务已{task_status.status}，无法取消"
+                "message": f"任务已{task_status.status}，无法取消",
             }
-        
         success = executor_manager.cancel_task(task_id)
-
         if success:
             fut = executor_manager.get_task_future(task_id)
-            # ThreadPoolExecutor: cancel() True means the callable never ran — no fail_task from worker
             if fut is not None and fut.cancelled():
                 await task_manager.fail_task(
                     task_id, "用户取消任务", "任务在队列中已取消"
@@ -505,24 +215,15 @@ async def cancel_task_endpoint(
             elif task_status.status in ("running", "pending"):
                 task_status.message = "正在取消任务..."
                 await task_manager._save_task_status(task_status)
-
-            return {
-                "success": True,
-                "message": "任务取消请求已发送"
-            }
-        else:
-            return {
-                "success": False,
-                "message": "任务取消失败"
-            }
-        
+            return {"success": True, "message": "任务取消请求已发送"}
+        return {"success": False, "message": "任务取消失败"}
     except NotFoundError:
         raise
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"取消任务失败 {task_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="取消任务失败")
+        logger.error("取消任务失败 %s: %s", task_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="取消任务失败") from e
 
 
 @router.delete("/tasks/{task_id}", summary="删除任务记录")
@@ -531,37 +232,29 @@ async def delete_task_endpoint(
     cancel_if_running: bool = Query(True, description="是否取消正在运行的任务"),
     current_user: User = Depends(get_current_user),
 ):
-    """可先 cancel 再删记录；线程内任务仍须自行响应 token。"""
     try:
         task_status = await task_manager.get_task_status(task_id)
         if not task_status:
             raise NotFoundError(f"任务 {task_id} 不存在")
-        
         owner_id = str(task_status.metadata.get("owner_id", "")).strip()
         if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除该任务")
-
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="无权删除该任务"
+            )
         if cancel_if_running and task_status.status in ["pending", "running"]:
-            logger.info(f"任务正在运行，先尝试取消: {task_id}")
+            logger.info("任务正在运行，先尝试取消: %s", task_id)
             executor_manager.cancel_task(task_id)
-        
         success = await task_manager.delete_task(task_id)
-        
         if not success:
             raise HTTPException(status_code=500, detail="删除任务记录失败")
-        
         return {
             "success": True,
-            "message": f"任务 {task_id} 已{'取消并' if cancel_if_running else ''}删除"
+            "message": f"任务 {task_id} 已{'取消并' if cancel_if_running else ''}删除",
         }
-        
     except NotFoundError:
         raise
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"删除任务失败 {task_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="删除任务失败")
-
-
-
+        logger.error("删除任务失败 %s: %s", task_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="删除任务失败") from e

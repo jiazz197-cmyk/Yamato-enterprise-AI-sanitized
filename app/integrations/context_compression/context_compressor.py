@@ -12,6 +12,20 @@ from app.integrations.Chat_message_archive.message_extractor import MessageExtra
 logger = logging.getLogger(__name__)
 
 
+def _is_upstream_html_response(exc: BaseException) -> bool:
+    """True if the error body looks like an HTML page (e.g. 404 from Dify UI instead of vLLM)."""
+    text = str(exc).lower()
+    if "<!doctype html" in text or "<!doctype" in text:
+        return True
+    if "text/html" in text and "application/json" not in text:
+        return True
+    return False
+
+
+class LlmEndpointMisconfiguredError(RuntimeError):
+    """Configured OpenAI-compatible base_url returned an HTML error page, not a chat completion."""
+
+
 def _decode_user_id(raw_user_id: str) -> str:
     value = (raw_user_id or "").strip()
     if not value:
@@ -24,14 +38,14 @@ class ContextCompressor:
     def __init__(
         self,
         base_url: Optional[str] = None,
-        model_name: str = "Qwen/Qwen3.5-35B-A3B-FP8",
+        model_name: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 1024,
-        dify_api_key: Optional[str] = None
+        dify_api_key: Optional[str] = None,
     ):
-        """base_url 默认 QWEN3_5_27B；dify 密钥来自 CHAT_API_KEY。"""
-        self.base_url = base_url or settings.QWEN3_5_27B_API_URL
-        self.model_name = model_name
+        """base_url 默认 QWEN3_6_35B；model 默认 QWEN3_6_35B_MODEL（与 /v1/models 一致）。"""
+        self.base_url = base_url or settings.QWEN3_6_35B_API_URL
+        self.model_name = model_name if model_name is not None else settings.QWEN3_6_35B_MODEL
         self.dify_api_key = dify_api_key or settings.CHAT_API_KEY
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -168,10 +182,22 @@ class ContextCompressor:
             raw_result = chain.invoke(payload)
         except Exception as e:
             import re
+
+            if _is_upstream_html_response(e):
+                logger.error(
+                    "Context compression: upstream LLM URL returned HTML (not JSON). "
+                    "Check QWEN3_6_35B_API_URL and reverse proxy: /llm/... must route to the "
+                    "inference service (e.g. vLLM), not the Dify/Next.js app."
+                )
+                raise LlmEndpointMisconfiguredError(
+                    "LLM 接口返回了网页而非 API 结果。请检查 QWEN3_6_35B_API_URL 与 Nginx/网关："
+                    "路径需指向 OpenAI 兼容的推理服务（如 vLLM），不要指到 Dify 前端。"
+                ) from e
+
             error_text = str(e)
             match = re.search(r"\((\d+)\s*>\s*(\d+)\s*-\s*(\d+)\)", error_text)
             if not match:
-                logger.error(f"Error during context compression: {error_text}")
+                logger.error("Error during context compression: %s", error_text[:2000])
                 raise e
 
             requested_max = int(match.group(1))
@@ -181,7 +207,7 @@ class ContextCompressor:
             retry_max_tokens = min(requested_max, self.max_tokens, max(64, available))
 
             if retry_max_tokens <= 0:
-                logger.error(f"Error during context compression: {error_text}")
+                logger.error("Error during context compression: %s", error_text[:2000])
                 raise e
 
             logger.warning(

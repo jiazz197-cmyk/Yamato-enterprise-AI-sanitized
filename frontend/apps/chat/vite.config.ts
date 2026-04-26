@@ -70,7 +70,11 @@ export default defineConfig(({ mode }) => {
         [`${apiBase}/auth`]: makeProxy(env.VITE_BACKEND_TARGET),
         [`${apiBase}/chat-summary`]: makeProxy(env.VITE_BACKEND_TARGET),
         [`${apiBase}/closing-form`]: makeProxy(env.VITE_BACKEND_TARGET),
-        [`${apiBase}/docs`]: makeProxy(env.VITE_BACKEND_TARGET),
+        [`${apiBase}/docs`]: makeProxy(env.VITE_BACKEND_TARGET), // OpenAPI + legacy /docs/* doc-task routes
+        [`${apiBase}/document-tasks`]: makeProxy(env.VITE_BACKEND_TARGET),
+        [`${apiBase}/ocr`]: makeProxy(env.VITE_BACKEND_TARGET),
+        [`${apiBase}/image2url`]: makeProxy(env.VITE_BACKEND_TARGET),
+        [`${apiBase}/pdf2image`]: makeProxy(env.VITE_BACKEND_TARGET),
         [`${apiBase}/quotation`]: makeProxy(env.VITE_BACKEND_TARGET),
         [`${apiBase}/context-compression`]: makeProxy(env.VITE_BACKEND_TARGET),
         [apiBase]: {

@@ -27,7 +27,7 @@ export const createTaskWebSocket = (taskId: string, callbacks?: TaskWsCallbacks)
   }
 
   const base = toWsBase(config.apiBaseUrl)
-  const wsUrl = `${base}/docs/ws/${encodeURIComponent(taskId)}?token=${encodeURIComponent(token)}`
+  const wsUrl = `${base}/document-tasks/ws/${encodeURIComponent(taskId)}?token=${encodeURIComponent(token)}`
   const socket = new WebSocket(wsUrl)
 
   socket.onopen = () => {

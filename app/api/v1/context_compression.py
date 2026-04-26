@@ -4,7 +4,7 @@ from typing import List, Optional
 import logging
 from urllib.parse import unquote
 
-from app.integrations.context_compression import compress_context
+from app.integrations.context_compression import LlmEndpointMisconfiguredError, compress_context
 from app.schemas.base import FormatJSONResponse
 from app.core.security import get_current_user, normalize_self_user_identifier
 from app.models.orm.platform.user import User
@@ -51,14 +51,21 @@ def compress_chat_context(
         # Dify variables endpoint expects business user_id, not auth UUID.
         context_data["user_id"] = effective_user_id
         compressed_result = compress_context(context_data)
-        
+
         return FormatJSONResponse(
             data={"compressed_context": compressed_result},
-            message="Context compressed successfully"
+            message="Context compressed successfully",
         )
+    except LlmEndpointMisconfiguredError as e:
+        logger.warning(
+            "Context compression misconfigured for conversation %s: %s",
+            request.conversation_id,
+            str(e)[:500],
+        )
+        raise HTTPException(status_code=502, detail=str(e)) from e
     except Exception as e:
-        logger.error("Failed to compress context for conversation %s: %s", request.conversation_id, str(e))
+        logger.error("Failed to compress context for conversation %s: %s", request.conversation_id, str(e)[:2000])
         raise HTTPException(
             status_code=500,
-            detail="Failed to compress context"
-        )
+            detail="Failed to compress context",
+        ) from e

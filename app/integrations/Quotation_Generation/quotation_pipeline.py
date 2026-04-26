@@ -174,11 +174,11 @@ def _response_to_dict(response: Any) -> Dict[str, Any]:
 
 def _run_pdm_query(keywords_payload: Dict[str, Any], cancel_checker: CancelChecker) -> Dict[str, Any]:
     # Lazy-import to avoid a circular import between quotation_generation and quotation_pipeline.
-    from app.api.v1.sqlserver_queries import (
-        PdmBomRequest,
+    from app.integrations.sqlserver import (
         QueryCancelledError,
         run_pdm_bom_query,
     )
+    from app.schemas.sqlserver import PdmBomRequest
 
     keywords = keywords_payload.get("keywords") if isinstance(keywords_payload, dict) else None
     if keywords is None:
@@ -198,11 +198,11 @@ def _run_u8_query(
     max_depth: int,
     cancel_checker: CancelChecker,
 ) -> Dict[str, Any]:
-    from app.api.v1.sqlserver_queries import (
+    from app.integrations.sqlserver import (
         QueryCancelledError,
-        U8BomInventoryRequest,
         run_u8_bom_inventory_query,
     )
+    from app.schemas.sqlserver import U8BomInventoryRequest
 
     parent_codes = [code.strip() for code in parent_inv_codes.split(",") if code.strip()]
     logger.info(

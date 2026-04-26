@@ -47,6 +47,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import or_
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.api.v1 import api_router
+from app.api.v1.tags import OPENAPI_TAG_METADATA
 from app.core.cache import redis_manager
 from app.core.config import settings
 from app.core.exceptions import APIException
@@ -74,7 +75,7 @@ def require_metrics_access(x_api_key: str | None = Header(default=None, alias="X
 def _startup_check_sqlserver_connectivity(app: FastAPI) -> None:
     """Check U8/PDM connectivity at startup without blocking service startup."""
     try:
-        from app.api.v1.sqlserver_queries import test_sqlserver_connectivity
+        from app.integrations.sqlserver import test_sqlserver_connectivity
 
         sqlserver_checks = test_sqlserver_connectivity()
         app.state.sqlserver_connectivity = sqlserver_checks
@@ -103,7 +104,9 @@ def _startup_resume_quotation_services() -> None:
     - dispatch queued tasks for each owner
     """
     try:
-        from app.api.v1.quotation_generation import _dispatch_for_owner
+        from app.integrations.Quotation_Generation.quotation_task_workers import (
+            dispatch_quotation_queue_for_owner,
+        )
         from app.core.database import SessionLocal
         from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
 
@@ -142,7 +145,7 @@ def _startup_resume_quotation_services() -> None:
             db.close()
 
         for owner_id in owner_ids:
-            _dispatch_for_owner(owner_id)
+            dispatch_quotation_queue_for_owner(owner_id)
 
         if owner_ids:
             print(f"[success] 报价任务服务已恢复并调度，影响用户数: {len(owner_ids)}")
@@ -165,21 +168,21 @@ async def lifespan(app: FastAPI):
     
     try:
         from app.core.executor import executor_manager
-        from app.api.taskmanager import task_manager
+        from app.core.task_manager import task_manager
         executor_manager.set_task_manager(task_manager, auto_sync=False)  # 默认不向 TaskManager 自动同步
         print("[success] ExecutorManager 已集成 TaskManager")
     except Exception as e:
         print(f"[warning] ExecutorManager 集成 TaskManager 失败: {e}")
     
     try:
-        from app.api.taskmanager import task_manager
+        from app.core.task_manager import task_manager
         from app.integrations.observers import (
             LoggingObserver, 
             MetricsCollector,
         )
-        from app.api.v1.websocket_notifier import (
+        from app.core.websocket_task_manager import (
             WebSocketTaskObserver,
-            ws_manager
+            ws_manager,
         )
         
         logging_observer = LoggingObserver()
@@ -270,7 +273,7 @@ async def lifespan(app: FastAPI):
             print(f"[warning] 关闭线程池时出错: {e}")
         
         try:
-            from app.api.taskmanager import task_manager
+            from app.core.task_manager import task_manager
             await asyncio.wait_for(task_manager.remove_all_observers(), timeout=1.0)
             print("[success] 观察者已清理")
         except asyncio.TimeoutError:
@@ -279,7 +282,7 @@ async def lifespan(app: FastAPI):
             print(f"[warning] 清理观察者时出错: {e}")
         
         try:
-            from app.api.v1.websocket_notifier import ws_manager
+            from app.core.websocket_task_manager import ws_manager
             await asyncio.wait_for(ws_manager.disconnect_all(), timeout=1.0)
             print("[success] WebSocket 已关闭")
         except asyncio.TimeoutError:
@@ -313,6 +316,7 @@ def create_app() -> FastAPI:
         docs_url=docs_url,
         redoc_url=redoc_url,
         openapi_url=openapi_url,
+        openapi_tags=OPENAPI_TAG_METADATA,
         lifespan=lifespan,
     )
 

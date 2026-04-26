@@ -35,6 +35,11 @@ class RateLimiter:
             f"{settings.API_V1_STR}/chat-summary",
             f"{settings.API_V1_STR}/context-compression",
             f"{settings.API_V1_STR}/sqlserver",
+            f"{settings.API_V1_STR}/ocr",
+            f"{settings.API_V1_STR}/document-tasks",
+            f"{settings.API_V1_STR}/docs",
+            f"{settings.API_V1_STR}/image2url",
+            f"{settings.API_V1_STR}/pdf2image",
         )
         self.trust_proxy_headers = settings.TRUST_PROXY_HEADERS
         self.trusted_proxy_networks = self._build_trusted_proxy_networks(settings.TRUSTED_PROXIES)
