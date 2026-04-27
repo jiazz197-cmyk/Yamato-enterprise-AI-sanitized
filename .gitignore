@@ -26,3 +26,6 @@ nginx/nginx.conf
 charts1/
 charts/
 logs/
+
+# Local test exports (e.g. U8 CSV adapter)
+tests/output/

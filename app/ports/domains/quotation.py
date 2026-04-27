@@ -2,10 +2,30 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, Callable, Dict, Optional, Protocol
 
 from app.ports.dto.quotation import QuotationTaskSnapshot
+
+CancelChecker = Optional[Callable[[], bool]]
+ProgressCallback = Optional[Callable[[int, str], None]]
+
+
+@dataclass
+class RasterPageResult:
+    """First-page rasterization output."""
+
+    image_bytes: bytes
+    suggested_filename_suffix: str
+
+
+@dataclass
+class TempObjectUploadResult:
+    """Public URL and storage path for a temporary uploaded object."""
+
+    public_url: str
+    object_path: str
 
 
 class FileStoragePort(Protocol):
@@ -61,4 +81,56 @@ class QuotationTaskRepoPort(Protocol):
         ...
 
     def cleanup_task_files(self, task_id: str) -> Dict[str, Any]:
+        ...
+
+
+class PdfFirstPageRasterPort(Protocol):
+    """Rasterize page 1 of a PDF to image bytes."""
+
+    def rasterize_first_page(
+        self,
+        pdf_bytes: bytes,
+        *,
+        cancel_checker: CancelChecker = None,
+    ) -> RasterPageResult:
+        ...
+
+
+class QuotationTempObjectStoragePort(Protocol):
+    """Upload temporary quotation artifacts (e.g. page-1 JPEG) and return a fetchable URL."""
+
+    def upload_temp_image(
+        self,
+        *,
+        image_bytes: bytes,
+        object_path: str,
+        cancel_checker: CancelChecker = None,
+    ) -> TempObjectUploadResult:
+        ...
+
+
+class OcrStructuredInfoPort(Protocol):
+    """Run layout OCR and structured field extraction for quotation."""
+
+    def extract_structured_info(
+        self,
+        *,
+        image_url: str,
+        ocr_api_url: str,
+        max_retries: int,
+        cancel_checker: CancelChecker = None,
+    ) -> Dict[str, Any]:
+        ...
+
+
+class KeywordPayloadMappingPort(Protocol):
+    """Map OCR extracted_info to PDM keywords_payload."""
+
+    def build_keywords_payload(
+        self,
+        extracted_info: Dict[str, Any],
+        *,
+        max_retries: int,
+        cancel_checker: CancelChecker = None,
+    ) -> Dict[str, Any]:
         ...

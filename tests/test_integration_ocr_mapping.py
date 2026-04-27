@@ -1,7 +1,7 @@
 """Integration test: PDF → OCR → SpecificationMapping → keywords_payload.
 
 Replicates the exact OCR prefix used by
-`app.integrations.Quotation_Generation.quotation_pipeline.run_phase1_keywords_and_pdm`:
+`ExecuteQuotationPhase1UseCase` (before PDM):
 
     PDF bytes
       └─► pdf2image.pdf_to_single_image(page_number=1)
@@ -46,7 +46,7 @@ from app.integrations.ocr.pdf2image import pdf_to_single_image  # noqa: E402
 
 
 # -----------------------------------------------------------------------------
-# Pipeline stages (identical to run_phase1_keywords_and_pdm prefix)
+# Pipeline stages (identical to ExecuteQuotationPhase1 OCR/mapping prefix, before PDM)
 
 
 def run_ocr_pipeline(

@@ -1,4 +1,4 @@
-"""Quotation adapters implementing ports on top of current infra."""
+"""Quotation adapters: MinIO upload, ORM repo, task dispatch."""
 
 from __future__ import annotations
 

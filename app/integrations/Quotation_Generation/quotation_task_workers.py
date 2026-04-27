@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -14,16 +16,68 @@ from app.core.executor import CancellationToken, executor_manager
 from app.core.logging import get_logger
 from app.core.quotation_dispatcher import quotation_dispatcher
 from app.core.storage import delete_from_minio, download_object_stream
-from app.integrations.Quotation_Generation.quotation_pipeline import (
-    QuotationPipelineCancelledError,
-    QuotationPipelineError,
-    run_phase1_keywords_and_pdm,
-    run_phase2_u8_bom_inventory,
+from app.adapters.quotation.deps import (
+    build_execute_quotation_phase1_use_case,
+    build_execute_quotation_phase2_use_case,
 )
+from app.domain.quotation.exceptions import QuotationPipelineCancelledError, QuotationPipelineError
+from app.domain.quotation.partid_mapping import convert_partids_to_u8_codes
+from app.usecases.quotation.execute_phase1 import ExecuteQuotationPhase1Command
+from app.usecases.quotation.execute_phase2 import ExecuteQuotationPhase2Command
 from app.models.orm.file_resource import FileResource
 from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
 
 logger = get_logger("quotation_generation")
+
+_XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _upload_u8_result_by_type_xlsx_to_minio(
+    *,
+    task_id: str,
+    uploaded_file_name: str,
+    u8_result_by_type: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Build multi-sheet xlsx from ``u8_result_by_type`` and upload via ``MinioFileStorageAdapter``.
+
+    Returns ``(minio_object_path, download_filename)`` or ``(None, None)`` if skipped or upload fails.
+    """
+    # Lazy imports: ``persistence`` imports this module at load time.
+    from app.adapters.quotation.persistence import MinioFileStorageAdapter
+    from app.adapters.quotation.u8_result_by_type_csv import U8ResultByTypeCsvAdapter
+    from app.core.exceptions import APIException
+
+    try:
+        xlsx_export = U8ResultByTypeCsvAdapter().export_xlsx_workbook(u8_result_by_type)
+    except ImportError as exc:
+        logger.warning("Phase2 skip u8_by_type xlsx: openpyxl missing (%s)", exc)
+        return None, None
+
+    object_path = f"quotation-results/{task_id}/u8_by_type.xlsx"
+    stem = Path(uploaded_file_name or "").stem or "quotation"
+    safe_stem = re.sub(r"[^\w\u4e00-\u9fff\-.]+", "_", stem).strip("_") or "quotation"
+    download_name = f"{safe_stem}_u8_by_type.xlsx"
+
+    try:
+        MinioFileStorageAdapter().upload_pdf(
+            object_path=object_path,
+            file_bytes=xlsx_export.content,
+            content_type=_XLSX_CONTENT_TYPE,
+        )
+    except APIException as exc:
+        logger.warning("Phase2 u8_by_type xlsx MinIO upload failed task_id=%s: %s", task_id, exc)
+        return None, None
+    except Exception as exc:
+        logger.warning(
+            "Phase2 u8_by_type xlsx upload error task_id=%s: %s",
+            task_id,
+            exc,
+            exc_info=True,
+        )
+        return None, None
+
+    return object_path, download_name
+
 
 def _mark_task_failed_in_db(task_id: str, error_message: str) -> None:
     db = SessionLocal()
@@ -138,44 +192,6 @@ def _clamp_message(message: str, limit: int = _MESSAGE_COLUMN_LIMIT) -> str:
     return message[:head] + suffix
 
 
-def map_parent_inv_code(partid: Any) -> str:
-    """PARTID 映射为 U8 ParentInvCode。"""
-    if partid is None:
-        return ""
-    code = str(partid).strip()
-    if not code:
-        return ""
-    if code.startswith("50GB"):
-        return f"Z{code[4:]}"
-    if code.startswith("50CB"):
-        return f"X{code[4:]}"
-    if code.startswith("50JC"):
-        return f"P{code[4:]}"
-    return code
-
-
-def _convert_pdm_partids_to_u8_codes(partids: List[str]) -> tuple[List[str], List[Dict[str, str]]]:
-    """将 PDM PARTID 列表转换为 U8 可查询的 parent_inv_codes。"""
-    converted_codes: List[str] = []
-    mappings: List[Dict[str, str]] = []
-    seen_codes: set[str] = set()
-
-    for partid in partids:
-        source = str(partid).strip()
-        if not source:
-            continue
-        mapped = map_parent_inv_code(source)
-        if not mapped:
-            continue
-        mappings.append({"pdm_partid": source, "u8_parent_inv_code": mapped})
-        if mapped in seen_codes:
-            continue
-        seen_codes.add(mapped)
-        converted_codes.append(mapped)
-
-    return converted_codes, mappings
-
-
 def _close_thread_tm(loop: asyncio.AbstractEventLoop, thread_tm: TaskManager) -> None:
     try:
         if hasattr(thread_tm, "storage") and hasattr(thread_tm.storage, "redis_client"):
@@ -227,11 +243,14 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
         with download_object_stream(task.uploaded_file_minio_path) as response:
             pdf_bytes = response.read()
 
-        phase1_result = run_phase1_keywords_and_pdm(
-            pdf_bytes=pdf_bytes,
-            original_filename=task.uploaded_file_name,
-            progress_callback=update_progress,
-            cancel_checker=token.is_cancelled,
+        phase1_uc = build_execute_quotation_phase1_use_case()
+        phase1_result = phase1_uc.execute(
+            ExecuteQuotationPhase1Command(
+                pdf_bytes=pdf_bytes,
+                original_filename=task.uploaded_file_name,
+                progress_callback=update_progress,
+                cancel_checker=token.is_cancelled,
+            )
         )
         task.temp_image_minio_path = phase1_result.temp_image_minio_path
 
@@ -249,7 +268,7 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
             loop.run_until_complete(thread_tm.fail_task(task_id, task.error, task.message))
             return {"status": "error", "task_id": task_id, "error": task.error}
 
-        converted_u8_codes, pdm_to_u8_mappings = _convert_pdm_partids_to_u8_codes(
+        converted_u8_codes, pdm_to_u8_mappings = convert_partids_to_u8_codes(
             phase1_result.pdm_partids
         )
         result_payload["u8_parent_inv_codes"] = converted_u8_codes
@@ -370,11 +389,14 @@ def process_quotation_task_phase2_background(
 
         update_progress(60, f"开始 U8 BOM Inventory 查询（{len(selected_partids)} 项）")
 
-        phase2_result = run_phase2_u8_bom_inventory(
-            pdm_partids=selected_partids,
-            keywords_payload=existing_payload.get("keywords_payload"),
-            progress_callback=update_progress,
-            cancel_checker=token.is_cancelled,
+        phase2_uc = build_execute_quotation_phase2_use_case()
+        phase2_result = phase2_uc.execute(
+            ExecuteQuotationPhase2Command(
+                pdm_partids=selected_partids,
+                keywords_payload=existing_payload.get("keywords_payload"),
+                progress_callback=update_progress,
+                cancel_checker=token.is_cancelled,
+            )
         )
 
         safe_cleanup_quotation_task_files(db, task, task_id)
@@ -398,6 +420,20 @@ def process_quotation_task_phase2_background(
             "u8_result_by_type": phase2_result.u8_result_by_type,
             "u8_result_type_summary": phase2_result.u8_result_type_summary,
         }
+
+        u8_by_type = (
+            phase2_result.u8_result_by_type
+            if isinstance(phase2_result.u8_result_by_type, dict)
+            else {}
+        )
+        xlsx_path, xlsx_name = _upload_u8_result_by_type_xlsx_to_minio(
+            task_id=task_id,
+            uploaded_file_name=task.uploaded_file_name,
+            u8_result_by_type=u8_by_type,
+        )
+        if xlsx_path and xlsx_name:
+            final_payload["u8_result_by_type_xlsx_minio_path"] = xlsx_path
+            final_payload["u8_result_by_type_xlsx_filename"] = xlsx_name
 
         task.status = QuotationTaskStatus.completed.value
         task.progress = 100

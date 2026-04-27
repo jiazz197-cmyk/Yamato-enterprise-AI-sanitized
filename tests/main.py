@@ -1,7 +1,7 @@
 """Standalone FastAPI test server for OCR + SpecificationMapping.
 
 Exposes endpoints that exercise the exact OCR prefix used by
-`quotation_pipeline.run_phase1_keywords_and_pdm`, plus a lightweight
+`ExecuteQuotationPhase1UseCase` (PDF page 1 → MinIO → OCR → mapping), plus a lightweight
 SpecificationMapping-only endpoint for replaying an existing extracted_info.
 
 Runs on its own port (default 8765) so it does not collide with the main app.
@@ -55,7 +55,7 @@ app = FastAPI(
     title="OCR + SpecificationMapping Test Server",
     description=(
         "Tiny standalone server for trying the OCR → SpecificationMapping "
-        "pipeline end-to-end. Mirrors quotation_pipeline.run_phase1 prefix."
+        "pipeline end-to-end. Mirrors ExecuteQuotationPhase1 OCR/mapping prefix."
     ),
     version="0.1.0",
 )

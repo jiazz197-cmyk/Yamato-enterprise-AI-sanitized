@@ -38,6 +38,8 @@ from app.usecases.quotation.create_task import CreateQuotationTaskCommand, Creat
 router = APIRouter()
 logger = get_logger("quotation_generation")
 
+_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
 class QuotationTaskItemResponse(BaseModel):
     task_id: str
     status: str
@@ -253,4 +255,45 @@ async def get_quotation_task_file(
         stream_file(),
         media_type=task.uploaded_file_content_type,
         headers={"Content-Disposition": f'attachment; filename=\"{task.uploaded_file_name}\"'},
+    )
+
+
+@router.get(
+    "/tasks/{task_id}/u8-by-type-workbook",
+    summary="下载 Phase2 U8 按 type 分组的 Excel",
+)
+async def get_quotation_task_u8_by_type_workbook(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    task = _get_task_or_404(db, task_id)
+    _check_task_permission(task, current_user)
+    payload = task.result_payload if isinstance(task.result_payload, dict) else {}
+    minio_path = payload.get("u8_result_by_type_xlsx_minio_path")
+    filename = payload.get("u8_result_by_type_xlsx_filename") or "u8_by_type.xlsx"
+    if not minio_path or not isinstance(minio_path, str):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="U8 分组 Excel 未生成或不可用",
+        )
+    try:
+        client = get_minio_client()
+        client.stat_object(MINIO_BUCKET_NAME, minio_path)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Excel 已不可用",
+        ) from None
+
+    def stream_xlsx():
+        with download_object_stream(minio_path) as response:
+            for chunk in response.stream(STREAM_CHUNK_SIZE):
+                yield chunk
+
+    safe_name = str(filename).replace('"', "")
+    return StreamingResponse(
+        stream_xlsx(),
+        media_type=_XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename=\"{safe_name}\"'},
     )

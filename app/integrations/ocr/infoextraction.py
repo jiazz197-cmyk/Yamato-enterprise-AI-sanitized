@@ -16,8 +16,7 @@ def extract_layout_info(
 ) -> List[Dict[str, Any]]:
     """POST chat/completions; parse message content JSON to layout list. Uses HTTP timeouts; cancel_checker runs before the request only."""
     if cancel_checker and cancel_checker():
-        # Lazy import: quotation_pipeline imports this module at load time
-        from app.integrations.Quotation_Generation.quotation_pipeline import QuotationPipelineCancelledError
+        from app.domain.quotation.exceptions import QuotationPipelineCancelledError
 
         raise QuotationPipelineCancelledError("任务已取消")
 
