@@ -68,9 +68,12 @@ export const approveQuotationTask = async (
   })
 }
 
-const parseFileNameFromDisposition = (contentDisposition: string | null): string => {
+const parseFileNameFromDisposition = (
+  contentDisposition: string | null,
+  fallback = 'quotation-task-file.pdf'
+): string => {
   if (!contentDisposition) {
-    return 'quotation-task-file.pdf'
+    return fallback
   }
 
   const utf8Match = contentDisposition.match(/filename\\*=UTF-8''([^;]+)/i)
@@ -83,7 +86,7 @@ const parseFileNameFromDisposition = (contentDisposition: string | null): string
     return plainMatch[1]
   }
 
-  return 'quotation-task-file.pdf'
+  return fallback
 }
 
 export const downloadQuotationTaskFile = async (taskId: string): Promise<{ blob: Blob; filename: string }> => {
@@ -97,6 +100,26 @@ export const downloadQuotationTaskFile = async (taskId: string): Promise<{ blob:
 
   const blob = await response.blob()
   const filename = parseFileNameFromDisposition(response.headers.get('content-disposition'))
+  return { blob, filename }
+}
+
+export const downloadQuotationU8ByTypeWorkbook = async (
+  taskId: string
+): Promise<{ blob: Blob; filename: string }> => {
+  const response = await authorizedFetch(
+    `/quotation/tasks/${encodeURIComponent(taskId)}/u8-by-type-workbook`,
+    { method: 'GET' }
+  )
+
+  if (!response.ok) {
+    await handleApiError(response)
+  }
+
+  const blob = await response.blob()
+  const filename = parseFileNameFromDisposition(
+    response.headers.get('content-disposition'),
+    'u8_by_type.xlsx'
+  )
   return { blob, filename }
 }
 

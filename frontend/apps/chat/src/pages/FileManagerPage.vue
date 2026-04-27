@@ -43,6 +43,7 @@
           @cancel="handleCancel(task.task_id)"
           @view-result="openResultModal(task)"
           @view-file="handleViewFile(task.task_id)"
+          @download-u8-xlsx="handleDownloadU8Xlsx(task.task_id)"
         />
       </article>
 
@@ -63,6 +64,7 @@
           @approve="(partids: string[]) => handleApprove(task.task_id, partids)"
           @view-result="openResultModal(task)"
           @view-file="handleViewFile(task.task_id)"
+          @download-u8-xlsx="handleDownloadU8Xlsx(task.task_id)"
         />
       </article>
 
@@ -83,6 +85,7 @@
             @cancel="handleCancel(task.task_id)"
             @view-result="openResultModal(task)"
             @view-file="handleViewFile(task.task_id)"
+            @download-u8-xlsx="handleDownloadU8Xlsx(task.task_id)"
           />
         </div>
       </article>
@@ -114,6 +117,7 @@ import {
   cancelQuotationTask,
   createQuotationTask,
   downloadQuotationTaskFile,
+  downloadQuotationU8ByTypeWorkbook,
   getQuotationTask,
   listQuotationTasks,
 } from '../services/quotation'
@@ -367,6 +371,25 @@ const handleViewFile = async (taskId: string): Promise<void> => {
   }
 }
 
+const handleDownloadU8Xlsx = async (taskId: string): Promise<void> => {
+  try {
+    const { blob, filename } = await downloadQuotationU8ByTypeWorkbook(taskId)
+    const url = URL.createObjectURL(blob)
+    const openWindow = window.open(url, '_blank')
+    if (!openWindow) {
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    }
+    window.setTimeout(() => URL.revokeObjectURL(url), 2000)
+  } catch (error) {
+    errorMessage.value = (error as { message?: string })?.message ?? '下载 U8 分组 Excel 失败'
+  }
+}
+
 onMounted(() => {
   void loadTasks()
   pollingTimer.value = window.setInterval(() => {
@@ -404,7 +427,7 @@ const TaskItemCard = defineComponent({
       default: false,
     },
   },
-  emits: ['cancel', 'approve', 'view-result', 'view-file'],
+  emits: ['cancel', 'approve', 'view-result', 'view-file', 'download-u8-xlsx'],
   setup(props, { emit }) {
     const RING_RADIUS = 20
     const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
@@ -878,6 +901,12 @@ const TaskItemCard = defineComponent({
       })
     }
 
+    const hasU8ByTypeWorkbook = computed(() => {
+      if (props.task.status !== 'completed') return false
+      const path = props.task.result?.u8_result_by_type_xlsx_minio_path
+      return typeof path === 'string' && path.length > 0
+    })
+
     return () =>
       h('article', { class: 'task-card' }, [
         h('div', { class: 'task-card__title' }, props.task.uploaded_file_name),
@@ -929,6 +958,16 @@ const TaskItemCard = defineComponent({
           ),
           h('button', { class: 'task-action-btn task-action-btn--neutral', onClick: () => emit('view-result') }, '结果'),
           h('button', { class: 'task-action-btn task-action-btn--accent', onClick: () => emit('view-file') }, '文件'),
+          hasU8ByTypeWorkbook.value
+            ? h(
+                'button',
+                {
+                  class: 'task-action-btn task-action-btn--accent',
+                  onClick: () => emit('download-u8-xlsx'),
+                },
+                '下载Excel'
+              )
+            : null,
         ]),
       ])
   },

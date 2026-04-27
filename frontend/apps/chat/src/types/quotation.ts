@@ -85,6 +85,10 @@ export interface QuotationTaskResult {
   u8_result?: QuotationU8Result
   u8_result_by_type?: QuotationU8ResultByType
   u8_result_type_summary?: QuotationU8ResultTypeSummary
+  /** MinIO object path for Phase2 multi-sheet workbook (server-side). */
+  u8_result_by_type_xlsx_minio_path?: string
+  /** Suggested download filename for ``GET .../u8-by-type-workbook``. */
+  u8_result_by_type_xlsx_filename?: string
   temp_image_minio_path?: string
   temp_image_url?: string
   raw_extracted_info?: Record<string, unknown>
