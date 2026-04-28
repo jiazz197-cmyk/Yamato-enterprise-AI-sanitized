@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from app.ports.domains.sqlserver_queries import QueryCancelledError
 
-class QueryCancelledError(RuntimeError):
-    """Raised when a SQL query loop is aborted via cancel_checker."""
+__all__ = ["QueryCancelledError", "raise_if_cancelled"]
 
 
 def raise_if_cancelled(cancel_checker: Optional[Callable[[], bool]]) -> None:
