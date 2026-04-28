@@ -13,7 +13,6 @@ from app.domain.quotation import (
     collect_pdm_partids,
     summarize_pdm_query_params,
 )
-from app.integrations.sqlserver.exceptions import QueryCancelledError
 from app.ports.domains.quotation import (
     CancelChecker,
     KeywordPayloadMappingPort,
@@ -22,7 +21,7 @@ from app.ports.domains.quotation import (
     ProgressCallback,
     QuotationTempObjectStoragePort,
 )
-from app.ports.domains.sqlserver_queries import PdmBomQueryPort
+from app.ports.domains.sqlserver_queries import PdmBomQueryPort, QueryCancelledError
 from app.schemas.sqlserver import PdmBomRequest
 
 

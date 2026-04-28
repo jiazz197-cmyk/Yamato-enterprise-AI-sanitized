@@ -14,9 +14,8 @@ from app.domain.quotation import (
     group_u8_result_by_type,
     summarize_partid_list,
 )
-from app.integrations.sqlserver.exceptions import QueryCancelledError
 from app.ports.domains.quotation import CancelChecker, ProgressCallback
-from app.ports.domains.sqlserver_queries import U8BomInventoryQueryPort
+from app.ports.domains.sqlserver_queries import QueryCancelledError, U8BomInventoryQueryPort
 from app.schemas.sqlserver import U8BomInventoryRequest
 
 logger = get_logger("quotation.execute_phase2")
