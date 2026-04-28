@@ -7,6 +7,7 @@
 <p align="center">
   <a href="#核心能力">核心能力</a> •
   <a href="#前端页面">前端页面</a> •
+  <a href="#仓库结构速览">仓库结构</a> •
   <a href="#快速开始">快速开始</a> •
   <a href="#api-访问">API 访问</a>
 </p>
@@ -70,13 +71,17 @@ Yamato AI 助手平台是专为**大和计量设备（上海）团队**打造的
 
 ---
 
-### 文件统一管理
+### 报价生成（PDF 图纸流水线）
 
-所有上传至平台的文件集中在文件管理页统一管理。
+侧边栏 **「报价生成」**（路由 `/files`）用于上传 **PDF 图纸**，自动走 PDM 解析、人工审核、U8 查询等异步任务；任务进度支持 **WebSocket** 推送（并保留轮询兜底）。
 
-- 查看全部已上传文件及其状态
-- 下载或删除文件
-- 跟踪每个文档的知识库构建进度
+- 上传 PDF 创建任务，看板展示排队 / 处理中 / 已完成等状态
+- **PDM**：解析结果可按类型分组，用户在 **等待审核** 状态下勾选保留的 PARTID 后继续
+- **U8**：第二阶段按类型汇总 BOM；结果写入任务 `result_payload`
+- **MinIO**：阶段产物与报价相关文件使用对象存储；Phase2 结束后生成 **按类型多 Sheet 的 xlsx**，写入 `quotation-results/{task_id}/u8_by_type.xlsx`（上传失败不阻塞任务成功，此时无 Excel 下载）
+- 完成后可 **鉴权下载** 原始处理 PDF 与 **U8 分组 Excel**（`GET /api/v1/quotation/tasks/{task_id}/u8-by-type-workbook`）
+
+> **说明**：知识库文档的上传与处理进度在 **AI 对话页** 内完成；集合与文档管理在 **知识库管理页**（`/collection2`）。请勿与报价任务的 PDF 混淆。
 
 ---
 
@@ -94,8 +99,8 @@ Yamato AI 助手平台是专为**大和计量设备（上海）团队**打造的
 |------|------|----------|
 | 登录页 | `/login` | 公开；已登录访问将跳转对话页 |
 | 注册页 | `/register` | 公开；已登录访问将跳转对话页 |
-| AI 对话页 | `/chat` | 需登录 |
-| 文件管理页 | `/files` | 需登录 |
+| AI 对话页 | `/chat` | 需登录；侧边栏含知识库文档上传入口 |
+| 报价生成页 | `/files` | 需登录；PDF 报价任务、PDM 审核、U8、下载 PDF / Excel |
 | 报单填写页 | `/closing-form` | 需登录；填写并提交智能组合秤订单报单 |
 | 用户管理页 | `/users` | 需登录且角色为 **superuser** |
 | 知识库管理页 | `/collection2` | 需登录且角色为 **admin** 或 **superuser** |
@@ -111,8 +116,9 @@ Yamato AI 助手平台是专为**大和计量设备（上海）团队**打造的
 - Python 3.12+
 - PostgreSQL 14+（需安装 pgvector 扩展）
 - Redis 6.0+
-- MinIO（对象存储，可选）
-- Node.js 18+（前端开发）
+- **MinIO**（对象存储；报价任务 PDF/临时图/结果 xlsx 等依赖桶配置，见 `.env.example`）
+- **SQL Server**（**U8** 与 **PDM** 库；报价流水线与启动时的连通性检查，见 `.env.example`）
+- Node.js 18+；**pnpm 8.x**（与 [`frontend/package.json`](frontend/package.json) 中 `packageManager` 一致）
 
 ### 后端启动
 
@@ -130,7 +136,7 @@ pip install -r requirements.txt
 
 # 4. 配置环境变量
 cp .env.example .env
-# 编辑 .env 填入数据库、Redis、MinIO 及 AI 服务地址
+# 编辑 .env 填入 PostgreSQL、Redis、MinIO、SQL Server（U8/PDM）及 AI 推理服务地址
 
 # 5. 初始化数据库（首次运行）
 # 在 PostgreSQL 中执行：CREATE EXTENSION IF NOT EXISTS vector;
@@ -169,9 +175,28 @@ pnpm dev
 | ReDoc（API 参考文档） | http://localhost:8000/api/v1/redoc |
 | 健康检查 | http://localhost:8000/api/v1/health |
 
+报价相关接口前缀为 `/api/v1/quotation`，OpenAPI 标签为 **Quotation Generation**（实现见 `app/api/v1/quotation_generation.py`）。
+
+---
+
+## 仓库结构速览
+
+| 路径 | 说明 |
+|------|------|
+| [`main.py`](main.py) | FastAPI 入口、生命周期（含报价队列恢复、SQL Server 连通性检查） |
+| [`app/`](app/) | 领域用例、API、RAG、报价集成（`integrations/Quotation_Generation`）等 |
+| [`frontend/`](frontend/) | pnpm + Turbo Monorepo；业务应用在 [`frontend/apps/chat`](frontend/apps/chat) |
+| [`tests/`](tests/) | 单元/回归测试（含 `U8ResultByTypeCsvAdapter` 等） |
+
 ---
 
 ## 更新日志
+
+### v0.2.2（2026-04）
+
+- **报价生成**：Phase2 完成后生成 U8 按类型多 Sheet **Excel**，上传 MinIO，并在 `result_payload` 中记录路径与建议文件名
+- **API**：`GET /api/v1/quotation/tasks/{task_id}/u8-by-type-workbook` 鉴权流式下载 xlsx
+- **前端**：报价页任务完成后提供 **下载 Excel**（与下载 PDF 相同鉴权与 blob 行为）
 
 ### v0.2.1（2026-04）
 
@@ -184,7 +209,7 @@ pnpm dev
 - 新增 PDF 转图片与 OCR 信息提取
 - 新增 WebSocket 实时任务进度推送
 - 新增用户认证系统（JWT）
-- 完成 Vue 3 前端应用（对话、文件管理、报单三大页面）
+- 完成 Vue 3 前端应用（对话、报价/文件相关页、报单等）
 
 ### v0.1.0（2025-12）
 
@@ -196,6 +221,6 @@ pnpm dev
 
 <div align="center">
 
-Made with by Shanghai Marinetime 331 Team
+Made with ❤️ by Shanghai Marinetime 331 Team
 
 </div>
