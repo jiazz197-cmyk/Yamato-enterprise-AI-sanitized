@@ -12,8 +12,8 @@ RAW_TYPE_ATTR_RULES: List[Tuple[str, List[str]]] = [
     ("供料漏斗", ["Model", "Surface", "Infeed funnel", "Linear feeder pan"]),
     ("顶锥", ["Model", "Surface", "LFP lip", "Top cone", "Detergent", "Linear feeder pan"]),
     ("振动盘", ["Model", "Linera feeder pan", "Detergent", "LFP lip", "Surface"]),
-    ("供料斗", ["Model", "FB spring", "LFP lip", "FB gate", "Surface", "Detergent"]),
-    ("计量斗", ["Model", "WB spring", "Surface", "WB gate", "Detergent"]),
+    ("供料斗", ["Model", "FB spring", "LFP lip", "FB gate", "Surface", "Detergent", "Remarks"]),
+    ("计量斗", ["Model", "WB spring", "Surface", "WB gate", "Detergent", "Remarks"]),
     ("驱动单元", ["Model", "Regulation"]),
     ("溜槽", ["Model", "Collating chute", "Surface", "Detergent", "CC baffles"]),
     ("收集锥", ["Model", "Surface", "Collating chute", "CF baffles", "CF L-shaped bracket", "C-C"]),
@@ -57,6 +57,7 @@ ATTR_SOURCE_MAP: Dict[str, List[str]] = {
     "collating_bucket": ["spec.22_cb_gate.value", "spec.21_collection_bucket.discharge"],
     "collecting_funnel": ["spec.17_collating_funnel.value"],
     "degree": ["spec.degree.value", "spec.15_collating_chute.value"],
+    "remarks": ["remarks"],
 }
 
 BOOLEAN_ATTRS = {

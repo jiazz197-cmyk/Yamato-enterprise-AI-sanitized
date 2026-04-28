@@ -10,8 +10,11 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from app.core.config import settings
+from app.core.logging import get_logger
 
 from app.integrations.sqlserver.client import get_sql_client
+
+logger = get_logger("sqlserver.pdm_bom")
 
 
 def build_pdm_where_clauses(condition: str | List[str]) -> List[str]:
@@ -82,17 +85,19 @@ def _pdm_client_config() -> dict:
     }
 
 
-def build_pdm_or_where_clause(alternatives_per_keyword: List[List[str]]) -> str:
-    """Merged WHERE fragment: per keyword OR across candidates, AND across keywords."""
+def build_pdm_and_where_clause(alternatives_per_keyword: List[List[str]]) -> str:
+    """Merged WHERE fragment: OR positive-only candidates, AND if any candidate is negated."""
     outer_parts: List[str] = []
     for alts in alternatives_per_keyword:
         inner: List[str] = []
+        has_negated = False
         seen_inner: set = set()
         for candidate in alts:
             text = str(candidate).strip()
             if not text:
                 continue
             negated = text.startswith("!")
+            has_negated = has_negated or negated
             payload = text[1:].strip() if negated else text
             if not payload:
                 continue
@@ -108,16 +113,26 @@ def build_pdm_or_where_clause(alternatives_per_keyword: List[List[str]]) -> str:
             inner.append(clause)
         if not inner:
             continue
-        outer_parts.append(inner[0] if len(inner) == 1 else "(" + " OR ".join(inner) + ")")
+        if len(inner) == 1:
+            outer_parts.append(inner[0])
+        elif has_negated:
+            outer_parts.append("(" + " AND ".join(inner) + ")")
+        else:
+            outer_parts.append("(" + " OR ".join(inner) + ")")
     return "\n            AND ".join(outer_parts)
+
+
+def build_pdm_or_where_clause(alternatives_per_keyword: List[List[str]]) -> str:
+    """Backward-compatible wrapper for merged PDM WHERE construction."""
+    return build_pdm_and_where_clause(alternatives_per_keyword)
 
 
 def query_pdm_bom_merged(
     alternatives_per_keyword: List[List[str]],
     client: Any = None,
 ) -> List[Dict[str, Any]]:
-    """One SQL per call; WHERE is AND-of-OR across alternatives."""
-    and_conditions = build_pdm_or_where_clause(alternatives_per_keyword)
+    """One SQL per call; positive-only alternatives are ORed, negated alternatives are ANDed."""
+    and_conditions = build_pdm_and_where_clause(alternatives_per_keyword)
     if not and_conditions:
         return []
 
@@ -136,6 +151,7 @@ def query_pdm_bom_merged(
         ORDER BY CHINANAME, PARTID
     """
 
+    logger.debug("PDM BOM_016 merged SQL:\n%s", query_sql)
     rows = client.query(query_sql)
     return deduplicate_rows(rows)
 
@@ -147,20 +163,21 @@ def match_row_to_candidates(
     chinaname = str(row.get("CHINANAME") or "")
     result: List[str] = []
     for alts in alternatives_per_keyword:
-        hit = ""
+        hits: List[str] = []
+        has_negated = False
         for candidate in alts:
             text = str(candidate).strip()
             if not text:
                 continue
             negated = text.startswith("!")
+            has_negated = has_negated or negated
             payload = text[1:].strip() if negated else text
             if not payload:
                 continue
             matched = (payload not in chinaname) if negated else (payload in chinaname)
             if matched:
-                hit = text
-                break
-        result.append(hit)
+                hits.append(text)
+        result.append(" AND ".join(hits) if has_negated else (hits[0] if hits else ""))
     return result
 
 
@@ -189,5 +206,6 @@ def query_pdm_bom(
         ORDER BY CHINANAME, PARTID
     """
 
+    logger.debug("PDM BOM_016 SQL:\n%s", query_sql)
     rows = client.query(query_sql)
     return deduplicate_rows(rows)

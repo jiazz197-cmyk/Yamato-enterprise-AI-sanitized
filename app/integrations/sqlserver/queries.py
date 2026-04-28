@@ -91,12 +91,22 @@ def run_pdm_bom_query(
             for product_type in product_types:
                 raise_if_cancelled(cancel_checker)
                 alts_per_keyword: List[List[str]] = []
+                mapping_debug: List[Dict[str, Any]] = []
                 for keyword in group:
                     mapped = expand_keyword_mapping(keyword, product_type=product_type)
+                    mapping_debug.append({"raw": keyword, "expanded": mapped})
                     if mapped:
                         alts_per_keyword.append(mapped)
                 if not alts_per_keyword:
                     continue
+
+                logger.debug(
+                    "PDM 关键词转换: group_index=%s, product_type=%r, raw_group=%s, expanded_keywords=%s",
+                    idx,
+                    product_type,
+                    group,
+                    mapping_debug,
+                )
 
                 executed_query_count += 1
                 group_rows = query_pdm_bom_merged(alts_per_keyword, client=shared_client)

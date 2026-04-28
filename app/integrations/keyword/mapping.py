@@ -19,15 +19,24 @@ KEYWORD_PATTERN_MAPPINGS: List[tuple] = [
 
 # 机架产品映射
 MACHINE_FRAME_MAPPINGS: Dict[str, str | List[str]] = {
-    "flat": ["平", "平板"],
-    "flat(all surface)": ["平", "平板"],
-    "flat (all surface)": ["平", "平板"],
-    "single": ["无", "单"],
-    "double": "双",
-    "detergent": ["粉", "粉体"],
-    "detergent:no": "无",
+    "common bed": "机架",
+    "flat": "平",
+    "flat lip": "平",
+    "flatlip": "平",
+    "bent lip": "翘",
+    "bentlip": "翘",
+    "emboss": "花",
+    "single": ["", "单"],
+    "double": ["两", "双"],
+    "detergent": "粉",
+    "detergent:no": "",
+    # Common bed 材质：Painted on 前缀会在预处理里删除。
     "ss": ["SS", "碳钢"],
     "sus": ["SUS", "不锈钢"],
+    "sus304": ["SUS", "不锈钢"],
+    "sus 304": ["SUS", "不锈钢"],
+    "sus-304": ["SUS", "不锈钢"],
+    "sus / with air purge": ["SUS", "不锈钢"],
     # 国家/地区缩写
     "cn": "中",
     "china": "中",
@@ -103,13 +112,14 @@ MACHINE_FRAME_MAPPINGS: Dict[str, str | List[str]] = {
 # 供料漏斗/供料锥映射
 HOPPER_MAPPINGS: Dict[str, str | List[str]] = {
     # 形状类型
-    "flat": ["平", "平板"],
-    "flat(all surface)": ["平", "平板"],
-    "flat (all surface)": ["平", "平板"],
-    "vibration": "振动",
-    "vibrating": "振动",
+    "flat": "平",
+    "flat lip": "平",
+    "flatlip": "平",
+    "bent lip": "翘",
+    "bentlip": "翘",
+    "emboss": "花",
     # 分流相关
-    "single": ["无", "单"],
+    "single": ["", "单"],
     "divided two": ["两", "双"],
     "dividedtwo": ["两", "双"],
     "divided-two": ["两", "双"],
@@ -144,16 +154,16 @@ HOPPER_MAPPINGS: Dict[str, str | List[str]] = {
 # 顶锥映射
 TOP_CONE_MAPPINGS: Dict[str, str | List[str]] = {
     # 形状类型
-    "flat": ["平", "平板"],
-    "flat(all surface)": ["平", "平板"],
-    "flat (all surface)": ["平", "平板"],
-    "flat lip": ["平", "平板"],
-    "flatlip": ["平", "平板"],
-    "flat-lip": ["平", "平板"],
+    "flat": "平",
+    "flat lip": "平",
+    "flatlip": "平",
+    "bent lip": "翘",
+    "bentlip": "翘",
+    "emboss": "花",
     # 规格类型
-    "single": "单",
+    "single": ["", "单"],
     "twin": ["两", "双"],
-    "detergent": ["粉", "粉体"],
+    "detergent": "粉",
     "detergent:no": [],
     # 型号标识
     "sn": "SN",
@@ -170,21 +180,17 @@ TOP_CONE_MAPPINGS: Dict[str, str | List[str]] = {
 # 振动盘映射
 VIBRATING_PLATE_MAPPINGS: Dict[str, str | List[str]] = {
     # 形状类型
-    "flat": ["平", "平板"],
-    "flat(all surface)": ["平", "平板"],
-    "flat (all surface)": ["平", "平板"],
-    "flat lip": ["平唇", "平", "平板"],
-    "flatlip": ["平唇", "平", "平板"],
-    "flat-lip": ["平唇", "平", "平板"],
-    "bent lip": "翘起",
-    "bentlip": "翘起",
-    "bent-lip": "翘起",
+    "flat": "平",
+    "flat lip": "平",
+    "flatlip": "平",
+    "bent lip": "翘",
+    "bentlip": "翘",
+    "emboss": "花",
     # 规格类型
-    "single": "单",
-    "twin": "双",
+    "single": ["", "单"],
+    "twin": ["两", "双"],
     "detergent": ["粉", "粉体"],
     "detergent:no": [],
-    "无": "无",
     # 型号标识
     "sn": "SN",
     "v": "V",
@@ -200,25 +206,25 @@ VIBRATING_PLATE_MAPPINGS: Dict[str, str | List[str]] = {
 # 供料斗映射
 FEEDING_HOPPER_MAPPINGS: Dict[str, str | List[str]] = {
     # 形状类型
-    "flat": ["平", "平板"],
-    "flat(all surface)": ["平", "平板"],
-    "flat (all surface)": ["平", "平板"],
-    "flat lip": ["平", "平板"],
-    "flatlip": ["平", "平板"],
-    "flat-lip": ["平", "平板"],
+    "flat": "平",
+    "flat lip": "平",
+    "flatlip": "平",
+    "bent lip": "翘",
+    "bentlip": "翘",
+    "emboss": "花",
     # 规格类型
     "single": "单",
     "twin": "双",
     "detergent": "粉",
     "detergent:no": [],
-    "fb spring": ["有", "带弹簧"],
-    "fbspring": ["有", "带弹簧"],
-    "fb spring:no": ["不加", "无弹簧"],
-    "fbspring:no": ["不加", "无弹簧"],
-    "single door": ["单开", "单开门"],
-    "singledoor": ["单开", "单开门"],
-    "double door": ["双开", "双开门"],
-    "doubledoor": ["双开", "双开门"],
+    "fb spring": ["弹簧", "!无弹簧"],
+    "fbspring": ["弹簧", "!无弹簧"],
+    "fb spring:no": ["", "无弹簧"],
+    "fbspring:no": ["", "无弹簧"],
+    "single door": "单",
+    "singledoor": "单",
+    "double door": "双",
+    "doubledoor": "双",
     "z-edge": "Z型门边",
     "z edge": "Z型门边",
     "z型门边": "Z型门边",
@@ -242,22 +248,25 @@ FEEDING_HOPPER_MAPPINGS: Dict[str, str | List[str]] = {
 # 计量斗映射
 WEIGH_BUCKET_MAPPINGS: Dict[str, str | List[str]] = {
     # 形状类型
-    "flat": ["平", "平板"],
-    "flat(all surface)": ["平", "平板"],
-    "flat (all surface)": ["平", "平板"],
+    "flat": "平",
+    "flat lip": "平",
+    "flatlip": "平",
+    "bent lip": "翘",
+    "bentlip": "翘",
+    "emboss": "花",
     # 规格类型
     "single": "单",
     "twin": "双",
     "detergent": "粉",
     "detergent:no": [],
-    "wb spring": ["有弹簧", "弹簧防脱落"],
-    "wbspring": ["有弹簧", "弹簧防脱落"],
-    "wb spring:no": ["不加", "无弹簧"],
-    "wbspring:no": ["不加", "无弹簧"],
-    "single door": ["单开", "单开门"],
-    "singledoor": ["单开", "单开门"],
-    "double door": ["双开", "双开门"],
-    "doubledoor": ["双开", "双开门"],
+    "wb spring": ["弹簧", "!无弹簧"],
+    "wbspring": ["弹簧", "!无弹簧"],
+    "wb spring:no": ["", "无弹簧"],
+    "wbspring:no": ["", "无弹簧"],
+    "single door": "单",
+    "singledoor": "单",
+    "double door": "双",
+    "doubledoor": "双",
     "z-edge": "Z型门边",
     "z edge": "Z型门边",
     "z型门边": "Z型门边",
@@ -283,28 +292,31 @@ WEIGH_BUCKET_MAPPINGS: Dict[str, str | List[str]] = {
 # 驱动单元映射
 DRIVE_UNIT_MAPPINGS: Dict[str, str | List[str]] = {
     # 法规
-    "india w&m": "印度",
-    "europe mid": "欧洲",
+    "india w&m": "印",
+    "europe mid": "欧",
     # 兼容常见写法
-    "w&m": "印度",
-    "mid": "欧洲",
-    "india": "印度",
-    "europe": "欧洲",
+    "w&m": "印",
+    "mid": "欧",
+    "india": "印",
+    "europe": "欧",
 }
 
 # 溜槽部/溜槽映射
 CHUTE_MAPPINGS: Dict[str, str | List[str]] = {
     # 形状类型
-    "flat": ["平", "平板"],
-    "flat(all surface)": ["平", "平板"],
-    "flat (all surface)": ["平", "平板"],
+    "flat": "平",
+    "flat lip": "平",
+    "flatlip": "平",
+    "bent lip": "翘",
+    "bentlip": "翘",
+    "emboss": "花",
     # 规格类型
     "detergent": "粉",
     "detergent:no": [],
-    "cc baffles": ["带挡板", "有挡板", "挡板"],
-    "ccbaffles": ["带挡板", "有挡板", "挡板"],
-    "cc baffles:no": ["无挡板", "不加"],
-    "ccbaffles:no": ["无挡板", "不加"],
+    "cc baffles": ["挡板","!无挡板"],
+    "ccbaffles": ["挡板","!无挡板"],
+    "cc baffles:no": ["无挡板", ""],
+    "ccbaffles:no": ["无挡板", ""],
     # 材质/特性
     "红": "红",
     "pim": "PIM",
@@ -314,19 +326,22 @@ CHUTE_MAPPINGS: Dict[str, str | List[str]] = {
     "0114s溜槽双开门料斗": "0114S溜槽双开门料斗",
 }
 
-# 收集锥/集料漏斗映射
+# 收集锥/集合漏斗映射
 COLLECTING_CONE_MAPPINGS: Dict[str, str | List[str]] = {
     # 形状类型
-    "flat": ["平", "平板"],
-    "flat(all surface)": ["平", "平板"],
-    "flat (all surface)": ["平", "平板"],
+    "flat": "平",
+    "flat lip": "平",
+    "flatlip": "平",
+    "bent lip": "翘",
+    "bentlip": "翘",
+    "emboss": "花",
     # 规格类型
-    "detergent": ["粉", "粉体"],
+    "detergent": "粉",
     "detergent:no": [],
-    "cf baffles": ["挡板", "带档板", "移动挡板", "有挡板", "固定"],
-    "cfbaffles": ["挡板", "带档板", "移动挡板", "有挡板", "固定"],
-    "cf baffles:no": ["无挡板", "不加"],
-    "cfbaffles:no": ["无挡板", "不加"],
+    "cf baffles": ["挡板","!无挡板"],
+    "cfbaffles": ["挡板","!无挡板"],
+    "cf baffles:no": ["无挡板", ""],
+    "cfbaffles:no": ["无挡板", ""],
     "c-c": "C-C",
     # 材质/特性
     "红": "红",
@@ -341,7 +356,6 @@ ELECTRICAL_COMPONENT_MAPPINGS: Dict[str, str | List[str]] = {
 
 # 配线单元映射
 WIRING_UNIT_MAPPINGS: Dict[str, str | List[str]] = {
-    "1.8m": "标准",
     "8m": "标准",
     "ul": "UL",
     "ul规格": "UL",
@@ -350,9 +364,10 @@ WIRING_UNIT_MAPPINGS: Dict[str, str | List[str]] = {
 
 # 主振动器/中心振动器映射
 VIBRATOR_UNIT_MAPPINGS: Dict[str, str | List[str]] = {
-    "single": ["无", "单"],
+    "single": ["", "单"],
     "double": "双",
-    "twin": "双",
+    "divided two": "双",
+    "dividedtwo": "双",
     "ul": "UL",
 }
 
@@ -363,9 +378,10 @@ LINEAR_VIBRATOR_MAPPINGS: Dict[str, str | List[str]] = {
 
 # 中心柱天板密封罩映射
 CENTER_COLUMN_SEAL_MAPPINGS: Dict[str, str | List[str]] = {
-    "single": ["无", "单"],
+    "single": ["", "单"],
     "double": "双",
-    "twin": "双",
+    "divided two": "双",
+    "dividedtwo": "双",
     "detergent": "粉",
     "detergent:no": [],
 }
@@ -387,7 +403,7 @@ TOP_CONE_BRACKET_MAPPINGS: Dict[str, str | List[str]] = {
 
 # 包装映射
 PACKAGING_MAPPINGS: Dict[str, str | List[str]] = {
-    "india": "印",
+    "india": ["印","!非印度"],
     "china": "国内",
     "non-india": ["国外", "出口", "海外"],
     "detergent": "粉",
@@ -398,11 +414,14 @@ PACKAGING_MAPPINGS: Dict[str, str | List[str]] = {
 # 集合斗映射
 COLLECTION_BUCKET_MAPPINGS: Dict[str, str | List[str]] = {
     # 形状类型
-    "flat": ["平", "平板"],
-    "flat(all surface)": ["平", "平板"],
-    "flat (all surface)": ["平", "平板"],
+    "flat": "平",
+    "flat lip": "平",
+    "flatlip": "平",
+    "bent lip": "翘",
+    "bentlip": "翘",
+    "emboss": "花",
     # 方向/结构
-    "single": ["无", "单"],
+    "single": ["", "单"],
     "twin": "双",
     "double": "双",
     "divided two": "双",
@@ -421,14 +440,12 @@ COLLECTION_BUCKET_MAPPINGS: Dict[str, str | List[str]] = {
     "单横": "单横",
     "双横": "双横",
     # 规格与参数
-    "3l": ["3L", "容量3L"],
+    "3l": "3L",
     "c-c": "C-C",
     "degree": "°",
     "detergent": "粉",
     "detergent:no": [],
     # 材质/特性
-    "z-edge": "Z型门边",
-    "z edge": "Z型门边",
     "z型门边": "Z型门边",
     "鸭嘴式": "鸭嘴式",
     "红": "红",
@@ -442,21 +459,22 @@ COLLECTION_BUCKET_MAPPINGS: Dict[str, str | List[str]] = {
 # 记忆斗映射
 MEMORY_BUCKET_MAPPINGS: Dict[str, str | List[str]] = {
     # 形状类型
-    "flat": ["平", "平板"],
-    "flat(all surface)": ["平", "平板"],
-    "flat (all surface)": ["平", "平板"],
+    "flat": "平",
+    "flat lip": "平",
+    "flatlip": "平",
+    "bent lip": "翘",
+    "bentlip": "翘",
+    "emboss": "花",
     # 规格类型
-    "memory spring": ["有弹簧", "弹簧防脱落"],
-    "memoryspring": ["有弹簧", "弹簧防脱落"],
-    "memory spring:no": ["不加", "无弹簧"],
-    "memoryspring:no": ["不加", "无弹簧"],
-    "single door": ["单开", "单开门"],
-    "singledoor": ["单开", "单开门"],
-    "double door": ["双开", "双开门"],
-    "doubledoor": ["双开", "双开门"],
+    "memory spring": ["弹簧", "!无弹簧"],
+    "memoryspring": ["弹簧", "!无弹簧"],
+    "memory spring:no": ["", "无弹簧"],
+    "memoryspring:no": ["", "无弹簧"],
+    "single door": "单开",
+    "singledoor": "单开",
+    "double door": "双开",
+    "doubledoor": "双开",
     # 材质/特性
-    "z-edge": "Z型门边",
-    "z edge": "Z型门边",
     "z型门边": "Z型门边",
     "红": "红",
     "pim": "PIM",
@@ -489,6 +507,7 @@ LAYER_ADJUSTMENT_RING_MAPPINGS: Dict[str, str | List[str]] = {
 # 产品类型关键词识别
 PRODUCT_TYPE_KEYWORDS: Dict[str, str | List[str]] = {
     "机架": "机架",
+    "common bed": "机架",
     "供料漏斗": "供料漏斗",
     "顶锥": "顶锥",
     "振动盘": "振动盘",
@@ -497,7 +516,7 @@ PRODUCT_TYPE_KEYWORDS: Dict[str, str | List[str]] = {
     "驱动单元": "驱动单元",
     "溜槽部": ["溜槽", "溜槽部"],
     "收集锥": "收集锥",
-    "集料漏斗": "收集锥",
+    "集合漏斗": "收集锥",
     "本体电气元件": "电气",
     "配线单元": "配线单元",
     "主振动器": "主振动器",
@@ -521,6 +540,113 @@ PRODUCT_TYPE_KEYWORD_ITEMS = sorted(
 )
 
 
+# ------------------------------------------------------------
+# 产品类型属性保留配置（白名单）
+# ------------------------------------------------------------
+# 白名单 = 必要参数（含 model）
+# 只传递白名单中的属性，其他属性忽略
+# 如果产品类型不在配置中，则保留所有属性
+PRODUCT_TYPE_ATTR_WHITELIST: Dict[str, List[str]] = {
+    # 机架: 必要参数 = Model + Common bed
+    "机架": [
+        "model",
+        "common bed", "commonbed",
+    ],
+    # 供料漏斗: 必要参数 = Model
+    "供料漏斗": [
+        "model",
+    ],
+    # 顶锥: 必要参数 = Model
+    "顶锥": [
+        "model",
+    ],
+    # 振动盘: 必要参数 = Model + Linear feeder pan
+    "振动盘": [
+        "model",
+        "linear feeder pan", "linearfeederpan",
+    ],
+    # 供料斗: 必要参数 = Model + FB spring + Surface + Remarks
+    "供料斗": [
+        "model",
+        "fb spring", "fbspring", "fb弹簧",
+        "surface",
+        "remarks",
+    ],
+    # 计量斗: 必要参数 = Model + WB spring + Surface + Remarks
+    "计量斗": [
+        "model",
+        "wb spring", "wbspring", "wb弹簧",
+        "surface",
+        "remarks",
+    ],
+    # 溜槽: 必要参数 = Model
+    "溜槽": [
+        "model",
+    ],
+    "溜槽部": [
+        "model",
+    ],
+    # 收集锥: 必要参数 = Model + Collating funnel Degree
+    "收集锥": [
+        "model",
+        "collating funnel degree", "collatingfunneldegree",
+    ],
+    "集合漏斗": [
+        "model",
+        "collating funnel degree", "collatingfunneldegree",
+    ],
+    # 电气: 必要参数 = Model
+    "电气": [
+        "model",
+    ],
+    "本体电气元件": [
+        "model",
+    ],
+    # 配线单元: 必要参数 = Model
+    "配线单元": [
+        "model",
+    ],
+    # 主振动器 / 中心振动器: 必要参数 = Model
+    "主振动器": [
+        "model",
+    ],
+    "中心振动器": [
+        "model",
+    ],
+    # 线性振动器: 必要参数 = Model
+    "线性振动器": [
+        "model",
+    ],
+    # 中心柱天板密封罩: 必要参数 = Model + Detergent
+    "中心柱天板密封罩": [
+        "model",
+        "detergent",
+    ],
+    # 包装: 必要参数 = Model（Detergent=Yes 时额外加"粉"）
+    "包装": [
+        "model",
+    ],
+    # 集合斗: 必要参数 = Model + Collection bucket容量
+    "集合斗": [
+        "model",
+        "collection bucket", "collectionbucket", "collection bucket容量",
+    ],
+}
+
+
+def get_attr_whitelist(product_type: str) -> List[str] | None:
+    """
+    获取产品类型的属性白名单（即必要参数）。
+
+    Args:
+        product_type: 产品类型名称
+
+    Returns:
+        白名单列表，返回 None 表示保留所有属性
+    """
+    return PRODUCT_TYPE_ATTR_WHITELIST.get(product_type)
+
+
 PRODUCT_TYPE_MAPPING_REGISTRY: List[tuple[tuple[str, ...], Dict[str, str | List[str]]]] = [
     (("机架",), MACHINE_FRAME_MAPPINGS),
     (("供料漏斗", "供料锥"), HOPPER_MAPPINGS),
@@ -530,7 +656,7 @@ PRODUCT_TYPE_MAPPING_REGISTRY: List[tuple[tuple[str, ...], Dict[str, str | List[
     (("计量斗",), WEIGH_BUCKET_MAPPINGS),
     (("驱动单元",), DRIVE_UNIT_MAPPINGS),
     (("溜槽", "溜槽部"), CHUTE_MAPPINGS),
-    (("收集锥", "集料漏斗"), COLLECTING_CONE_MAPPINGS),
+    (("收集锥", "集合漏斗"), COLLECTING_CONE_MAPPINGS),
     (("电气", "本体电气元件"), ELECTRICAL_COMPONENT_MAPPINGS),
     (("配线单元",), WIRING_UNIT_MAPPINGS),
     (("主振动器", "中心振动器"), VIBRATOR_UNIT_MAPPINGS),
@@ -556,7 +682,7 @@ ADW_A_PREFIX_STRIP_TYPES = (
     "溜槽",
     "溜槽部",
     "收集锥",
-    "集料漏斗",
+    "集合漏斗",
     "电气",
     "本体电气元件",
     "配线单元",
@@ -635,9 +761,9 @@ def _expand_model_series_keyword(keyword: str) -> List[str]:
     candidates: List[str] = []
 
     if upper_text.startswith("03"):
-        candidates.extend([text, "03", "03XX", "03系列"])
+        candidates.extend([text, "03"])
     elif upper_text.startswith("5"):
-        candidates.extend([text, "5", "5XX", "5系列"])
+        candidates.extend([text, "5"])
 
     return list(dict.fromkeys([item for item in candidates if item]))
 
@@ -656,11 +782,11 @@ def _expand_drive_unit_model_keyword(keyword: str) -> List[str]:
 
     upper_base = base.upper()
     if upper_base.startswith("01"):
-        candidates.extend(["01", "01XX", "01系列"])
+        candidates.extend(["01"])
     elif upper_base.startswith("03"):
-        candidates.extend(["03", "03XX", "03系列"])
+        candidates.extend(["03"])
     elif upper_base.startswith("5"):
-        candidates.extend(["5", "5XX", "5系列"])
+        candidates.extend(["5"])
 
     return list(dict.fromkeys([item for item in candidates if item]))
 
@@ -726,6 +852,17 @@ def _expand_anti_block_break_model_keyword(keyword: str) -> List[str]:
     return list(dict.fromkeys([item for item in candidates if item]))
 
 
+def _expand_collecting_cone_c_c_keyword(keyword: str) -> List[str]:
+    """收集锥 C-C 参数：兼容 C-C=330 与 C-C330 两种写法。"""
+    text = str(keyword).strip()
+    match = re.search(r"(?i)c\s*-\s*c\s*=?\s*(\d+(?:\.\d+)?)", text)
+    if not match:
+        return []
+
+    value = match.group(1)
+    return [f"C-C={value}", f"C-C{value}"]
+
+
 def _expand_vibrator_model_keyword(keyword: str) -> List[str]:
     """主振动器/中心振动器 Model 特殊规则。"""
     text = str(keyword).strip()
@@ -747,7 +884,7 @@ def _normalize_keyword_for_product_type(keyword: str, product_type_str: str) -> 
         # Model: ADW-A-0314S -> 0314S
         text = re.sub(r"(?i)^adw-a-", "", text)
 
-    if "收集锥" in product_type_str or "集料漏斗" in product_type_str:
+    if "收集锥" in product_type_str or "集合漏斗" in product_type_str:
         # Model: 去掉后缀字母 S（如 0314S -> 0314）
         text = re.sub(r"(?i)s$", "", text)
 
@@ -769,6 +906,7 @@ def _normalize_keyword_for_product_type(keyword: str, product_type_str: str) -> 
 
 MODEL_EXPANDER_REGISTRY: List[tuple[tuple[str, ...], Callable[[str], List[str]]]] = [
     (("供料斗", "计量斗"), _expand_model_series_keyword),
+    (("收集锥", "集合漏斗"), _expand_collecting_cone_c_c_keyword),
     (("驱动单元",), _expand_drive_unit_model_keyword),
     (("主振动器", "中心振动器"), _expand_vibrator_model_keyword),
     (("集合斗",), _expand_collection_bucket_model_keyword),
