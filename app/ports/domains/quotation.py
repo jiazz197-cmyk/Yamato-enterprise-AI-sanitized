@@ -66,6 +66,7 @@ class QuotationTaskRepoPort(Protocol):
         role_snapshot: str,
         uploaded_file_id: int,
         uploaded_file_name: str,
+        display_name: str,
         uploaded_file_minio_path: str,
         uploaded_file_content_type: str,
         uploaded_file_size: int,
@@ -82,6 +83,9 @@ class QuotationTaskRepoPort(Protocol):
         ...
 
     def cleanup_task_files(self, task_id: str) -> Dict[str, Any]:
+        ...
+
+    def delete_task(self, task_id: str) -> None:
         ...
 
 

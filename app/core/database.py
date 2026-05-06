@@ -142,13 +142,30 @@ def init_db_tables():
                     conn.commit()
                     logger.info("[success] 成功向 quotation_tasks 表添加 owner_ip 列")
 
+                display_name_column = conn.execute(text(
+                    "SELECT column_name "
+                    "FROM information_schema.columns "
+                    "WHERE table_name='quotation_tasks' AND column_name='display_name'"
+                )).fetchone()
+                if not display_name_column:
+                    logger.info("[info] 发现 quotation_tasks 表缺少 display_name 列，正在添加...")
+                    conn.execute(text("ALTER TABLE quotation_tasks ADD COLUMN display_name VARCHAR(256)"))
+                    conn.execute(text(
+                        "UPDATE quotation_tasks "
+                        "SET display_name = COALESCE(NULLIF(uploaded_file_name, ''), task_id) "
+                        "WHERE display_name IS NULL"
+                    ))
+                    conn.execute(text("ALTER TABLE quotation_tasks ALTER COLUMN display_name SET NOT NULL"))
+                    conn.commit()
+                    logger.info("[success] 成功向 quotation_tasks 表添加 display_name 列")
+
                 conn.execute(text(
                     "CREATE INDEX IF NOT EXISTS ix_quotation_tasks_owner_ip "
                     "ON quotation_tasks (owner_ip)"
                 ))
                 conn.commit()
         except Exception as mig_e:
-            logger.error(f"[warning] quotation_tasks.owner_ip 迁移失败（如果表还未创建可忽略此错误）: {mig_e}")
+            logger.error(f"[warning] quotation_tasks.owner_ip/display_name 迁移失败（如果表还未创建可忽略此错误）: {mig_e}")
 
         table_names = [table.name for table in Base.metadata.sorted_tables]
         logger.info(f"[success] 数据库表初始化完成，共 {len(table_names)} 个表: {', '.join(table_names)}")

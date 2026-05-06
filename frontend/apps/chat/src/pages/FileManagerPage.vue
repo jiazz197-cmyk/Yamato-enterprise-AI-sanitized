@@ -38,8 +38,9 @@
           v-for="task in queuedTasks"
           :key="task.task_id"
           :task="task"
-          :show-owner="isAdminLike"
+          :show-owner="true"
           :can-cancel="canCancel(task)"
+          :can-delete="false"
           @cancel="handleCancel(task.task_id)"
           @view-result="openResultModal(task)"
           @view-file="handleViewFile(task.task_id)"
@@ -57,8 +58,9 @@
           v-for="task in runningTasks"
           :key="task.task_id"
           :task="task"
-          :show-owner="isAdminLike"
+          :show-owner="true"
           :can-cancel="canCancel(task)"
+          :can-delete="false"
           :is-approving="approvingTasks.has(task.task_id)"
           @cancel="handleCancel(task.task_id)"
           @approve="(partids: string[]) => handleApprove(task.task_id, partids)"
@@ -80,9 +82,11 @@
             v-for="task in doneTasks"
             :key="task.task_id"
             :task="task"
-            :show-owner="isAdminLike"
+            :show-owner="true"
             :can-cancel="false"
+            :can-delete="canDelete(task)"
             @cancel="handleCancel(task.task_id)"
+            @delete="handleDelete(task.task_id)"
             @view-result="openResultModal(task)"
             @view-file="handleViewFile(task.task_id)"
             @download-u8-xlsx="handleDownloadU8Xlsx(task.task_id)"
@@ -94,7 +98,7 @@
     <div v-if="resultModalVisible" class="result-modal-mask" @click.self="closeResultModal">
       <div class="result-modal">
         <div class="result-modal__header">
-          <h3>任务结果：{{ selectedTask?.uploaded_file_name }}</h3>
+          <h3>任务结果：{{ selectedTask?.display_name || selectedTask?.uploaded_file_name }}</h3>
           <button class="icon-btn" @click="closeResultModal">关闭</button>
         </div>
         <div class="result-modal__content">
@@ -119,6 +123,7 @@ import {
   approveQuotationTask,
   cancelQuotationTask,
   createQuotationTask,
+  deleteQuotationTask,
   downloadQuotationTaskFile,
   downloadQuotationU8ByTypeWorkbook,
   getQuotationTask,
@@ -225,7 +230,6 @@ const readUserRole = (): string => {
 }
 
 const currentRole = ref(readUserRole())
-const isAdminLike = computed(() => currentRole.value === 'admin' || currentRole.value === 'superuser')
 
 const statusOrder = (status: string): number => {
   if (status === 'running') return 0
@@ -904,10 +908,17 @@ const handleFileSelected = async (event: Event): Promise<void> => {
     return
   }
 
+  const defaultTaskName = selectedFile.name.replace(/\.pdf$/i, '') || selectedFile.name
+  const customTaskNameInput = window.prompt('请输入任务名称（仅用于展示）', defaultTaskName)
+  if (customTaskNameInput === null) {
+    return
+  }
+  const customTaskName = customTaskNameInput.trim() || defaultTaskName
+
   uploading.value = true
   errorMessage.value = ''
   try {
-    await createQuotationTask(selectedFile)
+    await createQuotationTask(selectedFile, customTaskName)
     await loadTasks()
   } catch (error) {
     errorMessage.value = (error as { message?: string })?.message ?? '创建任务失败'
@@ -918,6 +929,10 @@ const handleFileSelected = async (event: Event): Promise<void> => {
 
 const canCancel = (task: QuotationTaskItem): boolean => {
   return ACTIVE_STATUSES.includes(task.status)
+}
+
+const canDelete = (task: QuotationTaskItem): boolean => {
+  return TERMINAL_STATUSES.includes(task.status)
 }
 
 const handleApprove = async (taskId: string, approvedPartids: string[]): Promise<void> => {
@@ -945,6 +960,37 @@ const handleCancel = async (taskId: string): Promise<void> => {
     await refreshSingleTask(taskId)
   } catch (error) {
     errorMessage.value = (error as { message?: string })?.message ?? '取消任务失败'
+  }
+}
+
+const handleDelete = async (taskId: string): Promise<void> => {
+  const task = tasks.value.find((item) => item.task_id === taskId)
+  const taskName = task?.display_name || task?.uploaded_file_name || taskId
+  const confirmed = window.confirm(`确定删除任务「${taskName}」吗？此操作不可恢复。`)
+  if (!confirmed) return
+
+  try {
+    await deleteQuotationTask(taskId)
+    closeSocket(taskId)
+    approvalDetailRequestedTaskIds.delete(taskId)
+    refreshInFlightTaskIds.delete(taskId)
+    refreshQueuedTaskIds.delete(taskId)
+
+    const timer = refreshTimers.get(taskId)
+    if (timer !== undefined) {
+      window.clearTimeout(timer)
+      refreshTimers.delete(taskId)
+    }
+
+    const deletingSelectedTask = selectedTask.value?.task_id === taskId
+    tasks.value = tasks.value.filter((item) => item.task_id !== taskId)
+    syncSelectedTaskRef()
+    if (deletingSelectedTask) {
+      selectedTask.value = null
+      resultModalVisible.value = false
+    }
+  } catch (error) {
+    errorMessage.value = (error as { message?: string })?.message ?? '删除任务失败'
   }
 }
 
@@ -1052,12 +1098,16 @@ const TaskItemCard = defineComponent({
       type: Boolean,
       required: true,
     },
+    canDelete: {
+      type: Boolean,
+      required: true,
+    },
     isApproving: {
       type: Boolean,
       default: false,
     },
   },
-  emits: ['cancel', 'approve', 'view-result', 'view-file', 'download-u8-xlsx'],
+  emits: ['cancel', 'delete', 'approve', 'view-result', 'view-file', 'download-u8-xlsx'],
   setup(props, { emit }) {
     const RING_RADIUS = 20
     const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
@@ -1537,7 +1587,7 @@ const TaskItemCard = defineComponent({
 
     return () =>
       h('article', { class: 'task-card' }, [
-        h('div', { class: 'task-card__title' }, props.task.uploaded_file_name),
+        h('div', { class: 'task-card__title' }, props.task.display_name || props.task.uploaded_file_name),
         h('div', { class: 'task-card__meta' }, [h('span', { class: ['status', `status--${props.task.status}`] }, statusText.value)]),
         h('div', { class: 'task-card__progress' }, [
           h(
@@ -1594,6 +1644,13 @@ const TaskItemCard = defineComponent({
                   onClick: () => emit('download-u8-xlsx'),
                 },
                 '下载Excel'
+              )
+            : null,
+          props.canDelete
+            ? h(
+                'button',
+                { class: 'task-action-btn task-action-btn--danger', onClick: () => emit('delete') },
+                '删除'
               )
             : null,
         ]),

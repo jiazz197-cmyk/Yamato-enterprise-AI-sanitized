@@ -18,6 +18,7 @@ SUPPORTED_PDF_TYPES = {"application/pdf"}
 @dataclass
 class CreateQuotationTaskCommand:
     file_name: Optional[str]
+    task_name: Optional[str]
     content_type: Optional[str]
     file_bytes: bytes
     max_file_size: int
@@ -62,6 +63,7 @@ class CreateQuotationTaskUseCase:
         suffix = Path(cmd.file_name or "document.pdf").suffix or ".pdf"
         unique_name = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex}{suffix}"
         minio_path = f"quotation/uploads/{unique_name}"
+        display_name = str(cmd.task_name or "").strip() or (cmd.file_name or unique_name)
 
         self._file_storage.upload_pdf(
             object_path=minio_path,
@@ -86,6 +88,7 @@ class CreateQuotationTaskUseCase:
                 "owner_ip": cmd.owner_ip,
                 "file_id": stored_file_id,
                 "file_name": cmd.file_name or unique_name,
+                "task_name": display_name,
             },
         )
 
@@ -97,6 +100,7 @@ class CreateQuotationTaskUseCase:
             role_snapshot=cmd.role_snapshot,
             uploaded_file_id=stored_file_id,
             uploaded_file_name=cmd.file_name or unique_name,
+            display_name=display_name,
             uploaded_file_minio_path=minio_path,
             uploaded_file_content_type=content_type,
             uploaded_file_size=len(cmd.file_bytes),

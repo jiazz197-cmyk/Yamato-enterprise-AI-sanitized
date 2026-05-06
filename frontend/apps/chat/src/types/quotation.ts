@@ -114,6 +114,7 @@ export interface QuotationTaskItem {
   owner_id: string
   owner_username: string
   uploaded_file_name: string
+  display_name: string
   uploaded_file_content_type: string
   uploaded_file_size: number
   created_at: string
@@ -139,4 +140,12 @@ export interface CancelQuotationTaskResponse {
   success: boolean
   message: string
   task_id: string
+}
+
+export interface DeleteQuotationTaskResponse {
+  success: boolean
+  message: string
+  task_id: string
+  cleanup: Record<string, unknown>
+  task_record_removed: boolean
 }

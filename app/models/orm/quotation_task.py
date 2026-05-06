@@ -34,6 +34,7 @@ class QuotationTask(Base):
 
     uploaded_file_id = Column(Integer, ForeignKey("file_resource.id"), nullable=True, index=True)
     uploaded_file_name = Column(String(256), nullable=False)
+    display_name = Column(String(256), nullable=False)
     uploaded_file_minio_path = Column(String(512), nullable=False)
     uploaded_file_content_type = Column(String(128), nullable=False, default="application/pdf")
     uploaded_file_size = Column(Integer, nullable=False, default=0)

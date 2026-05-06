@@ -15,6 +15,11 @@ from app.usecases.quotation.create_task import (
     CreateQuotationTaskResult,
     CreateQuotationTaskUseCase,
 )
+from app.usecases.quotation.delete_task import (
+    DeleteQuotationTaskCommand,
+    DeleteQuotationTaskResult,
+    DeleteQuotationTaskUseCase,
+)
 from app.usecases.quotation.execute_phase1 import (
     ExecuteQuotationPhase1Command,
     ExecuteQuotationPhase1UseCase,
@@ -34,6 +39,9 @@ __all__ = [
     "ApproveQuotationTaskCommand",
     "ApproveQuotationTaskResult",
     "ApproveQuotationTaskUseCase",
+    "DeleteQuotationTaskCommand",
+    "DeleteQuotationTaskResult",
+    "DeleteQuotationTaskUseCase",
     "ExecuteQuotationPhase1Command",
     "ExecuteQuotationPhase1UseCase",
     "ExecuteQuotationPhase2Command",

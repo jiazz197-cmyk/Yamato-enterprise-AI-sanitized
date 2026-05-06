@@ -3,13 +3,21 @@ import type {
   ApproveQuotationTaskResponse,
   CancelQuotationTaskResponse,
   CreateQuotationTaskResponse,
+  DeleteQuotationTaskResponse,
   QuotationTaskItem,
   QuotationTaskListResponse,
 } from '../types/quotation'
 
-export const createQuotationTask = async (file: File): Promise<CreateQuotationTaskResponse> => {
+export const createQuotationTask = async (
+  file: File,
+  taskName?: string
+): Promise<CreateQuotationTaskResponse> => {
   const formData = new FormData()
   formData.append('file', file)
+  const normalizedTaskName = String(taskName ?? '').trim()
+  if (normalizedTaskName) {
+    formData.append('task_name', normalizedTaskName)
+  }
 
   const response = await authorizedFetch(
     '/quotation/tasks',
@@ -79,6 +87,12 @@ export const approveQuotationTask = async (
   return apiRequest<ApproveQuotationTaskResponse>(`/quotation/tasks/${encodeURIComponent(taskId)}/approve`, {
     method: 'POST',
     body: JSON.stringify({ approved_partids: approvedPartids }),
+  })
+}
+
+export const deleteQuotationTask = async (taskId: string): Promise<DeleteQuotationTaskResponse> => {
+  return apiRequest<DeleteQuotationTaskResponse>(`/quotation/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE',
   })
 }
 

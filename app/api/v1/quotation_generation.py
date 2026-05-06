@@ -7,7 +7,7 @@ import ipaddress
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -37,6 +37,7 @@ from app.usecases.quotation.approve_task import (
 )
 from app.usecases.quotation.cancel_task import CancelQuotationTaskCommand, CancelQuotationTaskUseCase
 from app.usecases.quotation.create_task import CreateQuotationTaskCommand, CreateQuotationTaskUseCase
+from app.usecases.quotation.delete_task import DeleteQuotationTaskCommand, DeleteQuotationTaskUseCase
 
 router = APIRouter()
 logger = get_logger("quotation_generation")
@@ -51,6 +52,7 @@ class QuotationTaskItemResponse(BaseModel):
     owner_id: str
     owner_username: str
     uploaded_file_name: str
+    display_name: str
     uploaded_file_content_type: str
     uploaded_file_size: int
     created_at: datetime
@@ -76,6 +78,14 @@ class CancelTaskResponse(BaseModel):
     success: bool
     message: str
     task_id: str
+
+
+class DeleteTaskResponse(BaseModel):
+    success: bool
+    message: str
+    task_id: str
+    cleanup: Dict[str, Any]
+    task_record_removed: bool
 
 
 class ApproveTaskRequest(BaseModel):
@@ -220,6 +230,7 @@ def _serialize_task(
         owner_id=task.owner_id,
         owner_username=task.owner_username,
         uploaded_file_name=task.uploaded_file_name,
+        display_name=task.display_name,
         uploaded_file_content_type=task.uploaded_file_content_type,
         uploaded_file_size=task.uploaded_file_size,
         created_at=task.created_at,
@@ -251,6 +262,7 @@ def _check_task_permission(task: QuotationTask, current_user: User) -> None:
 async def create_quotation_task(
     request: Request,
     file: UploadFile = File(..., description="仅支持 PDF 文件"),
+    task_name: Optional[str] = Form(None, description="任务展示名称（可选）"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> QuotationTaskSubmitResponse:
@@ -265,6 +277,7 @@ async def create_quotation_task(
     result = await usecase.execute(
         CreateQuotationTaskCommand(
             file_name=file.filename,
+            task_name=task_name,
             content_type=file.content_type,
             file_bytes=file_data,
             max_file_size=settings.MAX_FILE_SIZE,
@@ -341,6 +354,22 @@ async def cancel_quotation_task(
     )
     result = await usecase.execute(CancelQuotationTaskCommand(task_id=task_id))
     return CancelTaskResponse(**result.__dict__)
+
+
+@router.delete("/tasks/{task_id}", response_model=DeleteTaskResponse, summary="删除已结束报价任务")
+async def delete_quotation_task(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DeleteTaskResponse:
+    task = _get_task_or_404(db, task_id)
+    _check_task_permission(task, current_user)
+    usecase = DeleteQuotationTaskUseCase(
+        task_repo=SqlAlchemyQuotationTaskRepoAdapter(db),
+        task_state=TaskManagerStateAdapter(),
+    )
+    result = await usecase.execute(DeleteQuotationTaskCommand(task_id=task_id))
+    return DeleteTaskResponse(**result.__dict__)
 
 
 @router.post(

@@ -55,6 +55,7 @@ class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):
             message=task.message,
             uploaded_file_id=task.uploaded_file_id,
             uploaded_file_name=task.uploaded_file_name,
+            display_name=task.display_name,
             uploaded_file_minio_path=task.uploaded_file_minio_path,
             uploaded_file_content_type=task.uploaded_file_content_type,
             uploaded_file_size=task.uploaded_file_size,
@@ -100,6 +101,7 @@ class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):
         role_snapshot: str,
         uploaded_file_id: int,
         uploaded_file_name: str,
+        display_name: str,
         uploaded_file_minio_path: str,
         uploaded_file_content_type: str,
         uploaded_file_size: int,
@@ -115,6 +117,7 @@ class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):
             message="任务已排队",
             uploaded_file_id=uploaded_file_id,
             uploaded_file_name=uploaded_file_name,
+            display_name=display_name,
             uploaded_file_minio_path=uploaded_file_minio_path,
             uploaded_file_content_type=uploaded_file_content_type,
             uploaded_file_size=uploaded_file_size,
@@ -158,6 +161,13 @@ class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):
         if task is None:
             raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
         return safe_cleanup_quotation_task_files(self._db, task, task_id)
+
+    def delete_task(self, task_id: str) -> None:
+        task = self._get_task_entity(task_id)
+        if task is None:
+            raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
+        self._db.delete(task)
+        self._db.commit()
 
 
 class QuotationDispatchAdapter(TaskDispatchPort):

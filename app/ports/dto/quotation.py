@@ -27,6 +27,7 @@ class QuotationTaskSnapshot:
     message: str
     uploaded_file_id: Optional[int]
     uploaded_file_name: str
+    display_name: str
     uploaded_file_minio_path: str
     uploaded_file_content_type: str
     uploaded_file_size: int
