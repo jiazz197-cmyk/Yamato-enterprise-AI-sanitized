@@ -160,7 +160,6 @@ class WebSocketTaskObserver(TaskObserver):
             "status": event.status,
             "progress": event.progress,
             "message": event.message,
-            "result": event.result,
             "error": event.error,
             "timestamp": event.timestamp,
         }

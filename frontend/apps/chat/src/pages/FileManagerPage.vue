@@ -101,6 +101,9 @@
           <p><strong>任务ID：</strong>{{ selectedTask?.task_id }}</p>
           <p><strong>状态：</strong>{{ selectedTask?.status }}</p>
           <p><strong>消息：</strong>{{ selectedTask?.message }}</p>
+          <p v-if="isCompactResult" class="result-compact-tip">
+            当前显示的是轻量摘要，完整 U8 明细请下载 Excel 查看。
+          </p>
           <pre class="result-json">{{ formattedResult }}</pre>
         </div>
       </div>
@@ -134,6 +137,16 @@ const resultModalVisible = ref(false)
 const pollingTimer = ref<number | null>(null)
 
 const wsMap = new Map<string, WebSocket>()
+const refreshTimers = new Map<string, number>()
+const refreshInFlightTaskIds = new Set<string>()
+const refreshQueuedTaskIds = new Set<string>()
+const approvalDetailRequestedTaskIds = new Set<string>()
+let loadTasksAbortController: AbortController | null = null
+let loadTasksTimeoutId: number | null = null
+
+const ACTIVE_STATUSES = ['queued', 'running', 'awaiting_approval']
+const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled']
+const ENABLE_TASK_WEBSOCKET = false
 
 const readUserRole = (): string => {
   try {
@@ -186,23 +199,96 @@ const doneTasks = computed(() => {
     .sort(byDateDesc)
 })
 
+const compactJsonValue = (value: unknown, depth = 0): unknown => {
+  if (depth >= 4) return '[Object]'
+  if (!value || typeof value !== 'object') return value
+
+  if (Array.isArray(value)) {
+    const preview = value.slice(0, 20).map((item) => compactJsonValue(item, depth + 1))
+    if (value.length > preview.length) {
+      preview.push(`... ${value.length - preview.length} more items`)
+    }
+    return preview
+  }
+
+  const source = value as Record<string, unknown>
+  const result: Record<string, unknown> = {}
+  Object.entries(source).forEach(([key, item]) => {
+    result[key] = compactJsonValue(item, depth + 1)
+  })
+  return result
+}
+
+const isCompactResult = computed(() => {
+  return Boolean(selectedTask.value?.result?.__result_compact)
+})
+
 const formattedResult = computed(() => {
   if (!selectedTask.value?.result) {
     return '暂无结果数据'
   }
-  return JSON.stringify(selectedTask.value.result, null, 2)
+  return JSON.stringify(compactJsonValue(selectedTask.value.result), null, 2)
 })
 
 const syncWsConnections = (): void => {
   wsConnections.value = wsMap.size
 }
 
+const patchTaskFromEvent = (eventPayload: {
+  task_id?: string
+  status?: string
+  progress?: number
+  message?: string
+  error?: string | null
+}): void => {
+  const taskId = String(eventPayload.task_id ?? '').trim()
+  if (!taskId) return
+  const index = tasks.value.findIndex((task) => task.task_id === taskId)
+  if (index < 0) return
+
+  const current = tasks.value[index]
+  const next: QuotationTaskItem = {
+    ...current,
+    status: ACTIVE_STATUSES.includes(String(eventPayload.status ?? ''))
+      || TERMINAL_STATUSES.includes(String(eventPayload.status ?? ''))
+      ? (eventPayload.status as QuotationTaskItem['status'])
+      : current.status,
+    progress: typeof eventPayload.progress === 'number' ? eventPayload.progress : current.progress,
+    message: typeof eventPayload.message === 'string' ? eventPayload.message : current.message,
+    error: typeof eventPayload.error === 'string' ? eventPayload.error : current.error,
+  }
+  tasks.value[index] = next
+  tasks.value = [...tasks.value].sort((a, b) => statusOrder(a.status) - statusOrder(b.status))
+
+  if (TERMINAL_STATUSES.includes(next.status)) {
+    approvalDetailRequestedTaskIds.delete(taskId)
+    closeSocket(taskId)
+  }
+}
+
+const mergeTaskListItem = (incoming: QuotationTaskItem): QuotationTaskItem => {
+  const existing = tasks.value.find((task) => task.task_id === incoming.task_id)
+  if (incoming.result?.__result_omitted && existing?.result && !existing.result.__result_omitted) {
+    return {
+      ...incoming,
+      result: existing.result,
+    }
+  }
+  return incoming
+}
+
+const hasApprovalItems = (task: QuotationTaskItem): boolean => {
+  const items = task.result?.pdm_result?.items
+  return Array.isArray(items) && items.length > 0
+}
+
 const upsertTask = (incoming: QuotationTaskItem): void => {
+  const merged = mergeTaskListItem(incoming)
   const index = tasks.value.findIndex((task) => task.task_id === incoming.task_id)
   if (index < 0) {
-    tasks.value.unshift(incoming)
+    tasks.value.unshift(merged)
   } else {
-    tasks.value[index] = incoming
+    tasks.value[index] = merged
   }
   tasks.value = [...tasks.value].sort((a, b) => statusOrder(a.status) - statusOrder(b.status))
 }
@@ -216,6 +302,12 @@ const closeSocket = (taskId: string): void => {
 }
 
 const refreshSingleTask = async (taskId: string): Promise<void> => {
+  if (refreshInFlightTaskIds.has(taskId)) {
+    refreshQueuedTaskIds.add(taskId)
+    return
+  }
+
+  refreshInFlightTaskIds.add(taskId)
   try {
     const task = await getQuotationTask(taskId)
     upsertTask(task)
@@ -223,14 +315,39 @@ const refreshSingleTask = async (taskId: string): Promise<void> => {
       closeSocket(taskId)
     }
   } catch (error) {
-    await loadTasks()
+    // Keep existing task data; detail refresh failures must not trigger a list refresh loop.
+  } finally {
+    refreshInFlightTaskIds.delete(taskId)
+    if (refreshQueuedTaskIds.delete(taskId)) {
+      scheduleRefreshSingleTask(taskId, 300)
+    }
   }
 }
 
+const scheduleRefreshSingleTask = (taskId: string, delay = 500): void => {
+  const existingTimer = refreshTimers.get(taskId)
+  if (existingTimer !== undefined) {
+    window.clearTimeout(existingTimer)
+  }
+  const timer = window.setTimeout(() => {
+    refreshTimers.delete(taskId)
+    void refreshSingleTask(taskId)
+  }, delay)
+  refreshTimers.set(taskId, timer)
+}
+
 const ensureTaskSockets = (): void => {
+  if (!ENABLE_TASK_WEBSOCKET) {
+    for (const [taskId] of wsMap) {
+      closeSocket(taskId)
+    }
+    syncWsConnections()
+    return
+  }
+
   const activeTaskIds = new Set(
     tasks.value
-      .filter((task) => ['queued', 'running', 'awaiting_approval'].includes(task.status))
+      .filter((task) => ACTIVE_STATUSES.includes(task.status))
       .map((task) => task.task_id)
   )
 
@@ -246,18 +363,17 @@ const ensureTaskSockets = (): void => {
       const socket = createTaskWebSocket(taskId, {
         onMessage: (payload) => {
           if (!payload || typeof payload !== 'object') return
-          const eventPayload = payload as { type?: string; task_id?: string; event_type?: string; status?: string; progress?: number }
+          const eventPayload = payload as { type?: string; task_id?: string; event_type?: string; status?: string; progress?: number; message?: string; error?: string | null }
           if (eventPayload.type === 'task_event' && eventPayload.task_id) {
-            void refreshSingleTask(eventPayload.task_id)
+            patchTaskFromEvent(eventPayload)
           }
         },
         onError: () => {
-          void refreshSingleTask(taskId)
+          closeSocket(taskId)
         },
         onClose: () => {
           wsMap.delete(taskId)
           syncWsConnections()
-          void refreshSingleTask(taskId)
         },
       })
       wsMap.set(taskId, socket)
@@ -268,19 +384,63 @@ const ensureTaskSockets = (): void => {
   })
 }
 
-const loadTasks = async (): Promise<void> => {
-  if (loading.value) return
+const clearLoadTasksTimeout = (): void => {
+  if (loadTasksTimeoutId !== null) {
+    window.clearTimeout(loadTasksTimeoutId)
+    loadTasksTimeoutId = null
+  }
+}
+
+const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promise<void> => {
+  if (loading.value) {
+    if (!options?.force) return
+    loadTasksAbortController?.abort()
+  }
+
+  clearLoadTasksTimeout()
+  const controller = new AbortController()
+  loadTasksAbortController = controller
+  loadTasksTimeoutId = window.setTimeout(() => {
+    controller.abort()
+  }, 15000)
+
   loading.value = true
-  errorMessage.value = ''
+  if (!options?.silent) {
+    errorMessage.value = ''
+  }
   currentRole.value = readUserRole()
   try {
-    const response = await listQuotationTasks({ limit: 300 })
-    tasks.value = response.items
+    const response = await listQuotationTasks({
+      limit: 100,
+      signal: controller.signal,
+    })
+    tasks.value = response.items.map(mergeTaskListItem)
     ensureTaskSockets()
+    tasks.value
+      .filter((task) =>
+        task.status === 'awaiting_approval'
+        && !hasApprovalItems(task)
+        && !approvalDetailRequestedTaskIds.has(task.task_id)
+      )
+      .slice(0, 2)
+      .forEach((task, index) => {
+        approvalDetailRequestedTaskIds.add(task.task_id)
+        scheduleRefreshSingleTask(task.task_id, 800 + index * 500)
+      })
   } catch (error) {
-    errorMessage.value = (error as { message?: string })?.message ?? '加载任务失败'
+    if (!options?.silent) {
+      if ((error as { name?: string })?.name === 'AbortError') {
+        errorMessage.value = '加载任务超时，请稍后刷新'
+      } else {
+        errorMessage.value = (error as { message?: string })?.message ?? '加载任务失败'
+      }
+    }
   } finally {
-    loading.value = false
+    if (loadTasksAbortController === controller) {
+      clearLoadTasksTimeout()
+      loadTasksAbortController = null
+      loading.value = false
+    }
   }
 }
 
@@ -312,7 +472,7 @@ const handleFileSelected = async (event: Event): Promise<void> => {
 }
 
 const canCancel = (task: QuotationTaskItem): boolean => {
-  return ['queued', 'running', 'awaiting_approval'].includes(task.status)
+  return ACTIVE_STATUSES.includes(task.status)
 }
 
 const handleApprove = async (taskId: string, approvedPartids: string[]): Promise<void> => {
@@ -393,8 +553,8 @@ const handleDownloadU8Xlsx = async (taskId: string): Promise<void> => {
 onMounted(() => {
   void loadTasks()
   pollingTimer.value = window.setInterval(() => {
-    void loadTasks()
-  }, 20000)
+    void loadTasks({ silent: true })
+  }, 60000)
 })
 
 onUnmounted(() => {
@@ -402,6 +562,12 @@ onUnmounted(() => {
     window.clearInterval(pollingTimer.value)
     pollingTimer.value = null
   }
+  loadTasksAbortController?.abort()
+  clearLoadTasksTimeout()
+  for (const timer of refreshTimers.values()) {
+    window.clearTimeout(timer)
+  }
+  refreshTimers.clear()
   for (const [taskId] of wsMap) {
     closeSocket(taskId)
   }
@@ -902,9 +1068,7 @@ const TaskItemCard = defineComponent({
     }
 
     const hasU8ByTypeWorkbook = computed(() => {
-      if (props.task.status !== 'completed') return false
-      const path = props.task.result?.u8_result_by_type_xlsx_minio_path
-      return typeof path === 'string' && path.length > 0
+      return props.task.status === 'completed'
     })
 
     return () =>
@@ -1622,6 +1786,15 @@ const TaskItemCard = defineComponent({
 
 .result-modal__content {
   overflow: auto;
+}
+
+.result-compact-tip {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: var(--yamato-radius-sm);
+  background: var(--yamato-color-warning-soft);
+  color: var(--yamato-color-warning);
+  font-size: 12px;
 }
 
 .result-json {

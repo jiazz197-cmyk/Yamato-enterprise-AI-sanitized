@@ -27,7 +27,7 @@ class QuotationDispatcher:
     (e.g. executor) while inside dequeue_for_owner to keep ordering obvious.
     """
 
-    def __init__(self, max_running_per_user: int = 3):
+    def __init__(self, max_running_per_user: int = 1):
         self._max_running_per_user = max_running_per_user
         self._lock = threading.Lock()
 
@@ -72,5 +72,5 @@ class QuotationDispatcher:
             return [DispatchCandidate(task_id=task.task_id, owner_id=task.owner_id) for task in queued_tasks]
 
 
-quotation_dispatcher = QuotationDispatcher(max_running_per_user=3)
+quotation_dispatcher = QuotationDispatcher(max_running_per_user=1)
 

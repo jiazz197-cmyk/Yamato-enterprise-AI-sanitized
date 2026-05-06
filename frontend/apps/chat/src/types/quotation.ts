@@ -72,6 +72,8 @@ export interface QuotationU8ResultTypeSummary {
 }
 
 export interface QuotationTaskResult {
+  __result_compact?: boolean
+  __result_omitted?: boolean
   keywords_payload?: Record<string, unknown>
   pdm_result?: QuotationPdmResult
   pdm_partids?: string[]

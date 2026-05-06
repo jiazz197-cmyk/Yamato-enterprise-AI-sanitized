@@ -31,6 +31,8 @@ export const listQuotationTasks = async (params?: {
   status?: string
   ownerUsername?: string
   limit?: number
+  fullResult?: boolean
+  signal?: AbortSignal
 }): Promise<QuotationTaskListResponse> => {
   const query = new URLSearchParams()
   if (params?.status) {
@@ -42,14 +44,26 @@ export const listQuotationTasks = async (params?: {
   if (typeof params?.limit === 'number') {
     query.set('limit', String(params.limit))
   }
+  if (params?.fullResult) {
+    query.set('full_result', 'true')
+  }
 
   const queryString = query.toString()
   const endpoint = queryString ? `/quotation/tasks?${queryString}` : '/quotation/tasks'
-  return apiRequest<QuotationTaskListResponse>(endpoint)
+  return apiRequest<QuotationTaskListResponse>(endpoint, { signal: params?.signal })
 }
 
-export const getQuotationTask = async (taskId: string): Promise<QuotationTaskItem> => {
-  return apiRequest<QuotationTaskItem>(`/quotation/tasks/${encodeURIComponent(taskId)}`)
+export const getQuotationTask = async (
+  taskId: string,
+  params?: { fullResult?: boolean }
+): Promise<QuotationTaskItem> => {
+  const query = new URLSearchParams()
+  if (params?.fullResult) {
+    query.set('full_result', 'true')
+  }
+  const queryString = query.toString()
+  const endpoint = `/quotation/tasks/${encodeURIComponent(taskId)}${queryString ? `?${queryString}` : ''}`
+  return apiRequest<QuotationTaskItem>(endpoint)
 }
 
 export const cancelQuotationTask = async (taskId: string): Promise<CancelQuotationTaskResponse> => {

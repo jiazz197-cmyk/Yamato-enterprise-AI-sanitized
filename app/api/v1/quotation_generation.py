@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import defer
 
 from app.adapters.quotation import (
     MinioFileStorageAdapter,
@@ -95,7 +96,62 @@ def _is_admin_like(user: User) -> bool:
     return user.role in (UserRole.admin, UserRole.superuser)
 
 
-def _serialize_task(task: QuotationTask) -> QuotationTaskItemResponse:
+def _compact_query_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+
+    compact = {key: item for key, item in value.items() if key != "items"}
+    items = value.get("items")
+    if isinstance(items, list):
+        compact["items_count"] = len(items)
+    return compact
+
+
+def _compact_u8_result_by_type(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+
+    compact = {key: item for key, item in value.items() if key != "items"}
+    groups = value.get("items")
+    if isinstance(groups, list):
+        compact["items_count"] = len(groups)
+        compact["items"] = [_compact_query_result(group) for group in groups]
+    return compact
+
+
+def _compact_result_payload(payload: Any, *, include_pdm_items: bool) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+
+    compact = dict(payload)
+    compact["__result_compact"] = True
+    compact["pdm_result"] = (
+        payload.get("pdm_result")
+        if include_pdm_items
+        else _compact_query_result(payload.get("pdm_result"))
+    )
+    compact["u8_result"] = _compact_query_result(payload.get("u8_result"))
+    compact["u8_result_by_type"] = _compact_u8_result_by_type(payload.get("u8_result_by_type"))
+    return compact
+
+
+def _serialize_task(
+    task: QuotationTask,
+    *,
+    full_result: bool = False,
+    load_result_payload: bool = True,
+) -> QuotationTaskItemResponse:
+    if load_result_payload:
+        result_payload = task.result_payload
+    else:
+        result_payload = {"__result_compact": True, "__result_omitted": True}
+
+    if not full_result and load_result_payload:
+        result_payload = _compact_result_payload(
+            result_payload,
+            include_pdm_items=task.status == "awaiting_approval",
+        )
+
     return QuotationTaskItemResponse(
         task_id=task.task_id,
         status=task.status,
@@ -109,13 +165,16 @@ def _serialize_task(task: QuotationTask) -> QuotationTaskItemResponse:
         created_at=task.created_at,
         started_at=task.started_at,
         completed_at=task.completed_at,
-        result=task.result_payload,
+        result=result_payload,
         error=task.error,
     )
 
 
-def _get_task_or_404(db: Session, task_id: str) -> QuotationTask:
-    task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
+def _get_task_or_404(db: Session, task_id: str, *, defer_result: bool = False) -> QuotationTask:
+    query = db.query(QuotationTask)
+    if defer_result:
+        query = query.options(defer(QuotationTask.result_payload))
+    task = query.filter(QuotationTask.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     return task
@@ -161,10 +220,13 @@ async def list_quotation_tasks(
     status_filter: Optional[str] = Query(None, alias="status", description="按状态过滤"),
     owner_username: Optional[str] = Query(None, description="管理员可按用户名过滤"),
     limit: int = Query(100, ge=1, le=500),
+    full_result: bool = Query(False, description="是否返回完整任务结果；默认仅返回摘要，避免大 U8 结果卡住前端"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> QuotationTaskListResponse:
     query = db.query(QuotationTask)
+    if not full_result:
+        query = query.options(defer(QuotationTask.result_payload))
     if not _is_admin_like(current_user):
         query = query.filter(QuotationTask.owner_id == str(current_user.id))
     elif owner_username:
@@ -173,19 +235,32 @@ async def list_quotation_tasks(
         query = query.filter(QuotationTask.status == status_filter)
     tasks = query.order_by(QuotationTask.created_at.desc()).limit(limit).all()
     return QuotationTaskListResponse(
-        total=len(tasks), items=[_serialize_task(task) for task in tasks]
+        total=len(tasks),
+        items=[
+            _serialize_task(
+                task,
+                full_result=full_result,
+                load_result_payload=full_result or task.status == "awaiting_approval",
+            )
+            for task in tasks
+        ],
     )
 
 
 @router.get("/tasks/{task_id}", response_model=QuotationTaskItemResponse, summary="查询报价任务详情")
 async def get_quotation_task(
     task_id: str,
+    full_result: bool = Query(False, description="是否返回完整任务结果；默认仅返回摘要，避免大 U8 结果卡住前端"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> QuotationTaskItemResponse:
-    task = _get_task_or_404(db, task_id)
+    task = _get_task_or_404(db, task_id, defer_result=not full_result)
     _check_task_permission(task, current_user)
-    return _serialize_task(task)
+    return _serialize_task(
+        task,
+        full_result=full_result,
+        load_result_payload=full_result or task.status == "awaiting_approval",
+    )
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=CancelTaskResponse, summary="取消报价任务")

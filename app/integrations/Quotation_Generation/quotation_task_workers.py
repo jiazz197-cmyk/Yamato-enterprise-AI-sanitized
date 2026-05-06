@@ -140,6 +140,22 @@ def safe_cleanup_quotation_task_files(db: Session, task: QuotationTask, task_id:
         }
 
 
+def _cleanup_task_files_by_id(task_id: str) -> Dict[str, Any]:
+    db = SessionLocal()
+    try:
+        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
+        if not task:
+            return {}
+        cleanup_result = safe_cleanup_quotation_task_files(db, task, task_id)
+        db.commit()
+        return cleanup_result
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def _run_async_task_manager_call(coro: Any) -> None:
     try:
         loop = asyncio.get_running_loop()
@@ -177,8 +193,8 @@ def dispatch_quotation_queue_for_owner(owner_id: str) -> None:
         db.close()
 
 
-# `quotation_tasks.message` is VARCHAR(512); keep a safe headroom when writing.
-_MESSAGE_COLUMN_LIMIT = 500
+# Keep progress messages compact; detailed query parameters belong in logs, not task cards.
+_MESSAGE_COLUMN_LIMIT = 220
 
 
 def _clamp_message(message: str, limit: int = _MESSAGE_COLUMN_LIMIT) -> str:
@@ -190,6 +206,56 @@ def _clamp_message(message: str, limit: int = _MESSAGE_COLUMN_LIMIT) -> str:
     suffix = "…(truncated)"
     head = max(0, limit - len(suffix))
     return message[:head] + suffix
+
+
+def _query_result_summary(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"total": 0, "items_count": 0}
+    items = value.get("items")
+    return {
+        "total": value.get("total"),
+        "items_count": len(items) if isinstance(items, list) else 0,
+    }
+
+
+def _u8_by_type_summary(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"total": 0, "items": []}
+    groups = value.get("items")
+    compact_groups = []
+    if isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            compact_groups.append(
+                {
+                    "type": group.get("type"),
+                    "u8_parent_inv_codes": group.get("u8_parent_inv_codes"),
+                    "total": group.get("total"),
+                    "items_count": len(group.get("items")) if isinstance(group.get("items"), list) else 0,
+                }
+            )
+    return {
+        "total": value.get("total"),
+        "items_count": len(groups) if isinstance(groups, list) else 0,
+        "items": compact_groups,
+    }
+
+
+def _patch_task_fields(task_id: str, updates: Dict[str, Any]) -> None:
+    db = SessionLocal()
+    try:
+        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
+        if not task:
+            return
+        for key, value in updates.items():
+            setattr(task, key, value)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def _close_thread_tm(loop: asyncio.AbstractEventLoop, thread_tm: TaskManager) -> None:
@@ -218,55 +284,72 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
     asyncio.set_event_loop(loop)
     thread_tm = TaskManager.create_thread_safe_instance()
     db = SessionLocal()
+    existing_payload: Dict[str, Any] = {}
+    uploaded_file_minio_path = ""
+    uploaded_file_name = ""
 
     try:
         task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
         if not task:
             return {"status": "error", "message": f"任务不存在: {task_id}"}
+        existing_payload = dict(task.result_payload or {})
+        uploaded_file_minio_path = task.uploaded_file_minio_path
+        uploaded_file_name = task.uploaded_file_name
+        db.close()
 
         loop.run_until_complete(thread_tm.start_task(task_id))
 
         def update_progress(progress: int, message: str) -> None:
             safe_message = _clamp_message(message)
-            task.progress = max(0, min(100, progress))
-            task.message = safe_message
-            task.status = QuotationTaskStatus.running.value
-            db.commit()
+            safe_progress = max(0, min(100, progress))
+            _patch_task_fields(
+                task_id,
+                {
+                    "progress": safe_progress,
+                    "message": safe_message,
+                    "status": QuotationTaskStatus.running.value,
+                },
+            )
             loop.run_until_complete(
-                thread_tm.update_task_progress(task_id, task.progress, safe_message)
+                thread_tm.update_task_progress(task_id, safe_progress, safe_message)
             )
 
         if token.is_cancelled():
             raise QuotationPipelineCancelledError("任务在启动前被取消")
 
         update_progress(5, "正在下载上传PDF")
-        with download_object_stream(task.uploaded_file_minio_path) as response:
+        with download_object_stream(uploaded_file_minio_path) as response:
             pdf_bytes = response.read()
 
         phase1_uc = build_execute_quotation_phase1_use_case()
         phase1_result = phase1_uc.execute(
             ExecuteQuotationPhase1Command(
                 pdf_bytes=pdf_bytes,
-                original_filename=task.uploaded_file_name,
+                original_filename=uploaded_file_name,
                 progress_callback=update_progress,
                 cancel_checker=token.is_cancelled,
             )
         )
-        task.temp_image_minio_path = phase1_result.temp_image_minio_path
 
-        result_payload = dict(task.result_payload or {})
+        result_payload = dict(existing_payload)
         result_payload.update(phase1_result.to_dict())
 
         if not phase1_result.pdm_partids:
-            task.status = QuotationTaskStatus.failed.value
-            task.progress = min(task.progress, 99)
-            task.message = "PDM 查询未返回任何 PARTID"
-            task.error = "PDM 结果为空，无法继续 U8 查询"
-            task.completed_at = datetime.utcnow()
-            task.result_payload = result_payload
-            db.commit()
-            loop.run_until_complete(thread_tm.fail_task(task_id, task.error, task.message))
-            return {"status": "error", "task_id": task_id, "error": task.error}
+            error_message = "PDM 结果为空，无法继续 U8 查询"
+            _patch_task_fields(
+                task_id,
+                {
+                    "status": QuotationTaskStatus.failed.value,
+                    "progress": 99,
+                    "message": "PDM 查询未返回任何 PARTID",
+                    "error": error_message,
+                    "completed_at": datetime.utcnow(),
+                    "temp_image_minio_path": phase1_result.temp_image_minio_path,
+                    "result_payload": result_payload,
+                },
+            )
+            loop.run_until_complete(thread_tm.fail_task(task_id, error_message, "PDM 查询未返回任何 PARTID"))
+            return {"status": "error", "task_id": task_id, "error": error_message}
 
         converted_u8_codes, pdm_to_u8_mappings = convert_partids_to_u8_codes(
             phase1_result.pdm_partids
@@ -281,46 +364,53 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
             pdm_to_u8_mappings[:8],
         )
 
-        task.status = QuotationTaskStatus.awaiting_approval.value
-        task.progress = 50
-        task.message = "等待用户审核 PDM 结果"
-        task.result_payload = result_payload
-        task.error = None
-        db.commit()
+        _patch_task_fields(
+            task_id,
+            {
+                "status": QuotationTaskStatus.awaiting_approval.value,
+                "progress": 50,
+                "message": "等待用户审核 PDM 结果",
+                "temp_image_minio_path": phase1_result.temp_image_minio_path,
+                "result_payload": result_payload,
+                "error": None,
+            },
+        )
 
         loop.run_until_complete(
-            thread_tm.update_task_progress(task_id, task.progress, task.message)
+            thread_tm.update_task_progress(task_id, 50, "等待用户审核 PDM 结果")
         )
         return {"status": "awaiting_approval", "task_id": task_id}
 
     except QuotationPipelineCancelledError as exc:
-        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
-        if task:
-            cleanup_result = safe_cleanup_quotation_task_files(db, task, task_id)
-            existing_payload = dict(task.result_payload or {})
-            existing_payload["cleanup"] = cleanup_result
-            task.status = QuotationTaskStatus.cancelled.value
-            task.message = "任务已取消"
-            task.error = str(exc)
-            task.completed_at = datetime.utcnow()
-            task.result_payload = existing_payload
-            db.commit()
+        cleanup_result = _cleanup_task_files_by_id(task_id)
+        existing_payload["cleanup"] = cleanup_result
+        _patch_task_fields(
+            task_id,
+            {
+                "status": QuotationTaskStatus.cancelled.value,
+                "message": "任务已取消",
+                "error": str(exc),
+                "completed_at": datetime.utcnow(),
+                "result_payload": existing_payload,
+            },
+        )
         loop.run_until_complete(thread_tm.fail_task(task_id, str(exc), "任务已取消"))
         return {"status": "cancelled", "task_id": task_id}
 
     except Exception as exc:
         logger.error(f"报价任务 Phase1 执行失败 {task_id}: {exc}", exc_info=True)
-        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
-        if task:
-            cleanup_result = safe_cleanup_quotation_task_files(db, task, task_id)
-            existing_payload = dict(task.result_payload or {})
-            existing_payload["cleanup"] = cleanup_result
-            task.status = QuotationTaskStatus.failed.value
-            task.message = "Phase1 执行失败"
-            task.error = str(exc)
-            task.completed_at = datetime.utcnow()
-            task.result_payload = existing_payload
-            db.commit()
+        cleanup_result = _cleanup_task_files_by_id(task_id)
+        existing_payload["cleanup"] = cleanup_result
+        _patch_task_fields(
+            task_id,
+            {
+                "status": QuotationTaskStatus.failed.value,
+                "message": "Phase1 执行失败",
+                "error": str(exc),
+                "completed_at": datetime.utcnow(),
+                "result_payload": existing_payload,
+            },
+        )
         loop.run_until_complete(thread_tm.fail_task(task_id, str(exc), "Phase1 执行失败"))
         return {"status": "error", "task_id": task_id, "error": str(exc)}
 
@@ -340,28 +430,37 @@ def process_quotation_task_phase2_background(
     asyncio.set_event_loop(loop)
     thread_tm = TaskManager.create_thread_safe_instance()
     db = SessionLocal()
+    existing_payload: Dict[str, Any] = {}
+    uploaded_file_name = ""
 
     try:
         task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
         if not task:
             return {"status": "error", "message": f"任务不存在: {task_id}"}
+        existing_payload = dict(task.result_payload or {})
+        uploaded_file_name = task.uploaded_file_name
+        db.close()
 
         loop.run_until_complete(thread_tm.start_task(task_id))
 
         def update_progress(progress: int, message: str) -> None:
             safe_message = _clamp_message(message)
-            task.progress = max(0, min(100, progress))
-            task.message = safe_message
-            task.status = QuotationTaskStatus.running.value
-            db.commit()
+            safe_progress = max(0, min(100, progress))
+            _patch_task_fields(
+                task_id,
+                {
+                    "progress": safe_progress,
+                    "message": safe_message,
+                    "status": QuotationTaskStatus.running.value,
+                },
+            )
             loop.run_until_complete(
-                thread_tm.update_task_progress(task_id, task.progress, safe_message)
+                thread_tm.update_task_progress(task_id, safe_progress, safe_message)
             )
 
         if token.is_cancelled():
             raise QuotationPipelineCancelledError("任务在启动前被取消")
 
-        existing_payload = dict(task.result_payload or {})
         approved_partids = existing_payload.get("approved_partids")
         if isinstance(approved_partids, list) and approved_partids:
             selected_partids = [str(partid) for partid in approved_partids if str(partid).strip()]
@@ -399,7 +498,7 @@ def process_quotation_task_phase2_background(
             )
         )
 
-        safe_cleanup_quotation_task_files(db, task, task_id)
+        cleanup_result = _cleanup_task_files_by_id(task_id)
 
         u8_total = None
         u8_items = None
@@ -413,66 +512,73 @@ def process_quotation_task_phase2_background(
             len(u8_items) if isinstance(u8_items, list) else None,
         )
 
-        final_payload: Dict[str, Any] = {
-            "keywords_payload": existing_payload.get("keywords_payload"),
-            "approved_partids": selected_partids,
-            "u8_result": phase2_result.u8_result,
-            "u8_result_by_type": phase2_result.u8_result_by_type,
-            "u8_result_type_summary": phase2_result.u8_result_type_summary,
-        }
-
-        u8_by_type = (
+        full_u8_by_type = (
             phase2_result.u8_result_by_type
             if isinstance(phase2_result.u8_result_by_type, dict)
             else {}
         )
+        final_payload: Dict[str, Any] = {
+            "keywords_payload": existing_payload.get("keywords_payload"),
+            "approved_partids": selected_partids,
+            "u8_result": _query_result_summary(phase2_result.u8_result),
+            "u8_result_by_type": _u8_by_type_summary(full_u8_by_type),
+            "u8_result_type_summary": phase2_result.u8_result_type_summary,
+            "cleanup": cleanup_result,
+        }
+
         xlsx_path, xlsx_name = _upload_u8_result_by_type_xlsx_to_minio(
             task_id=task_id,
-            uploaded_file_name=task.uploaded_file_name,
-            u8_result_by_type=u8_by_type,
+            uploaded_file_name=uploaded_file_name,
+            u8_result_by_type=full_u8_by_type,
         )
         if xlsx_path and xlsx_name:
             final_payload["u8_result_by_type_xlsx_minio_path"] = xlsx_path
             final_payload["u8_result_by_type_xlsx_filename"] = xlsx_name
 
-        task.status = QuotationTaskStatus.completed.value
-        task.progress = 100
-        task.message = "任务完成（U8 BOM Inventory 已返回）"
-        task.result_payload = final_payload
-        task.error = None
-        task.completed_at = datetime.utcnow()
-        db.commit()
+        completed_message = "任务完成（U8 BOM Inventory 已返回）"
+        _patch_task_fields(
+            task_id,
+            {
+                "status": QuotationTaskStatus.completed.value,
+                "progress": 100,
+                "message": completed_message,
+                "result_payload": final_payload,
+                "error": None,
+                "completed_at": datetime.utcnow(),
+            },
+        )
 
-        loop.run_until_complete(thread_tm.complete_task(task_id, final_payload, task.message))
+        loop.run_until_complete(thread_tm.complete_task(task_id, final_payload, completed_message))
         return {"status": "success", "task_id": task_id}
 
     except QuotationPipelineCancelledError as exc:
-        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
-        if task:
-            cleanup_result = safe_cleanup_quotation_task_files(db, task, task_id)
-            existing_payload = dict(task.result_payload or {})
-            existing_payload["cleanup"] = cleanup_result
-            task.status = QuotationTaskStatus.cancelled.value
-            task.message = "任务已取消"
-            task.error = str(exc)
-            task.completed_at = datetime.utcnow()
-            task.result_payload = existing_payload
-            db.commit()
+        cleanup_result = _cleanup_task_files_by_id(task_id)
+        existing_payload["cleanup"] = cleanup_result
+        _patch_task_fields(
+            task_id,
+            {
+                "status": QuotationTaskStatus.cancelled.value,
+                "message": "任务已取消",
+                "error": str(exc),
+                "completed_at": datetime.utcnow(),
+                "result_payload": existing_payload,
+            },
+        )
         loop.run_until_complete(thread_tm.fail_task(task_id, str(exc), "任务已取消"))
         return {"status": "cancelled", "task_id": task_id}
 
     except Exception as exc:
         logger.error(f"报价任务 Phase2 执行失败 {task_id}: {exc}", exc_info=True)
-        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
-        if task:
-            # Preserve PDM results for debugging; do not clear result_payload.
-            existing_payload = dict(task.result_payload or {})
-            task.status = QuotationTaskStatus.failed.value
-            task.message = "Phase2 执行失败"
-            task.error = str(exc)
-            task.completed_at = datetime.utcnow()
-            task.result_payload = existing_payload
-            db.commit()
+        _patch_task_fields(
+            task_id,
+            {
+                "status": QuotationTaskStatus.failed.value,
+                "message": "Phase2 执行失败",
+                "error": str(exc),
+                "completed_at": datetime.utcnow(),
+                "result_payload": existing_payload,
+            },
+        )
         loop.run_until_complete(thread_tm.fail_task(task_id, str(exc), "Phase2 执行失败"))
         return {"status": "error", "task_id": task_id, "error": str(exc)}
 

@@ -173,6 +173,7 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     # pymssql: query timeout (seconds) and connection/login timeout
     SQLSERVER_QUERY_TIMEOUT_SEC: int = Field(120, ge=1, le=3600, env="SQLSERVER_QUERY_TIMEOUT_SEC")
     SQLSERVER_LOGIN_TIMEOUT_SEC: int = Field(30, ge=1, le=300, env="SQLSERVER_LOGIN_TIMEOUT_SEC")
+    SQLSERVER_QUERY_MAX_WORKERS: int = Field(2, ge=1, le=8, env="SQLSERVER_QUERY_MAX_WORKERS")
 
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
