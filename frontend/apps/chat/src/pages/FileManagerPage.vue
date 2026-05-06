@@ -16,7 +16,7 @@
         </p>
       </div>
       <div class="header-actions">
-        <button class="secondary-btn" :disabled="loading" @click="loadTasks">
+        <button class="secondary-btn" :disabled="loading" @click="() => loadTasks()">
           刷新
         </button>
         <button class="primary-btn" :disabled="uploading" @click="openFilePicker">
@@ -137,16 +137,81 @@ const resultModalVisible = ref(false)
 const pollingTimer = ref<number | null>(null)
 
 const wsMap = new Map<string, WebSocket>()
+const wsTaskEpochMap = new Map<string, number>()
+const wsConnectQueue: string[] = []
+const wsConnectQueuedTaskIds = new Set<string>()
+let wsConnectBatchTimer: number | null = null
 const refreshTimers = new Map<string, number>()
 const refreshInFlightTaskIds = new Set<string>()
 const refreshQueuedTaskIds = new Set<string>()
 const approvalDetailRequestedTaskIds = new Set<string>()
 let loadTasksAbortController: AbortController | null = null
 let loadTasksTimeoutId: number | null = null
+let isPageUnmounted = false
 
 const ACTIVE_STATUSES = ['queued', 'running', 'awaiting_approval']
 const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled']
-const ENABLE_TASK_WEBSOCKET = false
+const ENABLE_TASK_WEBSOCKET = true
+const DEBUG_FILE_MANAGER_DIAGNOSTICS = true
+const WS_CONNECT_BATCH_SIZE = 4
+const WS_CONNECT_BATCH_INTERVAL_MS = 100
+
+let loadTasksRequestSeq = 0
+let stateEpoch = 0
+
+const logDiag = (event: string, details?: Record<string, unknown>): void => {
+  if (!DEBUG_FILE_MANAGER_DIAGNOSTICS) return
+  try {
+    console.info('[FileManagerDiag]', {
+      event,
+      ts: new Date().toISOString(),
+      route: window.location.pathname,
+      tasks: tasks.value.length,
+      wsConnections: wsMap.size,
+      loading: loading.value,
+      ...details,
+    })
+  } catch {
+    // ignore logging failures
+  }
+}
+
+const logDiagError = (event: string, error: unknown, details?: Record<string, unknown>): void => {
+  if (!DEBUG_FILE_MANAGER_DIAGNOSTICS) return
+  try {
+    const cast = error as { message?: string; stack?: string; name?: string }
+    console.error('[FileManagerDiagError]', {
+      event,
+      ts: new Date().toISOString(),
+      route: window.location.pathname,
+      tasks: tasks.value.length,
+      wsConnections: wsMap.size,
+      loading: loading.value,
+      errorName: cast?.name,
+      errorMessage: cast?.message,
+      errorStack: cast?.stack,
+      ...details,
+    })
+  } catch {
+    // ignore logging failures
+  }
+}
+
+const handleWindowError = (event: ErrorEvent): void => {
+  logDiagError('window_error', event.error ?? new Error(event.message), {
+    message: event.message,
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno,
+  })
+}
+
+const handleUnhandledRejection = (event: PromiseRejectionEvent): void => {
+  const reason = event.reason as { message?: string; stack?: string; name?: string } | undefined
+  logDiagError('window_unhandled_rejection', reason ?? event.reason, {
+    reasonType: typeof event.reason,
+  })
+}
 
 const readUserRole = (): string => {
   try {
@@ -234,40 +299,30 @@ const syncWsConnections = (): void => {
   wsConnections.value = wsMap.size
 }
 
-const patchTaskFromEvent = (eventPayload: {
-  task_id?: string
-  status?: string
-  progress?: number
-  message?: string
-  error?: string | null
-}): void => {
-  const taskId = String(eventPayload.task_id ?? '').trim()
-  if (!taskId) return
-  const index = tasks.value.findIndex((task) => task.task_id === taskId)
-  if (index < 0) return
-
-  const current = tasks.value[index]
-  const next: QuotationTaskItem = {
-    ...current,
-    status: ACTIVE_STATUSES.includes(String(eventPayload.status ?? ''))
-      || TERMINAL_STATUSES.includes(String(eventPayload.status ?? ''))
-      ? (eventPayload.status as QuotationTaskItem['status'])
-      : current.status,
-    progress: typeof eventPayload.progress === 'number' ? eventPayload.progress : current.progress,
-    message: typeof eventPayload.message === 'string' ? eventPayload.message : current.message,
-    error: typeof eventPayload.error === 'string' ? eventPayload.error : current.error,
-  }
-  tasks.value[index] = next
-  tasks.value = [...tasks.value].sort((a, b) => statusOrder(a.status) - statusOrder(b.status))
-
-  if (TERMINAL_STATUSES.includes(next.status)) {
-    approvalDetailRequestedTaskIds.delete(taskId)
-    closeSocket(taskId)
-  }
+const isCurrentEpoch = (epoch?: number): boolean => {
+  if (epoch === undefined) return true
+  return epoch === stateEpoch
 }
 
-const mergeTaskListItem = (incoming: QuotationTaskItem): QuotationTaskItem => {
-  const existing = tasks.value.find((task) => task.task_id === incoming.task_id)
+const guardEpoch = (epoch: number | undefined, source: string, details?: Record<string, unknown>): boolean => {
+  if (isCurrentEpoch(epoch)) return true
+  logDiag('state_epoch_discard', {
+    source,
+    receivedEpoch: epoch,
+    currentEpoch: stateEpoch,
+    ...details,
+  })
+  return false
+}
+
+const sortTasksByStatus = (items: QuotationTaskItem[]): QuotationTaskItem[] => {
+  return [...items].sort((a, b) => statusOrder(a.status) - statusOrder(b.status))
+}
+
+const mergeTaskListItem = (
+  incoming: QuotationTaskItem,
+  existing?: QuotationTaskItem
+): QuotationTaskItem => {
   if (incoming.result?.__result_omitted && existing?.result && !existing.result.__result_omitted) {
     return {
       ...incoming,
@@ -277,71 +332,385 @@ const mergeTaskListItem = (incoming: QuotationTaskItem): QuotationTaskItem => {
   return incoming
 }
 
+const syncSelectedTaskRef = (): void => {
+  const selectedTaskId = selectedTask.value?.task_id
+  if (!selectedTaskId) return
+  const next = tasks.value.find((task) => task.task_id === selectedTaskId) ?? null
+  selectedTask.value = next
+}
+
+const applyTaskListSnapshot = (incomingTasks: QuotationTaskItem[], options?: { epoch?: number; source?: string }): boolean => {
+  if (!guardEpoch(options?.epoch, options?.source ?? 'apply_task_list_snapshot')) {
+    return false
+  }
+
+  const existingById = new Map(tasks.value.map((task) => [task.task_id, task]))
+  const nextTasks = incomingTasks.map((incoming) =>
+    mergeTaskListItem(incoming, existingById.get(incoming.task_id))
+  )
+  tasks.value = sortTasksByStatus(nextTasks)
+  syncSelectedTaskRef()
+  return true
+}
+
+const applyTaskPatchById = (
+  taskId: string,
+  buildNext: (current: QuotationTaskItem) => QuotationTaskItem,
+  options?: { epoch?: number; source?: string }
+): QuotationTaskItem | null => {
+  if (!guardEpoch(options?.epoch, options?.source ?? 'apply_task_patch', { taskId })) {
+    return null
+  }
+
+  const index = tasks.value.findIndex((task) => task.task_id === taskId)
+  if (index < 0) return null
+
+  const current = tasks.value[index]
+  const next = buildNext(current)
+  const nextTasks = [...tasks.value]
+  nextTasks[index] = next
+  tasks.value = sortTasksByStatus(nextTasks)
+
+  if (selectedTask.value?.task_id === taskId) {
+    selectedTask.value = next
+  }
+
+  return next
+}
+
+const applyTaskUpsertById = (
+  incoming: QuotationTaskItem,
+  options?: { epoch?: number; source?: string }
+): QuotationTaskItem | null => {
+  if (!guardEpoch(options?.epoch, options?.source ?? 'apply_task_upsert', {
+    taskId: incoming.task_id,
+  })) {
+    return null
+  }
+
+  const index = tasks.value.findIndex((task) => task.task_id === incoming.task_id)
+  const existing = index >= 0 ? tasks.value[index] : undefined
+  const merged = mergeTaskListItem(incoming, existing)
+  const nextTasks = [...tasks.value]
+
+  if (index < 0) {
+    nextTasks.unshift(merged)
+  } else {
+    nextTasks[index] = merged
+  }
+
+  tasks.value = sortTasksByStatus(nextTasks)
+
+  if (selectedTask.value?.task_id === incoming.task_id) {
+    selectedTask.value = merged
+  }
+
+  return merged
+}
+
 const hasApprovalItems = (task: QuotationTaskItem): boolean => {
   const items = task.result?.pdm_result?.items
   return Array.isArray(items) && items.length > 0
 }
 
-const upsertTask = (incoming: QuotationTaskItem): void => {
-  const merged = mergeTaskListItem(incoming)
-  const index = tasks.value.findIndex((task) => task.task_id === incoming.task_id)
-  if (index < 0) {
-    tasks.value.unshift(merged)
-  } else {
-    tasks.value[index] = merged
+const removeQueuedTaskSocket = (taskId: string): void => {
+  const queueIndex = wsConnectQueue.indexOf(taskId)
+  if (queueIndex >= 0) {
+    wsConnectQueue.splice(queueIndex, 1)
   }
-  tasks.value = [...tasks.value].sort((a, b) => statusOrder(a.status) - statusOrder(b.status))
+  wsConnectQueuedTaskIds.delete(taskId)
+}
+
+const clearWsConnectScheduler = (): void => {
+  if (wsConnectBatchTimer !== null) {
+    window.clearTimeout(wsConnectBatchTimer)
+    wsConnectBatchTimer = null
+  }
+  wsConnectQueue.forEach((taskId) => {
+    wsTaskEpochMap.delete(taskId)
+  })
+  wsConnectQueue.length = 0
+  wsConnectQueuedTaskIds.clear()
 }
 
 const closeSocket = (taskId: string): void => {
+  removeQueuedTaskSocket(taskId)
+  wsTaskEpochMap.delete(taskId)
+
   const socket = wsMap.get(taskId)
   if (!socket) return
+
+  logDiag('ws_close_initiated', {
+    taskId,
+    beforeConnections: wsMap.size,
+  })
+
   socket.close()
   wsMap.delete(taskId)
   syncWsConnections()
+
+  logDiag('ws_close_done', {
+    taskId,
+    afterConnections: wsMap.size,
+  })
 }
 
-const refreshSingleTask = async (taskId: string): Promise<void> => {
+const isTaskCurrentlyActive = (taskId: string): boolean => {
+  return tasks.value.some((task) => task.task_id === taskId && ACTIVE_STATUSES.includes(task.status))
+}
+
+const patchTaskFromEvent = (
+  eventPayload: {
+    task_id?: string
+    status?: string
+    progress?: number
+    message?: string
+    error?: string | null
+  },
+  epoch?: number
+): void => {
+  const taskId = String(eventPayload.task_id ?? '').trim()
+  if (!taskId) return
+
+  logDiag('ws_event_received', {
+    taskId,
+    status: eventPayload.status,
+    progress: eventPayload.progress,
+    epoch,
+    beforeTaskCount: tasks.value.length,
+  })
+
+  const next = applyTaskPatchById(
+    taskId,
+    (current) => ({
+      ...current,
+      status:
+        ACTIVE_STATUSES.includes(String(eventPayload.status ?? '')) ||
+        TERMINAL_STATUSES.includes(String(eventPayload.status ?? ''))
+          ? (eventPayload.status as QuotationTaskItem['status'])
+          : current.status,
+      progress: typeof eventPayload.progress === 'number' ? eventPayload.progress : current.progress,
+      message: typeof eventPayload.message === 'string' ? eventPayload.message : current.message,
+      error: typeof eventPayload.error === 'string' ? eventPayload.error : current.error,
+    }),
+    {
+      epoch,
+      source: 'patch_task_from_event',
+    }
+  )
+
+  if (!next) {
+    if (isCurrentEpoch(epoch)) {
+      logDiag('ws_event_task_missing', {
+        taskId,
+        status: eventPayload.status,
+        currentTaskCount: tasks.value.length,
+      })
+    }
+    return
+  }
+
+  logDiag('ws_event_applied', {
+    taskId,
+    toStatus: next.status,
+    afterTaskCount: tasks.value.length,
+  })
+
+  if (TERMINAL_STATUSES.includes(next.status)) {
+    approvalDetailRequestedTaskIds.delete(taskId)
+    closeSocket(taskId)
+  }
+}
+
+const connectTaskSocket = (taskId: string): void => {
+  const epoch = wsTaskEpochMap.get(taskId)
+  if (epoch === undefined || !guardEpoch(epoch, 'ws_connect_guard', { taskId })) {
+    removeQueuedTaskSocket(taskId)
+    return
+  }
+
+  if (isPageUnmounted || !isTaskCurrentlyActive(taskId) || wsMap.has(taskId)) {
+    removeQueuedTaskSocket(taskId)
+    return
+  }
+
+  try {
+    let socketRef: WebSocket | null = null
+    const socket = createTaskWebSocket(taskId, {
+      onMessage: (payload) => {
+        if (!socketRef || wsMap.get(taskId) !== socketRef) return
+        if (!payload || typeof payload !== 'object') return
+        const eventPayload = payload as {
+          type?: string
+          task_id?: string
+          event_type?: string
+          status?: string
+          progress?: number
+          message?: string
+          error?: string | null
+        }
+        if (eventPayload.type === 'task_event' && eventPayload.task_id) {
+          patchTaskFromEvent(eventPayload, wsTaskEpochMap.get(taskId))
+        }
+      },
+      onError: () => {
+        if (!socketRef || wsMap.get(taskId) !== socketRef) return
+        logDiag('ws_on_error', {
+          taskId,
+          currentConnections: wsMap.size,
+        })
+        closeSocket(taskId)
+      },
+      onClose: () => {
+        if (!socketRef || wsMap.get(taskId) !== socketRef) return
+        wsMap.delete(taskId)
+        wsTaskEpochMap.delete(taskId)
+        syncWsConnections()
+        logDiag('ws_on_close', {
+          taskId,
+          currentConnections: wsMap.size,
+        })
+      },
+    })
+
+    socketRef = socket
+    wsMap.set(taskId, socket)
+    syncWsConnections()
+
+    logDiag('ws_connect_ok', {
+      taskId,
+      epoch,
+      currentConnections: wsMap.size,
+    })
+  } catch (error) {
+    logDiagError('ws_connect_failed', error, {
+      taskId,
+      epoch,
+      currentConnections: wsMap.size,
+    })
+    // Ignore websocket startup failures and keep polling fallback.
+  }
+}
+
+const drainWsConnectQueue = (): void => {
+  if (isPageUnmounted) {
+    clearWsConnectScheduler()
+    return
+  }
+
+  let processed = 0
+  while (processed < WS_CONNECT_BATCH_SIZE && wsConnectQueue.length > 0) {
+    const taskId = wsConnectQueue.shift()
+    if (!taskId) break
+
+    wsConnectQueuedTaskIds.delete(taskId)
+
+    if (!isTaskCurrentlyActive(taskId) || wsMap.has(taskId)) {
+      processed += 1
+      continue
+    }
+
+    connectTaskSocket(taskId)
+    processed += 1
+  }
+
+  if (wsConnectQueue.length > 0) {
+    wsConnectBatchTimer = window.setTimeout(() => {
+      wsConnectBatchTimer = null
+      drainWsConnectQueue()
+    }, WS_CONNECT_BATCH_INTERVAL_MS)
+  }
+}
+
+const scheduleWsConnectDrain = (): void => {
+  if (wsConnectBatchTimer !== null || wsConnectQueue.length === 0 || isPageUnmounted) return
+
+  wsConnectBatchTimer = window.setTimeout(() => {
+    wsConnectBatchTimer = null
+    drainWsConnectQueue()
+  }, 0)
+}
+
+const enqueueTaskSocketConnect = (taskId: string, epoch: number): void => {
+  wsTaskEpochMap.set(taskId, epoch)
+  if (wsMap.has(taskId) || wsConnectQueuedTaskIds.has(taskId) || isPageUnmounted) return
+
+  wsConnectQueue.push(taskId)
+  wsConnectQueuedTaskIds.add(taskId)
+  scheduleWsConnectDrain()
+}
+
+const refreshSingleTask = async (taskId: string, epoch = stateEpoch): Promise<void> => {
   if (refreshInFlightTaskIds.has(taskId)) {
     refreshQueuedTaskIds.add(taskId)
+    logDiag('refresh_single_task_deduped', {
+      taskId,
+      epoch,
+      inFlightSize: refreshInFlightTaskIds.size,
+      queuedSize: refreshQueuedTaskIds.size,
+    })
     return
   }
 
   refreshInFlightTaskIds.add(taskId)
+  logDiag('refresh_single_task_start', {
+    taskId,
+    epoch,
+    inFlightSize: refreshInFlightTaskIds.size,
+  })
   try {
     const task = await getQuotationTask(taskId)
-    upsertTask(task)
-    if (['completed', 'failed', 'cancelled'].includes(task.status)) {
+    const updated = applyTaskUpsertById(task, {
+      epoch,
+      source: 'refresh_single_task_success',
+    })
+    if (updated && ['completed', 'failed', 'cancelled'].includes(updated.status)) {
       closeSocket(taskId)
     }
+    logDiag('refresh_single_task_success', {
+      taskId,
+      epoch,
+      status: task.status,
+      progress: task.progress,
+    })
   } catch (error) {
+    logDiagError('refresh_single_task_failed', error, { taskId, epoch })
     // Keep existing task data; detail refresh failures must not trigger a list refresh loop.
   } finally {
     refreshInFlightTaskIds.delete(taskId)
     if (refreshQueuedTaskIds.delete(taskId)) {
-      scheduleRefreshSingleTask(taskId, 300)
+      scheduleRefreshSingleTask(taskId, 300, stateEpoch)
     }
+    logDiag('refresh_single_task_end', {
+      taskId,
+      epoch,
+      inFlightSize: refreshInFlightTaskIds.size,
+      queuedSize: refreshQueuedTaskIds.size,
+    })
   }
 }
 
-const scheduleRefreshSingleTask = (taskId: string, delay = 500): void => {
+const scheduleRefreshSingleTask = (taskId: string, delay = 500, epoch = stateEpoch): void => {
   const existingTimer = refreshTimers.get(taskId)
   if (existingTimer !== undefined) {
     window.clearTimeout(existingTimer)
   }
   const timer = window.setTimeout(() => {
     refreshTimers.delete(taskId)
-    void refreshSingleTask(taskId)
+    void refreshSingleTask(taskId, epoch)
   }, delay)
   refreshTimers.set(taskId, timer)
 }
 
-const ensureTaskSockets = (): void => {
+const ensureTaskSockets = (epoch = stateEpoch): void => {
   if (!ENABLE_TASK_WEBSOCKET) {
+    logDiag('ws_disabled_cleanup_start', { existingConnections: wsMap.size })
+    clearWsConnectScheduler()
     for (const [taskId] of wsMap) {
       closeSocket(taskId)
     }
     syncWsConnections()
+    logDiag('ws_disabled_cleanup_done', { remainingConnections: wsMap.size })
     return
   }
 
@@ -351,36 +720,42 @@ const ensureTaskSockets = (): void => {
       .map((task) => task.task_id)
   )
 
+  logDiag('ws_ensure_start', {
+    epoch,
+    activeTasks: activeTaskIds.size,
+    existingConnections: wsMap.size,
+    queuedConnections: wsConnectQueue.length,
+  })
+
   for (const existingTaskId of wsMap.keys()) {
     if (!activeTaskIds.has(existingTaskId)) {
       closeSocket(existingTaskId)
+      continue
+    }
+    wsTaskEpochMap.set(existingTaskId, epoch)
+  }
+
+  for (let i = wsConnectQueue.length - 1; i >= 0; i -= 1) {
+    const queuedTaskId = wsConnectQueue[i]
+    if (!activeTaskIds.has(queuedTaskId)) {
+      wsConnectQueue.splice(i, 1)
+      wsConnectQueuedTaskIds.delete(queuedTaskId)
+      wsTaskEpochMap.delete(queuedTaskId)
     }
   }
 
   activeTaskIds.forEach((taskId) => {
     if (wsMap.has(taskId)) return
-    try {
-      const socket = createTaskWebSocket(taskId, {
-        onMessage: (payload) => {
-          if (!payload || typeof payload !== 'object') return
-          const eventPayload = payload as { type?: string; task_id?: string; event_type?: string; status?: string; progress?: number; message?: string; error?: string | null }
-          if (eventPayload.type === 'task_event' && eventPayload.task_id) {
-            patchTaskFromEvent(eventPayload)
-          }
-        },
-        onError: () => {
-          closeSocket(taskId)
-        },
-        onClose: () => {
-          wsMap.delete(taskId)
-          syncWsConnections()
-        },
-      })
-      wsMap.set(taskId, socket)
-      syncWsConnections()
-    } catch {
-      // Ignore websocket startup failures and keep polling fallback.
-    }
+    enqueueTaskSocketConnect(taskId, epoch)
+  })
+
+  scheduleWsConnectDrain()
+
+  logDiag('ws_ensure_done', {
+    epoch,
+    activeTasks: activeTaskIds.size,
+    finalConnections: wsMap.size,
+    queuedConnections: wsConnectQueue.length,
   })
 }
 
@@ -392,15 +767,42 @@ const clearLoadTasksTimeout = (): void => {
 }
 
 const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promise<void> => {
+  const requestId = ++loadTasksRequestSeq
+  const startedAt = Date.now()
+
   if (loading.value) {
-    if (!options?.force) return
+    if (!options?.force) {
+      logDiag('load_tasks_skip_due_to_loading', {
+        requestId,
+        force: false,
+      })
+      return
+    }
+    logDiag('load_tasks_abort_previous', {
+      requestId,
+    })
     loadTasksAbortController?.abort()
   }
+
+  const requestEpoch = ++stateEpoch
+
+  logDiag('load_tasks_start', {
+    requestId,
+    requestEpoch,
+    force: Boolean(options?.force),
+    silent: Boolean(options?.silent),
+    loadingBefore: loading.value,
+  })
 
   clearLoadTasksTimeout()
   const controller = new AbortController()
   loadTasksAbortController = controller
   loadTasksTimeoutId = window.setTimeout(() => {
+    logDiag('load_tasks_timeout_abort', {
+      requestId,
+      requestEpoch,
+      elapsedMs: Date.now() - startedAt,
+    })
     controller.abort()
   }, 15000)
 
@@ -414,8 +816,22 @@ const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promi
       limit: 100,
       signal: controller.signal,
     })
-    tasks.value = response.items.map(mergeTaskListItem)
-    ensureTaskSockets()
+    logDiag('load_tasks_response_received', {
+      requestId,
+      requestEpoch,
+      items: response.items.length,
+      elapsedMs: Date.now() - startedAt,
+    })
+
+    const snapshotApplied = applyTaskListSnapshot(response.items, {
+      epoch: requestEpoch,
+      source: 'load_tasks_snapshot_apply',
+    })
+    if (!snapshotApplied) {
+      return
+    }
+
+    ensureTaskSockets(requestEpoch)
     tasks.value
       .filter((task) =>
         task.status === 'awaiting_approval'
@@ -425,9 +841,30 @@ const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promi
       .slice(0, 2)
       .forEach((task, index) => {
         approvalDetailRequestedTaskIds.add(task.task_id)
-        scheduleRefreshSingleTask(task.task_id, 800 + index * 500)
+        scheduleRefreshSingleTask(task.task_id, 800 + index * 500, requestEpoch)
       })
+    logDiag('load_tasks_success', {
+      requestId,
+      requestEpoch,
+      totalTasksAfterMerge: tasks.value.length,
+      elapsedMs: Date.now() - startedAt,
+    })
   } catch (error) {
+    if (!isCurrentEpoch(requestEpoch)) {
+      logDiag('load_tasks_error_ignored_stale_epoch', {
+        requestId,
+        requestEpoch,
+        currentEpoch: stateEpoch,
+      })
+      return
+    }
+
+    logDiagError('load_tasks_failed', error, {
+      requestId,
+      requestEpoch,
+      silent: Boolean(options?.silent),
+      elapsedMs: Date.now() - startedAt,
+    })
     if (!options?.silent) {
       if ((error as { name?: string })?.name === 'AbortError') {
         errorMessage.value = '加载任务超时，请稍后刷新'
@@ -441,6 +878,14 @@ const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promi
       loadTasksAbortController = null
       loading.value = false
     }
+    logDiag('load_tasks_end', {
+      requestId,
+      requestEpoch,
+      currentEpoch: stateEpoch,
+      elapsedMs: Date.now() - startedAt,
+      loadingAfter: loading.value,
+      taskCount: tasks.value.length,
+    })
   }
 }
 
@@ -551,6 +996,13 @@ const handleDownloadU8Xlsx = async (taskId: string): Promise<void> => {
 }
 
 onMounted(() => {
+  isPageUnmounted = false
+  window.addEventListener('error', handleWindowError)
+  window.addEventListener('unhandledrejection', handleUnhandledRejection)
+  logDiag('page_mounted', {
+    userRole: currentRole.value,
+  })
+
   void loadTasks()
   pollingTimer.value = window.setInterval(() => {
     void loadTasks({ silent: true })
@@ -558,12 +1010,20 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  isPageUnmounted = true
+  window.removeEventListener('error', handleWindowError)
+  window.removeEventListener('unhandledrejection', handleUnhandledRejection)
+  logDiag('page_unmounted_start', {
+    connectionsBeforeCleanup: wsMap.size,
+  })
+
   if (pollingTimer.value !== null) {
     window.clearInterval(pollingTimer.value)
     pollingTimer.value = null
   }
   loadTasksAbortController?.abort()
   clearLoadTasksTimeout()
+  clearWsConnectScheduler()
   for (const timer of refreshTimers.values()) {
     window.clearTimeout(timer)
   }
@@ -571,6 +1031,10 @@ onUnmounted(() => {
   for (const [taskId] of wsMap) {
     closeSocket(taskId)
   }
+
+  logDiag('page_unmounted_done', {
+    connectionsAfterCleanup: wsMap.size,
+  })
 })
 
 const TaskItemCard = defineComponent({
