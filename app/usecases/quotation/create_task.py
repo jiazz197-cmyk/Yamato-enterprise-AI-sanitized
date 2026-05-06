@@ -23,6 +23,7 @@ class CreateQuotationTaskCommand:
     max_file_size: int
     owner_id: str
     owner_username: str
+    owner_ip: Optional[str]
     role_snapshot: str
 
 
@@ -82,6 +83,7 @@ class CreateQuotationTaskUseCase:
             metadata={
                 "owner_id": cmd.owner_id,
                 "owner_username": cmd.owner_username,
+                "owner_ip": cmd.owner_ip,
                 "file_id": stored_file_id,
                 "file_name": cmd.file_name or unique_name,
             },
@@ -91,6 +93,7 @@ class CreateQuotationTaskUseCase:
             task_id=task_id,
             owner_id=cmd.owner_id,
             owner_username=cmd.owner_username,
+            owner_ip=cmd.owner_ip,
             role_snapshot=cmd.role_snapshot,
             uploaded_file_id=stored_file_id,
             uploaded_file_name=cmd.file_name or unique_name,

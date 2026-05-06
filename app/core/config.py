@@ -247,6 +247,10 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     # Cap in-memory per-IP message counter entries to avoid unbounded growth
     WS_MAX_TRACKED_IPS_FOR_COUNTERS: int = Field(2000, ge=100, le=100000, env="WS_MAX_TRACKED_IPS_FOR_COUNTERS")
 
+    # Quotation queue runtime concurrency limits
+    QUOTATION_MAX_RUNNING_PER_OWNER: int = Field(2, ge=1, le=20, env="QUOTATION_MAX_RUNNING_PER_OWNER")
+    QUOTATION_MAX_RUNNING_PER_IP: int = Field(2, ge=1, le=20, env="QUOTATION_MAX_RUNNING_PER_IP")
+
     # Headless document conversion; abort hung soffice processes
     LIBREOFFICE_SUBPROCESS_TIMEOUT_SEC: int = Field(300, ge=30, le=3600, env="LIBREOFFICE_SUBPROCESS_TIMEOUT_SEC")
 

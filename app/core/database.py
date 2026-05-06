@@ -118,7 +118,7 @@ def init_db_tables():
                     "FROM information_schema.columns "
                     "WHERE table_name='data_pending' AND column_name='status'"
                 )).fetchone()
-                
+
                 if not result:
                     logger.info("[info] 发现 data_pending 表缺少 status 列，正在添加...")
                     conn.execute(text(
@@ -128,6 +128,27 @@ def init_db_tables():
                     logger.info("[success] 成功向 data_pending 表添加 status 列")
         except Exception as mig_e:
             logger.error(f"[warning] data_pending 表迁移失败（如果表还未创建可忽略此错误）: {mig_e}")
+
+        try:
+            with engine.connect() as conn:
+                owner_ip_column = conn.execute(text(
+                    "SELECT column_name "
+                    "FROM information_schema.columns "
+                    "WHERE table_name='quotation_tasks' AND column_name='owner_ip'"
+                )).fetchone()
+                if not owner_ip_column:
+                    logger.info("[info] 发现 quotation_tasks 表缺少 owner_ip 列，正在添加...")
+                    conn.execute(text("ALTER TABLE quotation_tasks ADD COLUMN owner_ip VARCHAR(64)"))
+                    conn.commit()
+                    logger.info("[success] 成功向 quotation_tasks 表添加 owner_ip 列")
+
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_quotation_tasks_owner_ip "
+                    "ON quotation_tasks (owner_ip)"
+                ))
+                conn.commit()
+        except Exception as mig_e:
+            logger.error(f"[warning] quotation_tasks.owner_ip 迁移失败（如果表还未创建可忽略此错误）: {mig_e}")
 
         table_names = [table.name for table in Base.metadata.sorted_tables]
         logger.info(f"[success] 数据库表初始化完成，共 {len(table_names)} 个表: {', '.join(table_names)}")

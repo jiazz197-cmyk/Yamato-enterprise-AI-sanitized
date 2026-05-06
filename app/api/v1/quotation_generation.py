@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+import ipaddress
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -94,6 +96,64 @@ class ApproveTaskResponse(BaseModel):
 
 def _is_admin_like(user: User) -> bool:
     return user.role in (UserRole.admin, UserRole.superuser)
+
+
+def _build_trusted_proxy_networks() -> list[Any]:
+    networks: list[Any] = []
+    for raw in settings.TRUSTED_PROXIES:
+        value = str(raw).strip()
+        if not value:
+            continue
+        try:
+            if "/" in value:
+                networks.append(ipaddress.ip_network(value, strict=False))
+            else:
+                ip = ipaddress.ip_address(value)
+                prefix = 32 if ip.version == 4 else 128
+                networks.append(ipaddress.ip_network(f"{ip}/{prefix}", strict=False))
+        except ValueError:
+            logger.warning("Ignored invalid trusted proxy config: %s", value)
+    return networks
+
+
+_TRUSTED_PROXY_NETWORKS = _build_trusted_proxy_networks()
+
+
+def _is_trusted_proxy(client_ip: str) -> bool:
+    if not _TRUSTED_PROXY_NETWORKS:
+        return False
+    try:
+        ip_obj = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+    return any(ip_obj in network for network in _TRUSTED_PROXY_NETWORKS)
+
+
+def _extract_request_client_ip(request: Request) -> str:
+    direct_ip = (request.client.host if request.client else "") or "unknown"
+    if not settings.TRUST_PROXY_HEADERS:
+        return direct_ip
+    if not _is_trusted_proxy(direct_ip):
+        return direct_ip
+
+    x_forwarded_for = request.headers.get("x-forwarded-for", "")
+    if not x_forwarded_for:
+        return direct_ip
+
+    first_hop = x_forwarded_for.split(",", 1)[0].strip()
+    try:
+        ipaddress.ip_address(first_hop)
+    except ValueError:
+        logger.warning("Invalid X-Forwarded-For value: %s", x_forwarded_for)
+        return direct_ip
+    return first_hop
+
+
+def _build_content_disposition(filename: str) -> str:
+    cleaned = str(filename or "download.bin").replace("\r", "").replace("\n", "").replace('"', "")
+    ascii_fallback = cleaned.encode("ascii", errors="ignore").decode("ascii").strip() or "download.bin"
+    utf8_encoded = quote(cleaned)
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8_encoded}"
 
 
 def _compact_query_result(value: Any) -> Any:
@@ -189,6 +249,7 @@ def _check_task_permission(task: QuotationTask, current_user: User) -> None:
 
 @router.post("/tasks", response_model=QuotationTaskSubmitResponse, summary="创建报价生成任务")
 async def create_quotation_task(
+    request: Request,
     file: UploadFile = File(..., description="仅支持 PDF 文件"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -209,6 +270,7 @@ async def create_quotation_task(
             max_file_size=settings.MAX_FILE_SIZE,
             owner_id=str(current_user.id),
             owner_username=current_user.username,
+            owner_ip=_extract_request_client_ip(request),
             role_snapshot=current_user.role.value,
         )
     )
@@ -329,7 +391,7 @@ async def get_quotation_task_file(
     return StreamingResponse(
         stream_file(),
         media_type=task.uploaded_file_content_type,
-        headers={"Content-Disposition": f'attachment; filename=\"{task.uploaded_file_name}\"'},
+        headers={"Content-Disposition": _build_content_disposition(task.uploaded_file_name)},
     )
 
 
@@ -370,5 +432,5 @@ async def get_quotation_task_u8_by_type_workbook(
     return StreamingResponse(
         stream_xlsx(),
         media_type=_XLSX_MEDIA_TYPE,
-        headers={"Content-Disposition": f'attachment; filename=\"{safe_name}\"'},
+        headers={"Content-Disposition": _build_content_disposition(safe_name)},
     )

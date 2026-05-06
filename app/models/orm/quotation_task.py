@@ -26,6 +26,7 @@ class QuotationTask(Base):
     task_id = Column(String(128), unique=True, nullable=False, index=True)
     owner_id = Column(String(64), nullable=False, index=True)
     owner_username = Column(String(64), nullable=False, index=True)
+    owner_ip = Column(String(64), nullable=True, index=True)
     role_snapshot = Column(String(32), nullable=False)
     status = Column(String(32), nullable=False, index=True, default=QuotationTaskStatus.queued.value)
     progress = Column(Integer, nullable=False, default=0)

@@ -20,6 +20,7 @@ class QuotationTaskSnapshot:
     task_id: str
     owner_id: str
     owner_username: str
+    owner_ip: Optional[str]
     role_snapshot: str
     status: str
     progress: int

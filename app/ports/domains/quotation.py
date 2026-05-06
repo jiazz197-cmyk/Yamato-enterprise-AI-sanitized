@@ -62,6 +62,7 @@ class QuotationTaskRepoPort(Protocol):
         task_id: str,
         owner_id: str,
         owner_username: str,
+        owner_ip: Optional[str],
         role_snapshot: str,
         uploaded_file_id: int,
         uploaded_file_name: str,
