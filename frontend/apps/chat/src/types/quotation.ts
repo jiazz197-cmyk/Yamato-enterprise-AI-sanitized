@@ -129,6 +129,15 @@ export interface QuotationTaskListResponse {
   items: QuotationTaskItem[]
 }
 
+export interface ListQuotationTasksParams {
+  status?: string
+  ownerUsername?: string
+  limit?: number
+  fullResult?: boolean
+  activeOnly?: boolean
+  signal?: AbortSignal
+}
+
 export interface CreateQuotationTaskResponse {
   task_id: string
   status: QuotationTaskStatus

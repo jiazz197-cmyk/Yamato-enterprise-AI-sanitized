@@ -283,7 +283,7 @@ class ExecutorManager:
                 if not acquired:
                     logger.debug(f"任务 {task_id} token 清理延迟（锁被占用）")
                     try:
-                        self._executor.submit(lambda: self._delayed_cleanup(task_id))
+                        threading.Timer(0.1, self._delayed_cleanup, args=(task_id,)).start()
                     except:
                         pass
                     return

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 import ipaddress
+import json
+import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -205,6 +207,29 @@ def _compact_result_payload(payload: Any, *, include_pdm_items: bool) -> Any:
     return compact
 
 
+def _safe_json_size(value: Any) -> Optional[int]:
+    try:
+        return len(json.dumps(value, ensure_ascii=False, default=str))
+    except Exception:
+        return None
+
+
+def _count_statuses(tasks: List[QuotationTask]) -> Dict[str, int]:
+    counts = {"awaiting_approval": 0, "active": 0, "completed": 0}
+    for task in tasks:
+        if task.status == "awaiting_approval":
+            counts["awaiting_approval"] += 1
+        if task.status in {"queued", "running", "awaiting_approval"}:
+            counts["active"] += 1
+        if task.status == "completed":
+            counts["completed"] += 1
+    return counts
+
+
+def _log_list_tasks_diag(event: str, **details: Any) -> None:
+    logger.info("[quotation_tasks_diag] %s | %s", event, details)
+
+
 def _serialize_task(
     task: QuotationTask,
     *,
@@ -296,30 +321,91 @@ async def list_quotation_tasks(
     owner_username: Optional[str] = Query(None, description="管理员可按用户名过滤"),
     limit: int = Query(100, ge=1, le=500),
     full_result: bool = Query(False, description="是否返回完整任务结果；默认仅返回摘要，避免大 U8 结果卡住前端"),
+    active_only: bool = Query(False, description="仅返回活动任务(queued/running/awaiting_approval)，不含大结果"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> QuotationTaskListResponse:
+    started_at = time.perf_counter()
+    _log_list_tasks_diag(
+        "list_tasks_query_started",
+        limit=limit,
+        full_result=full_result,
+        active_only=active_only,
+        status_filter=status_filter,
+        owner_username=owner_username,
+        current_user=current_user.username,
+        current_role=current_user.role.value,
+    )
     query = db.query(QuotationTask)
-    if not full_result:
+    if not full_result and not active_only:
+        query = query.options(defer(QuotationTask.result_payload))
+    elif active_only:
         query = query.options(defer(QuotationTask.result_payload))
     if not _is_admin_like(current_user):
         query = query.filter(QuotationTask.owner_id == str(current_user.id))
     elif owner_username:
         query = query.filter(QuotationTask.owner_username == owner_username)
-    if status_filter:
+    if active_only:
+        query = query.filter(
+            QuotationTask.status.in_(["queued", "running", "awaiting_approval"])
+        )
+    elif status_filter:
         query = query.filter(QuotationTask.status == status_filter)
+    query_started_at = time.perf_counter()
     tasks = query.order_by(QuotationTask.created_at.desc()).limit(limit).all()
-    return QuotationTaskListResponse(
-        total=len(tasks),
-        items=[
-            _serialize_task(
-                task,
-                full_result=full_result,
-                load_result_payload=full_result or task.status == "awaiting_approval",
-            )
-            for task in tasks
-        ],
+    query_done_at = time.perf_counter()
+    status_counts = _count_statuses(tasks)
+    included_result_payload_count = sum(
+        1 for task in tasks if (full_result or task.status == "awaiting_approval") and not active_only
     )
+    _log_list_tasks_diag(
+        "list_tasks_query_done",
+        tasks_count=len(tasks),
+        awaiting_approval_count=status_counts["awaiting_approval"],
+        active_count=status_counts["active"],
+        completed_count=status_counts["completed"],
+        included_result_payload_count=included_result_payload_count,
+        active_only=active_only,
+        query_ms=round((query_done_at - query_started_at) * 1000, 2),
+        elapsed_ms=round((query_done_at - started_at) * 1000, 2),
+    )
+    load_payload_for_approval = not active_only
+    serialized_items = [
+        _serialize_task(
+            task,
+            full_result=full_result,
+            load_result_payload=full_result or (task.status == "awaiting_approval" and load_payload_for_approval),
+        )
+        for task in tasks
+    ]
+    serialize_done_at = time.perf_counter()
+    response = QuotationTaskListResponse(
+        total=len(tasks),
+        items=serialized_items,
+    )
+    response_ready_at = time.perf_counter()
+    approx_payload_chars = _safe_json_size(response.model_dump(mode="json"))
+    _log_list_tasks_diag(
+        "list_tasks_serialize_done",
+        tasks_count=len(tasks),
+        serialize_ms=round((serialize_done_at - query_done_at) * 1000, 2),
+        elapsed_ms=round((serialize_done_at - started_at) * 1000, 2),
+        approx_payload_chars=approx_payload_chars,
+    )
+    _log_list_tasks_diag(
+        "list_tasks_response_ready",
+        tasks_count=len(tasks),
+        total_ms=round((response_ready_at - started_at) * 1000, 2),
+        query_ms=round((query_done_at - query_started_at) * 1000, 2),
+        serialize_ms=round((serialize_done_at - query_done_at) * 1000, 2),
+        response_build_ms=round((response_ready_at - serialize_done_at) * 1000, 2),
+        approx_payload_chars=approx_payload_chars,
+        included_result_payload_count=included_result_payload_count,
+        awaiting_approval_count=status_counts["awaiting_approval"],
+        active_count=status_counts["active"],
+        completed_count=status_counts["completed"],
+    )
+    return response
 
 
 @router.get("/tasks/{task_id}", response_model=QuotationTaskItemResponse, summary="查询报价任务详情")

@@ -4,6 +4,7 @@ import type {
   CancelQuotationTaskResponse,
   CreateQuotationTaskResponse,
   DeleteQuotationTaskResponse,
+  ListQuotationTasksParams,
   QuotationTaskItem,
   QuotationTaskListResponse,
 } from '../types/quotation'
@@ -35,13 +36,9 @@ export const createQuotationTask = async (
   return response.json()
 }
 
-export const listQuotationTasks = async (params?: {
-  status?: string
-  ownerUsername?: string
-  limit?: number
-  fullResult?: boolean
-  signal?: AbortSignal
-}): Promise<QuotationTaskListResponse> => {
+export const listQuotationTasks = async (
+  params?: ListQuotationTasksParams
+): Promise<QuotationTaskListResponse> => {
   const query = new URLSearchParams()
   if (params?.status) {
     query.set('status', params.status)
@@ -55,10 +52,25 @@ export const listQuotationTasks = async (params?: {
   if (params?.fullResult) {
     query.set('full_result', 'true')
   }
+  if (params?.activeOnly) {
+    query.set('active_only', 'true')
+  }
 
   const queryString = query.toString()
   const endpoint = queryString ? `/quotation/tasks?${queryString}` : '/quotation/tasks'
   return apiRequest<QuotationTaskListResponse>(endpoint, { signal: params?.signal })
+}
+
+export const listActiveQuotationTasks = async (params?: {
+  ownerUsername?: string
+  signal?: AbortSignal
+}): Promise<QuotationTaskListResponse> => {
+  return listQuotationTasks({
+    ownerUsername: params?.ownerUsername,
+    activeOnly: true,
+    limit: 100,
+    signal: params?.signal,
+  })
 }
 
 export const getQuotationTask = async (

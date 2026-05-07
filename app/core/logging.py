@@ -85,6 +85,7 @@ def _build_logging_config() -> Dict[str, Any]:
     config["loggers"]["app.database"]["handlers"].append("database_file")
     config["loggers"]["app.requests"]["handlers"].append("requests_file")
     config["loggers"]["app.security"]["handlers"].append("security_file")
+
     return config
 
 
