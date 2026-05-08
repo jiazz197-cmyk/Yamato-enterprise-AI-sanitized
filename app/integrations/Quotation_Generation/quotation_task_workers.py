@@ -493,6 +493,8 @@ def process_quotation_task_phase2_background(
             ExecuteQuotationPhase2Command(
                 pdm_partids=selected_partids,
                 keywords_payload=existing_payload.get("keywords_payload"),
+                pdm_result=existing_payload.get("pdm_result"),
+                approved_partids=selected_partids,
                 progress_callback=update_progress,
                 cancel_checker=token.is_cancelled,
             )

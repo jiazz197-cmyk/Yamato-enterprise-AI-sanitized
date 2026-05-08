@@ -34,6 +34,8 @@ def _response_to_dict(response: Any) -> Dict[str, Any]:
 class ExecuteQuotationPhase2Command:
     pdm_partids: List[str]
     keywords_payload: Optional[Dict[str, Any]] = None
+    pdm_result: Optional[Dict[str, Any]] = None
+    approved_partids: Optional[List[str]] = None
     progress_callback: ProgressCallback = None
     cancel_checker: CancelChecker = None
 
@@ -132,6 +134,8 @@ class ExecuteQuotationPhase2UseCase:
         if isinstance(kw, dict) and kw:
             u8_result_by_type, u8_result_type_summary = group_u8_result_by_type(
                 keywords_payload=kw,
+                pdm_result=cmd.pdm_result,
+                approved_partids=cmd.approved_partids or selected_partids,
                 u8_result=u8_result,
                 pdm_to_u8_mappings=pdm_to_u8_mappings,
             )
