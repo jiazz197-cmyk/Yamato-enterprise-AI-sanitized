@@ -12,15 +12,19 @@ from typing import Any, List
 
 __all__ = [
     "MinioFileStorageAdapter",
+    "OpenpyxlQuotationWorkbookAdapter",
     "QuotationDispatchAdapter",
+    "ResultPayloadQuotationApprovalSelectionAdapter",
     "SqlAlchemyQuotationTaskRepoAdapter",
     "U8ResultByTypeCsvAdapter",
 ]
 
 _EXPORTS = {
     "MinioFileStorageAdapter": ".persistence",
+    "OpenpyxlQuotationWorkbookAdapter": ".workbook",
     "SqlAlchemyQuotationTaskRepoAdapter": ".persistence",
     "QuotationDispatchAdapter": ".persistence",
+    "ResultPayloadQuotationApprovalSelectionAdapter": ".persistence",
     "U8ResultByTypeCsvAdapter": ".u8_result_by_type_csv",
 }
 

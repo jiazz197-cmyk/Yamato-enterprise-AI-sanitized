@@ -16,6 +16,19 @@ class StoredFile:
 
 
 @dataclass
+class QuotationSummarySelectionItem:
+    selection_index: int
+    partid: str
+    u8_parent_inv_code: str
+    type_name: str
+    pdm_name: str
+    query_index: Optional[int]
+    query_keywords: list[str]
+    query_expanded_keywords: list[str]
+    matched_pdm_row: bool
+
+
+@dataclass
 class QuotationTaskSnapshot:
     task_id: str
     owner_id: str

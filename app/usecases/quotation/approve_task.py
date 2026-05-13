@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core.exceptions import APIException
+from app.domain.quotation import build_summary_selection_items
 from app.ports.contracts.tasking import TaskDispatchPort, TaskStatePort
-from app.ports.domains.quotation import QuotationTaskRepoPort
+from app.ports.domains.quotation import QuotationApprovalSelectionPort, QuotationTaskRepoPort
 
 
 @dataclass
@@ -28,10 +29,12 @@ class ApproveQuotationTaskUseCase:
     def __init__(
         self,
         task_repo: QuotationTaskRepoPort,
+        approval_selection: QuotationApprovalSelectionPort,
         task_state: TaskStatePort,
         task_dispatch: TaskDispatchPort,
     ):
         self._task_repo = task_repo
+        self._approval_selection = approval_selection
         self._task_state = task_state
         self._task_dispatch = task_dispatch
 
@@ -84,14 +87,25 @@ class ApproveQuotationTaskUseCase:
                 error_code="EMPTY_APPROVAL_LIST",
             )
 
-        payload["approved_partids"] = approved_partids
+        summary_selection_items = build_summary_selection_items(
+            approved_partids=approved_partids,
+            pdm_result=payload.get("pdm_result") if isinstance(payload.get("pdm_result"), dict) else {},
+            keywords_payload=(
+                payload.get("keywords_payload") if isinstance(payload.get("keywords_payload"), dict) else {}
+            ),
+        )
+        self._approval_selection.save_approved_selection(
+            task_id=cmd.task_id,
+            approved_partids=approved_partids,
+            summary_selection_items=summary_selection_items,
+        )
+
         progress = max(task.progress, 55)
         message = f"已同意 {len(approved_partids)}/{len(available_partids)} 项，开始 U8 查询"
 
         updated = self._task_repo.patch_task(
             cmd.task_id,
             {
-                "result_payload": payload,
                 "status": "running",
                 "message": message,
                 "progress": progress,

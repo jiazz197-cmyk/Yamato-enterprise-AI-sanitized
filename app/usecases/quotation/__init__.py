@@ -5,6 +5,10 @@ from app.usecases.quotation.approve_task import (
     ApproveQuotationTaskResult,
     ApproveQuotationTaskUseCase,
 )
+from app.usecases.quotation.build_workbook import (
+    BuildQuotationWorkbookCommand,
+    BuildQuotationWorkbookUseCase,
+)
 from app.usecases.quotation.cancel_task import (
     CancelQuotationTaskCommand,
     CancelQuotationTaskResult,
@@ -39,6 +43,8 @@ __all__ = [
     "ApproveQuotationTaskCommand",
     "ApproveQuotationTaskResult",
     "ApproveQuotationTaskUseCase",
+    "BuildQuotationWorkbookCommand",
+    "BuildQuotationWorkbookUseCase",
     "DeleteQuotationTaskCommand",
     "DeleteQuotationTaskResult",
     "DeleteQuotationTaskUseCase",

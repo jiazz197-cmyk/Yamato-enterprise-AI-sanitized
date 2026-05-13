@@ -17,11 +17,13 @@ from app.core.logging import get_logger
 from app.core.quotation_dispatcher import quotation_dispatcher
 from app.core.storage import delete_from_minio, download_object_stream
 from app.adapters.quotation.deps import (
+    build_quotation_workbook_use_case,
     build_execute_quotation_phase1_use_case,
     build_execute_quotation_phase2_use_case,
 )
 from app.domain.quotation.exceptions import QuotationPipelineCancelledError, QuotationPipelineError
 from app.domain.quotation.partid_mapping import convert_partids_to_u8_codes
+from app.usecases.quotation.build_workbook import BuildQuotationWorkbookCommand
 from app.usecases.quotation.execute_phase1 import ExecuteQuotationPhase1Command
 from app.usecases.quotation.execute_phase2 import ExecuteQuotationPhase2Command
 from app.models.orm.file_resource import FileResource
@@ -37,6 +39,7 @@ def _upload_u8_result_by_type_xlsx_to_minio(
     task_id: str,
     uploaded_file_name: str,
     u8_result_by_type: Dict[str, Any],
+    summary_selection_items: Any = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Build multi-sheet xlsx from ``u8_result_by_type`` and upload via ``MinioFileStorageAdapter``.
 
@@ -44,11 +47,17 @@ def _upload_u8_result_by_type_xlsx_to_minio(
     """
     # Lazy imports: ``persistence`` imports this module at load time.
     from app.adapters.quotation.persistence import MinioFileStorageAdapter
-    from app.adapters.quotation.u8_result_by_type_csv import U8ResultByTypeCsvAdapter
     from app.core.exceptions import APIException
 
     try:
-        xlsx_export = U8ResultByTypeCsvAdapter().export_xlsx_workbook(u8_result_by_type)
+        workbook_uc = build_quotation_workbook_use_case()
+        xlsx_export = workbook_uc.execute(
+            BuildQuotationWorkbookCommand(
+                uploaded_file_name=uploaded_file_name,
+                u8_result_by_type=u8_result_by_type,
+                summary_selection_items=summary_selection_items,
+            )
+        )
     except ImportError as exc:
         logger.warning("Phase2 skip u8_by_type xlsx: openpyxl missing (%s)", exc)
         return None, None
@@ -522,6 +531,7 @@ def process_quotation_task_phase2_background(
         final_payload: Dict[str, Any] = {
             "keywords_payload": existing_payload.get("keywords_payload"),
             "approved_partids": selected_partids,
+            "summary_selection_items": existing_payload.get("summary_selection_items"),
             "u8_result": _query_result_summary(phase2_result.u8_result),
             "u8_result_by_type": _u8_by_type_summary(full_u8_by_type),
             "u8_result_type_summary": phase2_result.u8_result_type_summary,
@@ -532,6 +542,7 @@ def process_quotation_task_phase2_background(
             task_id=task_id,
             uploaded_file_name=uploaded_file_name,
             u8_result_by_type=full_u8_by_type,
+            summary_selection_items=existing_payload.get("summary_selection_items"),
         )
         if xlsx_path and xlsx_name:
             final_payload["u8_result_by_type_xlsx_minio_path"] = xlsx_path

@@ -18,6 +18,7 @@ from sqlalchemy.orm import defer
 from app.adapters.quotation import (
     MinioFileStorageAdapter,
     QuotationDispatchAdapter,
+    ResultPayloadQuotationApprovalSelectionAdapter,
     SqlAlchemyQuotationTaskRepoAdapter,
 )
 from app.adapters.tasking import TaskManagerStateAdapter, ThreadPoolTaskExecutionAdapter
@@ -473,6 +474,7 @@ async def approve_quotation_task(
     _check_task_permission(task, current_user)
     usecase = ApproveQuotationTaskUseCase(
         task_repo=SqlAlchemyQuotationTaskRepoAdapter(db),
+        approval_selection=ResultPayloadQuotationApprovalSelectionAdapter(db),
         task_state=TaskManagerStateAdapter(),
         task_dispatch=QuotationDispatchAdapter(),
     )
