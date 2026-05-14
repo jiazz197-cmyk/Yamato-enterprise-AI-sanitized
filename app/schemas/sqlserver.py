@@ -14,7 +14,7 @@ class U8BomInventoryRequest(BaseModel):
         ...,
         description="父件编码，支持字符串（逗号/空格分隔）或数组",
     )
-    max_depth: int = Field(20, ge=1, le=50, description="递归最大深度")
+    max_depth: int = Field(3, ge=1, le=50, description="递归最大深度")
 
 
 class PdmBomRequest(BaseModel):
