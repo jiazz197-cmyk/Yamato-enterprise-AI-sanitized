@@ -1,4 +1,4 @@
-import { apiRequest } from './api'
+import { apiRequest, apiRequestFormData } from './api'
 
 export interface ClosingFormRecord {
   id: string
@@ -7,6 +7,8 @@ export interface ClosingFormRecord {
   upload_time: string | null
   uploader: string
   status: string
+  image_url_1?: string | null
+  image_url_2?: string | null
 }
 
 export interface ClosingFormListResponse {
@@ -38,6 +40,10 @@ export const deleteApprovedClosingForm = async (formId: string): Promise<void> =
   await apiRequest(`/closing-form/approved/${formId}`, { method: 'DELETE' })
 }
 
+export const deleteRejectedClosingForm = async (formId: string): Promise<void> => {
+  await apiRequest(`/closing-form/rejected/${formId}`, { method: 'DELETE' })
+}
+
 export const listCollection2Records = async (): Promise<ClosingFormRecord[]> => {
   const data = await apiRequest<ClosingFormListResponse>('/closing-form/collection2/list')
   return data.records ?? []
@@ -45,4 +51,18 @@ export const listCollection2Records = async (): Promise<ClosingFormRecord[]> => 
 
 export const deleteCollection2Record = async (recordId: string): Promise<void> => {
   await apiRequest(`/closing-form/collection2/${recordId}`, { method: 'DELETE' })
+}
+
+interface ImageUploadResult { success: boolean; object_name: string }
+
+export const uploadClosingFormImage = async (file: File): Promise<ImageUploadResult> => {
+  const fd = new FormData()
+  fd.append('image', file)
+  return apiRequestFormData<ImageUploadResult>('/closing-form/image/upload', fd)
+}
+
+export const deleteClosingFormImage = async (objectName: string): Promise<void> => {
+  await apiRequest(`/closing-form/image?object_name=${encodeURIComponent(objectName)}`, {
+    method: 'DELETE',
+  })
 }

@@ -4,7 +4,9 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.core.config import settings
 
 
 class ClosingFormSubmit(BaseModel):
@@ -31,6 +33,15 @@ class ClosingFormSubmit(BaseModel):
     chute_angle: str = Field(..., description="溜槽角度")
     collection_hopper_type: str = Field(..., description="集合斗形式")
     scale_type: str = Field(..., description="单双秤/混料/外挂/特殊")
+    image_url_1: Optional[str] = Field(None, max_length=512)
+    image_url_2: Optional[str] = Field(None, max_length=512)
+
+    @field_validator("image_url_1", "image_url_2")
+    @classmethod
+    def validate_image_url_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.startswith(f"{settings.CLOSING_FORM_IMAGE_PREFIX}/"):
+            raise ValueError("非法的图片路径")
+        return v
 
     def to_formatted_text(self) -> str:
         """生成符合要求的格式字符串"""
@@ -58,6 +69,10 @@ class ClosingFormSubmit(BaseModel):
             f"集合斗形式：{self.collection_hopper_type}",
             f"单双秤/混料/外挂/特殊：{self.scale_type}",
         ]
+        if self.image_url_1:
+            parts.append(f"图片url：{self.image_url_1}")
+        if self.image_url_2:
+            parts.append(f"图片url：{self.image_url_2}")
         return ", ".join(parts)
 
 
@@ -67,6 +82,8 @@ class ClosingFormSubmitResponse(BaseModel):
     success: bool = True
     message: str = "提交成功"
     form_text: Optional[str] = None
+    image_url_1: Optional[str] = None
+    image_url_2: Optional[str] = None
 
 
 class ClosingFormRecord(BaseModel):
@@ -77,6 +94,8 @@ class ClosingFormRecord(BaseModel):
     upload_time: Optional[str] = None
     uploader: str = ""
     status: str = "pending"
+    image_url_1: Optional[str] = None
+    image_url_2: Optional[str] = None
 
 
 class ClosingFormRejectResponse(BaseModel):
@@ -107,6 +126,13 @@ class ClosingFormDeleteResponse(BaseModel):
     success: bool = True
     message: str = "删除成功"
     deleted_id: str
+
+
+class ImageUploadResponse(BaseModel):
+    """图片上传响应"""
+
+    success: bool = True
+    object_name: str
 
 
 class Collection2Record(BaseModel):

@@ -31,3 +31,13 @@ class IntegrationClosingFormAdapter(ClosingFormServicePort):
 
     def delete_approved_closing_form(self, db: Session, record_id: int, deleted_by_username: str) -> Any:
         return closing_form_service.delete_approved_closing_form(db, record_id, deleted_by_username)
+
+    def delete_rejected_closing_form(self, db: Session, form_id: int, deleted_by_username: str) -> Any:
+        return closing_form_service.delete_rejected_closing_form(db, form_id, deleted_by_username)
+
+    def upload_closing_form_image(
+        self, file_stream: Any, original_filename: str, content_type: str, uploader: str
+    ) -> str:
+        return closing_form_service.upload_closing_form_image(
+            file_stream, original_filename, content_type, uploader
+        )
