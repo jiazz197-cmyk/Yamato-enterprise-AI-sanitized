@@ -18,7 +18,6 @@ _SUMMARY_HEADERS = [
     "\u5355\u4ef7",
     "\u91d1\u989d",
     "\u5907\u6ce8",
-    "\u5bf9\u5e94\u5b50\u9875",
 ]
 _FIXED_CHARGE_HEADERS = [
     "\u56fa\u5b9a\u9879",
@@ -27,6 +26,13 @@ _FIXED_CHARGE_HEADERS = [
     "\u91d1\u989d",
     "\u5907\u6ce8",
 ]
+_DETAIL_TOTAL_FIELD_CANDIDATES = (
+    "\u603b\u4ef7",
+    "\u91d1\u989d",
+    "amount",
+    "total_price",
+    "totalPrice",
+)
 
 
 def _excel_sheet_title(raw: str, used: MutableSet[str]) -> str:
@@ -63,6 +69,13 @@ def _collect_fieldnames(rows: Iterable[Mapping[str, Any]]) -> List[str]:
     return ordered
 
 
+def _detail_total_column_index(fieldnames: List[str]) -> int | None:
+    for idx, fieldname in enumerate(fieldnames):
+        if fieldname in _DETAIL_TOTAL_FIELD_CANDIDATES:
+            return idx
+    return None
+
+
 class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
     def export_workbook(self, workbook_data: QuotationWorkbookData) -> QuotationWorkbookExport:
         from openpyxl import Workbook  # noqa: PLC0415
@@ -72,27 +85,55 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
 
         summary_ws = wb.active
         summary_ws.title = _excel_sheet_title(workbook_data.summary_sheet_name, used_titles)
-        summary_ws["A1"] = workbook_data.summary_title
+
+        meta = workbook_data.summary_meta
+        summary_ws["B5"] = meta.pricing_title or workbook_data.summary_title
+        summary_ws["H1"] = "\u62a5\u4ef7\u7f16\u53f7\uff1a"
+        summary_ws["J1"] = meta.quote_number
+        summary_ws["H2"] = "\u5236\u9020\u7f16\u53f7\uff1a"
+        summary_ws["J2"] = meta.manufacturing_number
+        summary_ws["H3"] = "\u578b\u53f7\uff1a"
+        summary_ws["J3"] = meta.model
+        summary_ws["H4"] = "\u7f16\u5236\uff1a"
+        summary_ws["J4"] = meta.prepared_by
+        summary_ws["H5"] = "\u5ba1\u6838\uff1a"
+        summary_ws["J5"] = meta.reviewed_by
+        summary_ws["H6"] = "\u62a5\u4ef7\u65e5\u671f\uff1a"
+        summary_ws["J6"] = meta.quote_date
+        summary_ws["G8"] = meta.tax_note
+        summary_ws["G9"] = "\u5355\u4f4d\uff1a"
+        summary_ws["I9"] = meta.currency_label
+        summary_ws["G10"] = "\u603b\u8ba1\uff1a"
+        summary_ws["I10"] = meta.grand_total
+        summary_ws["A12"] = meta.table_title
         summary_ws.append([])
-        summary_ws.append(_SUMMARY_HEADERS)
+
+        summary_header_row = 13
+        for col_idx, header in enumerate(_SUMMARY_HEADERS, start=1):
+            summary_ws.cell(row=summary_header_row, column=col_idx, value=header)
+
+        row_idx = summary_header_row + 1
         for row in workbook_data.summary_rows:
-            summary_ws.append(
-                [
-                    row.part_no,
-                    row.name,
-                    row.quantity_display,
-                    row.unit_price,
-                    row.amount,
-                    row.remark,
-                    row.detail_sheet_name,
-                ]
-            )
+            summary_ws.cell(row=row_idx, column=1, value=row.part_no)
+            summary_ws.cell(row=row_idx, column=2, value=row.name)
+            summary_ws.cell(row=row_idx, column=3, value=row.quantity_display)
+            summary_ws.cell(row=row_idx, column=4, value=row.unit_price)
+            summary_ws.cell(row=row_idx, column=5, value=row.amount)
+            summary_ws.cell(row=row_idx, column=6, value=row.remark)
+            row_idx += 1
 
         if workbook_data.fixed_charge_rows:
-            summary_ws.append([])
-            summary_ws.append(_FIXED_CHARGE_HEADERS)
+            row_idx += 1
+            for col_idx, header in enumerate(_FIXED_CHARGE_HEADERS, start=1):
+                summary_ws.cell(row=row_idx, column=col_idx, value=header)
+            row_idx += 1
             for row in workbook_data.fixed_charge_rows:
-                summary_ws.append([row.name, row.quantity_display, row.unit_price, row.amount, row.remark])
+                summary_ws.cell(row=row_idx, column=1, value=row.name)
+                summary_ws.cell(row=row_idx, column=2, value=row.quantity_display)
+                summary_ws.cell(row=row_idx, column=3, value=row.unit_price)
+                summary_ws.cell(row=row_idx, column=4, value=row.amount)
+                summary_ws.cell(row=row_idx, column=5, value=row.remark)
+                row_idx += 1
 
         for detail_sheet in workbook_data.detail_sheets:
             ws = wb.create_sheet(title=_excel_sheet_title(detail_sheet.sheet_name, used_titles))
@@ -106,6 +147,11 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
             ws.append(fieldnames)
             for row in detail_sheet.rows:
                 ws.append([row.get(key) for key in fieldnames])
+            total_col_idx = _detail_total_column_index(fieldnames)
+            if total_col_idx is not None:
+                total_row = [None] * len(fieldnames)
+                total_row[total_col_idx] = detail_sheet.total_amount
+                ws.append(total_row)
 
         bio = BytesIO()
         wb.save(bio)

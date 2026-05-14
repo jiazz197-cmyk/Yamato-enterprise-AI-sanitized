@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict
 
 from app.domain.quotation import build_quotation_workbook_data
@@ -15,6 +16,9 @@ class BuildQuotationWorkbookCommand:
     uploaded_file_name: str
     u8_result_by_type: Dict[str, Any]
     summary_selection_items: Any = None
+    raw_extracted_info: Any = None
+    keywords_payload: Any = None
+    generated_at: datetime | None = None
 
 
 class BuildQuotationWorkbookUseCase:
@@ -26,5 +30,8 @@ class BuildQuotationWorkbookUseCase:
             uploaded_file_name=cmd.uploaded_file_name,
             u8_result_by_type=cmd.u8_result_by_type,
             summary_selection_items=cmd.summary_selection_items,
+            raw_extracted_info=cmd.raw_extracted_info,
+            keywords_payload=cmd.keywords_payload,
+            generated_at=cmd.generated_at,
         )
         return self._render_port.export_workbook(workbook_data)

@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
@@ -40,6 +41,8 @@ def _upload_u8_result_by_type_xlsx_to_minio(
     uploaded_file_name: str,
     u8_result_by_type: Dict[str, Any],
     summary_selection_items: Any = None,
+    raw_extracted_info: Any = None,
+    keywords_payload: Any = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Build multi-sheet xlsx from ``u8_result_by_type`` and upload via ``MinioFileStorageAdapter``.
 
@@ -56,6 +59,9 @@ def _upload_u8_result_by_type_xlsx_to_minio(
                 uploaded_file_name=uploaded_file_name,
                 u8_result_by_type=u8_result_by_type,
                 summary_selection_items=summary_selection_items,
+                raw_extracted_info=raw_extracted_info,
+                keywords_payload=keywords_payload,
+                generated_at=datetime.now(ZoneInfo("Asia/Shanghai")),
             )
         )
     except ImportError as exc:
@@ -543,6 +549,8 @@ def process_quotation_task_phase2_background(
             uploaded_file_name=uploaded_file_name,
             u8_result_by_type=full_u8_by_type,
             summary_selection_items=existing_payload.get("summary_selection_items"),
+            raw_extracted_info=existing_payload.get("raw_extracted_info"),
+            keywords_payload=existing_payload.get("keywords_payload"),
         )
         if xlsx_path and xlsx_name:
             final_payload["u8_result_by_type_xlsx_minio_path"] = xlsx_path
