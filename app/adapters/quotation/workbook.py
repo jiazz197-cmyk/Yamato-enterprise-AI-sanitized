@@ -120,6 +120,7 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
             row_idx += 1
 
         if workbook_data.fixed_charge_rows:
+            row_idx += 3
             for row in workbook_data.fixed_charge_rows:
                 summary_ws.cell(row=row_idx, column=2, value=row.name)
                 summary_ws.cell(row=row_idx, column=3, value=row.quantity_display)
@@ -133,7 +134,9 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
                 if cell.value not in (None, ""):
                     cell.font = bold_font
 
-        for cell_range in ("F1:G6", "E8:F10", f"B11:G{row_idx - 1}"):
+        summary_ws["B10"].font = Font(bold=False)
+
+        for cell_range in ("E10:F10", f"B11:G{row_idx - 1}"):
             for rows in summary_ws[cell_range]:
                 for cell in rows:
                     cell.border = thin_border
