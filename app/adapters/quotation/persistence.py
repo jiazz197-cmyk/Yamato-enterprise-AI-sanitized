@@ -191,7 +191,7 @@ class ResultPayloadQuotationApprovalSelectionAdapter(QuotationApprovalSelectionP
     ) -> None:
         task = self._get_task_entity(task_id)
         if task is None:
-            raise APIException("浠诲姟涓嶅瓨鍦?, status_code=404, error_code="NOT_FOUND")
+            raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
 
         payload = dict(task.result_payload or {})
         payload["approved_partids"] = approved_partids
@@ -202,7 +202,7 @@ class ResultPayloadQuotationApprovalSelectionAdapter(QuotationApprovalSelectionP
     def load_summary_selection_items(self, task_id: str) -> list[QuotationSummarySelectionItem]:
         task = self._get_task_entity(task_id)
         if task is None:
-            raise APIException("浠诲姟涓嶅瓨鍦?, status_code=404, error_code="NOT_FOUND")
+            raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
 
         payload = dict(task.result_payload or {})
         raw_items = payload.get("summary_selection_items")
