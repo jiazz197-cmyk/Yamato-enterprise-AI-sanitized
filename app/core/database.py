@@ -131,6 +131,23 @@ def init_db_tables():
 
         try:
             with engine.connect() as conn:
+                for col in ("image_url_1", "image_url_2"):
+                    result = conn.execute(text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name='data_pending' AND column_name=:col"
+                    ), {"col": col}).fetchone()
+                    if not result:
+                        logger.info(f"[info] 发现 data_pending 表缺少 {col} 列，正在添加...")
+                        conn.execute(text(
+                            f"ALTER TABLE data_pending ADD COLUMN {col} VARCHAR(512)"
+                        ))
+                        conn.commit()
+                        logger.info(f"[success] 成功向 data_pending 表添加 {col} 列")
+        except Exception as mig_e:
+            logger.error(f"[warning] data_pending image_url 列迁移失败: {mig_e}")
+
+        try:
+            with engine.connect() as conn:
                 owner_ip_column = conn.execute(text(
                     "SELECT column_name "
                     "FROM information_schema.columns "

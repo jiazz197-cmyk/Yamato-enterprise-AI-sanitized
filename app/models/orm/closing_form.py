@@ -16,3 +16,5 @@ class PendingForm(Base):
     upload_time = Column(String(32), nullable=False)
     status = Column(String(32), nullable=False, default="pending", server_default="pending")
     created_at = Column(DateTime, default=datetime.utcnow)
+    image_url_1 = Column(String(512), nullable=True)
+    image_url_2 = Column(String(512), nullable=True)

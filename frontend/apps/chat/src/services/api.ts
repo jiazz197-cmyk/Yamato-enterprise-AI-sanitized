@@ -142,6 +142,21 @@ export const apiRequest = async <T>(
   return response.json()
 }
 
+export const apiRequestFormData = async <T>(
+  endpoint: string,
+  formData: FormData
+): Promise<T> => {
+  const response = await authorizedFetch(endpoint, {
+    method: 'POST',
+    body: formData,
+  }, { jsonContentType: false })
+
+  if (!response.ok) {
+    await handleApiError(response)
+  }
+  return response.json()
+}
+
 export const authorizedFetch = async (
   endpoint: string,
   options?: RequestInit,

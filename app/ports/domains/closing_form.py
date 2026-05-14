@@ -28,3 +28,11 @@ class ClosingFormServicePort(Protocol):
 
     def delete_approved_closing_form(self, db: Session, record_id: int, deleted_by_username: str) -> Any:
         ...
+
+    def delete_rejected_closing_form(self, db: Session, form_id: int, deleted_by_username: str) -> Any:
+        ...
+
+    def upload_closing_form_image(
+        self, file_stream: Any, original_filename: str, content_type: str, uploader: str
+    ) -> str:
+        ...
