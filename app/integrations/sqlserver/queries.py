@@ -62,7 +62,7 @@ def run_pdm_bom_query(
     payload: PdmBomRequest,
     cancel_checker: Optional[Callable[[], bool]] = None,
 ) -> QueryResponse:
-    """PDM BOM_016. Cooperative cancellation between SQL calls."""
+    """PDM BOM_027. Cooperative cancellation between SQL calls."""
     keyword_groups = normalize_pdm_keywords(payload.keywords)
     if not keyword_groups:
         raise ValidationError(
@@ -81,9 +81,28 @@ def run_pdm_bom_query(
         }
     )
 
+    def extract_model_from_raw_keywords(raw_keywords: Any) -> Optional[str]:
+        """从原始 keywords 中提取 model 参数。"""
+        if isinstance(raw_keywords, dict):
+            # 单个对象: {"type": "机架", "model": "ADW-A-0314S", "attr": {...}}
+            model = raw_keywords.get("model")
+            if model:
+                return str(model).strip()
+        elif isinstance(raw_keywords, list):
+            # 列表: [{"type": "机架", "model": "ADW-A-0314S"}, ...]
+            for item in raw_keywords:
+                if isinstance(item, dict):
+                    model = item.get("model")
+                    if model:
+                        return str(model).strip()
+        return None
+
     try:
         rows: List[Dict[str, Any]] = []
         executed_query_count = 0
+
+        # 从原始 payload.keywords 提取 model
+        model = extract_model_from_raw_keywords(payload.keywords)
 
         for idx, group in enumerate(keyword_groups, start=1):
             raise_if_cancelled(cancel_checker)
@@ -101,15 +120,16 @@ def run_pdm_bom_query(
                     continue
 
                 logger.debug(
-                    "PDM 关键词转换: group_index=%s, product_type=%r, raw_group=%s, expanded_keywords=%s",
+                    "PDM 关键词转换: group_index=%s, product_type=%r, model=%r, raw_group=%s, expanded_keywords=%s",
                     idx,
                     product_type,
+                    model,
                     group,
                     mapping_debug,
                 )
 
                 executed_query_count += 1
-                group_rows = query_pdm_bom_merged(alts_per_keyword, client=shared_client)
+                group_rows = query_pdm_bom_merged(alts_per_keyword, model=model, client=shared_client)
                 for row in group_rows:
                     item = dict(row)
                     item["QUERY_INDEX"] = idx
