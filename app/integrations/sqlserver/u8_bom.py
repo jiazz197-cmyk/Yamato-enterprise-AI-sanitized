@@ -111,31 +111,45 @@ def _query_u8_bom_inventory(
                         NULLIF(LTRIM(RTRIM(vp.cInvCode)), '')
                     ) AS PartInvCode
                 FROM v_bas_part vp
+            ),
+            RawData AS (
+                SELECT
+                    parent.PartInvCode AS ParentInvCode,
+                    child.PartInvCode AS ChildInvCode,
+                    oc.BomId,
+                    b.ModifyDate,
+                    b.ModifyTime,
+                    oc.SortSeq,
+                    oc.BaseQtyN,
+                    oc.BaseQtyD,
+                    oc.CompScrap,
+                    CAST(1.0 * oc.BaseQtyN / NULLIF(oc.BaseQtyD, 0) AS DECIMAL(38,12)) AS QtyPer,
+                    ic.cInvName,
+                    ic.iInvSprice,
+                    ic.iInvNcost,
+                    ic.cInvStd,
+                    ic.cInvDepCode,
+                    ic.cDefWareHouse,
+                    child.PartId AS ChildPartId,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY parent.PartInvCode, child.PartInvCode
+                        ORDER BY b.ModifyDate DESC, b.ModifyTime DESC, oc.SortSeq
+                    ) AS rn
+                FROM PartMap parent
+                JOIN bom_parent bp ON bp.ParentId = parent.PartId
+                JOIN bom_opcomponent oc ON oc.BomId = bp.BomId
+                JOIN bom_bom b ON b.BomId = bp.BomId AND b.Status = 3
+                JOIN PartMap child ON child.PartId = oc.ComponentId
+                LEFT JOIN Inventory ic ON ic.cInvCode = child.PartInvCode
+                WHERE parent.PartInvCode = N'{safe_code}'
             )
             SELECT
-                parent.PartInvCode AS ParentInvCode,
-                child.PartInvCode AS ChildInvCode,
-                oc.BomId,
-                oc.SortSeq,
-                oc.BaseQtyN,
-                oc.BaseQtyD,
-                oc.CompScrap,
-                CAST(1.0 * oc.BaseQtyN / NULLIF(oc.BaseQtyD, 0) AS DECIMAL(38,12)) AS QtyPer,
-                ic.cInvName,
-                ic.iInvSprice,
-                ic.iInvNcost,
-                ic.cInvStd,
-                ic.cInvDepCode,
-                ic.cDefWareHouse,
-                child.PartId AS ChildPartId
-            FROM PartMap parent
-            JOIN bom_parent bp ON bp.ParentId = parent.PartId
-            JOIN bom_opcomponent oc ON oc.BomId = bp.BomId
-            JOIN bom_bom b ON b.BomId = bp.BomId AND b.Status = 3
-            JOIN PartMap child ON child.PartId = oc.ComponentId
-            LEFT JOIN Inventory ic ON ic.cInvCode = child.PartInvCode
-            WHERE parent.PartInvCode = N'{safe_code}'
-            ORDER BY oc.SortSeq, child.PartInvCode
+                ParentInvCode, ChildInvCode, BomId, ModifyDate, ModifyTime,
+                SortSeq, BaseQtyN, BaseQtyD, CompScrap, QtyPer,
+                cInvName, iInvSprice, iInvNcost, cInvStd, cInvDepCode, cDefWareHouse, ChildPartId
+            FROM RawData
+            WHERE rn = 1
+            ORDER BY SortSeq, ChildInvCode
         """
         rows = client.query(sql)
         if not rows and parent_inv_code in root_codes_set:
@@ -257,6 +271,7 @@ def format_u8_output_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "子件名称": row.get("CHINANAME"),
                 "材料编码（物料编码）": row.get("cInvCode"),
                 "基本用量": row.get("COUNTS"),
+                "累计用量": row.get("CUM_QTY"),
                 "供应类型": supply_type,
                 "仓库编码": row.get("cDefWareHouse"),
                 "领料部门": row.get("cInvDepCode"),
