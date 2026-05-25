@@ -211,7 +211,11 @@ class SpecificationMapping:
                 attr_payload[attr_key] = value
 
             if attr_payload:
-                keywords.append({"type": type_name, "attr": attr_payload})
+                keyword_entry: Dict[str, Any] = {"type": type_name, "attr": attr_payload}
+                model_value = attr_payload.get("model")
+                if model_value is not None:
+                    keyword_entry["model"] = model_value
+                keywords.append(keyword_entry)
 
         return {"keywords": keywords}, missing_count
 

@@ -247,6 +247,9 @@ def test_keywords_payload_is_jsonable_and_shape_correct() -> None:
         assert isinstance(entry, dict)
         assert isinstance(entry.get("type"), str) and entry["type"]
         assert isinstance(entry.get("attr"), dict)
+        attr = entry.get("attr") or {}
+        if "model" in attr:
+            assert entry.get("model") == attr["model"]
 
 
 def test_missing_spec_falls_back_to_fuzzy_on_retries() -> None:
