@@ -82,8 +82,11 @@ class CreateQuotationTaskUseCase:
 
         task_id = await self._task_state.create_task(
             task_type="quotation_generation",
+            # owner_id is intentionally NOT replicated here: the authoritative
+            # source for quotation_generation_* tasks is the `quotation_tasks` row,
+            # resolved via TaskOwnerRegistry. owner_username/owner_ip stay only as
+            # human-readable context for event broadcasts and logs.
             metadata={
-                "owner_id": cmd.owner_id,
                 "owner_username": cmd.owner_username,
                 "owner_ip": cmd.owner_ip,
                 "file_id": stored_file_id,

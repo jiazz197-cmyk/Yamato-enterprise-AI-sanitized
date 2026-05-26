@@ -21,6 +21,7 @@ nginx/nginx.conf
 .env
 .env.local
 .env.*.local
+.env.bak.*
 
 # Charts output
 charts1/

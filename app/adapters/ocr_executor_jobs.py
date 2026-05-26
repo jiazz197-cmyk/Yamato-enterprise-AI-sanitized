@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from app.core.executor import executor_manager
+from app.core.task_owner_registry import task_owner_registry
 from app.integrations.ocr.image_upload_tasks import background_image_upload_task
 from app.integrations.ocr.pdf2image import get_pdf_page_count
 from app.integrations.ocr.pdf_convert_tasks import background_pdf_convert_task
@@ -17,7 +18,9 @@ class ExecutorManagerAsyncTaskAdapter(ExecutorAsyncTaskPort):
         return executor_manager.get_task_future(task_id)
 
     def get_task_owner(self, task_id: str) -> str:
-        return executor_manager.get_task_owner(task_id)
+        # Sync, cache-only lookup. OCR async jobs (pdf_convert_*, image_upload_*)
+        # have no persistent source of truth; on cache miss the task is effectively gone.
+        return task_owner_registry.peek_cache(task_id)
 
     def cancel_task(self, task_id: str) -> bool:
         return executor_manager.cancel_task(task_id)
@@ -44,7 +47,7 @@ class PdfConvertJobAdapter(PdfConvertJobPort):
         normalized_uploader: str,
     ) -> str:
         task_id = executor_manager.generate_task_id("pdf_convert")
-        executor_manager.set_task_owner(task_id, owner_id)
+        task_owner_registry.cache(task_id, owner_id)
         executor_manager.submit_task(
             task_id,
             background_pdf_convert_task,
@@ -72,7 +75,7 @@ class ImageUploadJobAdapter(ImageUploadJobPort):
         file_name_prefix: Optional[str],
     ) -> str:
         task_id = executor_manager.generate_task_id("image_upload")
-        executor_manager.set_task_owner(task_id, owner_id)
+        task_owner_registry.cache(task_id, owner_id)
         executor_manager.submit_task(
             task_id,
             background_image_upload_task,

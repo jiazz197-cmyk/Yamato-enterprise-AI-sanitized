@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from app.core.executor import executor_manager
 from app.core.task_manager import task_manager
+from app.core.task_owner_registry import task_owner_registry
 from app.ports.contracts.tasking import TaskExecutionPort, TaskStatePort
 from app.ports.dto.task_manager import TaskManagerTaskSnapshot
 
@@ -58,7 +59,9 @@ class TaskManagerStateAdapter(TaskStatePort):
 
 class ThreadPoolTaskExecutionAdapter(TaskExecutionPort):
     def set_task_owner(self, task_id: str, owner_id: str) -> None:
-        executor_manager.set_task_owner(task_id, owner_id)
+        # Owner data is owned by TaskOwnerRegistry. This call only warms the cache;
+        # the canonical source is the task's domain table (DB / Redis metadata).
+        task_owner_registry.cache(task_id, owner_id)
 
     def cancel_task(self, task_id: str) -> bool:
         return executor_manager.cancel_task(task_id)

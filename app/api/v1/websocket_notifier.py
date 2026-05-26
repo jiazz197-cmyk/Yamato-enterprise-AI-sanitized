@@ -7,14 +7,13 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, WebSocketExceptio
 
 from app.core.logging import get_logger
 from app.core.security import require_roles
+from app.core.task_owner_registry import resolve_task_owner_id
 from app.core.websocket_task_manager import (
     WebSocketTaskObserver,
     decode_ws_bearer_user_id,
     load_user_for_websocket,
     ws_manager,
 )
-from app.core.executor import executor_manager
-from app.core.task_manager import task_manager
 from app.models.orm.platform.user import User, UserRole
 
 logger = get_logger("websocket_notifier")
@@ -95,12 +94,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
         await websocket.close(code=exc.code, reason=exc.reason or "认证失败")
         return
 
-    owner_id = executor_manager.get_task_owner(task_id)
-    ws_user = load_user_for_websocket(user_id)
-    if not owner_id:
-        task_status = await task_manager.get_task_status(task_id)
-        if task_status:
-            owner_id = str(task_status.metadata.get("owner_id", "")).strip()
+    owner_id = await resolve_task_owner_id(task_id)
     if not owner_id:
         logger.warning(
             "[ws_diag] ws_connect_rejected: task_id=%s client_ip=%s user_id=%s reason=missing_owner elapsed_ms=%.2f",
@@ -112,6 +106,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="任务缺少归属信息，禁止订阅")
         return
 
+    ws_user = load_user_for_websocket(user_id)
     is_admin_like = bool(ws_user and ws_user.role in (UserRole.admin, UserRole.superuser))
     if owner_id != user_id and not is_admin_like:
         logger.warning(
