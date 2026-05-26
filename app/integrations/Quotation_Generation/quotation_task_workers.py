@@ -17,6 +17,7 @@ from app.core.executor import CancellationToken, executor_manager
 from app.core.logging import get_logger
 from app.core.quotation_dispatcher import quotation_dispatcher
 from app.core.storage import delete_from_minio, download_object_stream
+from app.core.task_owner_registry import task_owner_registry
 from app.adapters.quotation.deps import (
     build_quotation_workbook_use_case,
     build_execute_quotation_phase1_use_case,
@@ -191,7 +192,7 @@ def dispatch_quotation_queue_for_owner(owner_id: str) -> None:
                     process_quotation_task_background,
                     item.task_id,
                 )
-                executor_manager.set_task_owner(item.task_id, item.owner_id)
+                task_owner_registry.cache(item.task_id, item.owner_id)
                 future.add_done_callback(
                     lambda _, owner_id=item.owner_id: dispatch_quotation_queue_for_owner(owner_id)
                 )
@@ -624,7 +625,7 @@ def dispatch_quotation_phase2(task_id: str, owner_id: str) -> None:
             process_quotation_task_phase2_background,
             task_id,
         )
-        executor_manager.set_task_owner(task_id, owner_id)
+        task_owner_registry.cache(task_id, owner_id)
         future.add_done_callback(lambda _, oid=owner_id: dispatch_quotation_queue_for_owner(oid))
     except Exception as exc:
         logger.error(f"Phase2 提交执行器失败 {task_id}: {exc}", exc_info=True)

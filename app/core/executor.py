@@ -87,7 +87,6 @@ class ExecutorManager:
         )
         self._max_task_history = 60
         self._task_futures: Dict[str, Future] = {}
-        self._task_owner_map: Dict[str, str] = {}
         self._cancellation_tokens: Dict[str, CancellationToken] = {}
         self._lock = threading.Lock()
         self._shutdown = False
@@ -99,7 +98,7 @@ class ExecutorManager:
         logger.info(f"初始化全局线程池: {self._max_workers} workers")
 
     def _trim_task_history_locked(self):
-        """在持锁状态下裁剪任务历史。只驱逐已结束（Future.done()）的项，绝不删除运行中任务的 Future/token/owner。"""
+        """在持锁状态下裁剪任务历史。只驱逐已结束（Future.done()）的项，绝不删除运行中任务的 Future/token。"""
         while len(self._task_futures) > self._max_task_history:
             evict_id = next(
                 (tid for tid, fut in self._task_futures.items() if fut.done()),
@@ -107,38 +106,19 @@ class ExecutorManager:
             )
             if evict_id is None:
                 logger.warning(
-                    "任务历史超过上限 %s 且均为运行中，跳过驱逐，避免破坏取消与鉴权",
+                    "任务历史超过上限 %s 且均为运行中，跳过驱逐，避免破坏取消",
                     self._max_task_history,
                 )
                 break
             self._task_futures.pop(evict_id, None)
-            self._task_owner_map.pop(evict_id, None)
             self._cancellation_tokens.pop(evict_id, None)
-
-    def set_task_owner(self, task_id: str, owner_id: str):
-        """记录任务归属用户，并触发历史裁剪。"""
-        normalized_owner = str(owner_id).strip()
-        if not normalized_owner:
-            return
-        with self._lock:
-            self._task_owner_map[task_id] = normalized_owner
-            self._trim_task_history_locked()
-
-    def get_task_owner(self, task_id: str) -> str:
-        """供鉴权：读取任务 owner。"""
-        with self._lock:
-            return str(self._task_owner_map.get(task_id, "")).strip()
-
-    def remove_task_owner(self, task_id: str):
-        """清理任务元数据时去掉 owner 映射。"""
-        with self._lock:
-            self._task_owner_map.pop(task_id, None)
 
     def forget_task(self, task_id: str) -> bool:
         """Forget a previously submitted task so the same task_id can be submitted again.
 
         Only effective if the prior Future has finished; otherwise refuses to avoid
-        orphaning a running worker. Removes Future, cancellation token, and owner.
+        orphaning a running worker. Removes Future and cancellation token.
+        Owner data is held by `TaskOwnerRegistry`, not here.
         Returns True when the task was present and cleared.
         """
         with self._lock:
@@ -148,7 +128,6 @@ class ExecutorManager:
             had_any = task_id in self._task_futures or task_id in self._cancellation_tokens
             self._task_futures.pop(task_id, None)
             self._cancellation_tokens.pop(task_id, None)
-            self._task_owner_map.pop(task_id, None)
             return had_any
     
     def set_task_manager(self, task_manager: Optional['TaskManager'], auto_sync: bool = True):
@@ -404,7 +383,6 @@ class ExecutorManager:
         finally:
             with self._lock:
                 self._task_futures.clear()
-                self._task_owner_map.clear()
                 self._cancellation_tokens.clear()
 
 
