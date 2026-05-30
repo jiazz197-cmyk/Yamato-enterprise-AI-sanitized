@@ -37,7 +37,7 @@ def _run_coro_in_fresh_event_loop(coro: Any) -> Any:
             pass
 
 
-logger.info(f"[info] Python 版本: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}, 支持高级 shutdown: {PYTHON_39_PLUS}")
+# Python version info is logged once at application startup (main.py lifespan).
 
 
 class CancellationToken:

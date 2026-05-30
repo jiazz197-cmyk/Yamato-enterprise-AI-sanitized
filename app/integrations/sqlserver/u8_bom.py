@@ -15,7 +15,7 @@ from app.core.logging import get_logger
 from app.integrations.sqlserver.client import close_sql_client, get_sql_client
 from app.integrations.sqlserver.exceptions import raise_if_cancelled
 
-logger = get_logger("sqlserver")
+logger = get_logger("database.sqlserver")
 
 
 def split_parent_inv_codes(value: Any) -> List[str]:

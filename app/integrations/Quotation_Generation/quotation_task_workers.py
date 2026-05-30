@@ -16,7 +16,10 @@ from app.core.database import SessionLocal
 from app.core.executor import CancellationToken, executor_manager
 from app.core.logging import get_logger
 from app.core.quotation_dispatcher import quotation_dispatcher
-from app.core.storage import delete_from_minio, download_object_stream
+from app.core.storage import download_object_stream
+from app.integrations.Quotation_Generation.quotation_task_cleanup import (
+    cleanup_task_files_by_id,
+)
 from app.core.task_owner_registry import task_owner_registry
 from app.adapters.quotation.deps import (
     build_quotation_workbook_use_case,
@@ -28,7 +31,6 @@ from app.domain.quotation.partid_mapping import convert_partids_to_u8_codes
 from app.usecases.quotation.build_workbook import BuildQuotationWorkbookCommand
 from app.usecases.quotation.execute_phase1 import ExecuteQuotationPhase1Command
 from app.usecases.quotation.execute_phase2 import ExecuteQuotationPhase2Command
-from app.models.orm.file_resource import FileResource
 from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
 
 logger = get_logger("quotation_generation")
@@ -110,64 +112,6 @@ def _mark_task_failed_in_db(task_id: str, error_message: str) -> None:
     except Exception as exc:
         db.rollback()
         logger.error(f"标记失败状态异常 {task_id}: {exc}", exc_info=True)
-    finally:
-        db.close()
-
-
-def _cleanup_task_files(db: Session, task: QuotationTask) -> Dict[str, Any]:
-    cleanup_result = {
-        "uploaded_file_deleted": False,
-        "temp_image_deleted": False,
-        "file_record_deleted": False,
-    }
-
-    if task.uploaded_file_minio_path:
-        cleanup_result["uploaded_file_deleted"] = delete_from_minio(task.uploaded_file_minio_path)
-
-    if task.temp_image_minio_path:
-        cleanup_result["temp_image_deleted"] = delete_from_minio(task.temp_image_minio_path)
-
-    if task.uploaded_file_id:
-        file_record = db.query(FileResource).filter(FileResource.id == task.uploaded_file_id).first()
-        if file_record:
-            # Break FK reference first, otherwise deleting file_resource can rollback the whole tx.
-            task.uploaded_file_id = None
-            db.flush()
-            db.delete(file_record)
-            cleanup_result["file_record_deleted"] = True
-
-    return cleanup_result
-
-
-def safe_cleanup_quotation_task_files(db: Session, task: QuotationTask, task_id: str) -> Dict[str, Any]:
-    try:
-        return _cleanup_task_files(db, task)
-    except Exception as exc:
-        logger.error(f"清理报价任务文件失败 {task_id}: {exc}", exc_info=True)
-        try:
-            db.rollback()
-        except Exception:
-            pass
-        return {
-            "uploaded_file_deleted": False,
-            "temp_image_deleted": False,
-            "file_record_deleted": False,
-            "cleanup_error": str(exc),
-        }
-
-
-def _cleanup_task_files_by_id(task_id: str) -> Dict[str, Any]:
-    db = SessionLocal()
-    try:
-        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
-        if not task:
-            return {}
-        cleanup_result = safe_cleanup_quotation_task_files(db, task, task_id)
-        db.commit()
-        return cleanup_result
-    except Exception:
-        db.rollback()
-        raise
     finally:
         db.close()
 
@@ -389,16 +333,20 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
                 "temp_image_minio_path": phase1_result.temp_image_minio_path,
                 "result_payload": result_payload,
                 "error": None,
+                "awaiting_approval_at": datetime.utcnow(),
             },
         )
 
+        loop.run_until_complete(
+            thread_tm.update_status(task_id, "awaiting_approval", "等待用户审核 PDM 结果")
+        )
         loop.run_until_complete(
             thread_tm.update_task_progress(task_id, 50, "等待用户审核 PDM 结果")
         )
         return {"status": "awaiting_approval", "task_id": task_id}
 
     except QuotationPipelineCancelledError as exc:
-        cleanup_result = _cleanup_task_files_by_id(task_id)
+        cleanup_result = cleanup_task_files_by_id(task_id)
         existing_payload["cleanup"] = cleanup_result
         _patch_task_fields(
             task_id,
@@ -410,12 +358,12 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
                 "result_payload": existing_payload,
             },
         )
-        loop.run_until_complete(thread_tm.fail_task(task_id, str(exc), "任务已取消"))
+        loop.run_until_complete(thread_tm.update_status(task_id, "cancelled", "任务已取消"))
         return {"status": "cancelled", "task_id": task_id}
 
     except Exception as exc:
         logger.error(f"报价任务 Phase1 执行失败 {task_id}: {exc}", exc_info=True)
-        cleanup_result = _cleanup_task_files_by_id(task_id)
+        cleanup_result = cleanup_task_files_by_id(task_id)
         existing_payload["cleanup"] = cleanup_result
         _patch_task_fields(
             task_id,
@@ -516,7 +464,7 @@ def process_quotation_task_phase2_background(
             )
         )
 
-        cleanup_result = _cleanup_task_files_by_id(task_id)
+        cleanup_result = cleanup_task_files_by_id(task_id)
 
         u8_total = None
         u8_items = None
@@ -574,7 +522,7 @@ def process_quotation_task_phase2_background(
         return {"status": "success", "task_id": task_id}
 
     except QuotationPipelineCancelledError as exc:
-        cleanup_result = _cleanup_task_files_by_id(task_id)
+        cleanup_result = cleanup_task_files_by_id(task_id)
         existing_payload["cleanup"] = cleanup_result
         _patch_task_fields(
             task_id,
@@ -586,7 +534,7 @@ def process_quotation_task_phase2_background(
                 "result_payload": existing_payload,
             },
         )
-        loop.run_until_complete(thread_tm.fail_task(task_id, str(exc), "任务已取消"))
+        loop.run_until_complete(thread_tm.update_status(task_id, "cancelled", "任务已取消"))
         return {"status": "cancelled", "task_id": task_id}
 
     except Exception as exc:

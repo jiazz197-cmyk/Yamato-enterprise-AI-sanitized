@@ -14,7 +14,7 @@ from app.core.logging import get_logger
 
 from app.integrations.sqlserver.client import get_sql_client
 
-logger = get_logger("sqlserver.pdm_bom")
+logger = get_logger("database.sqlserver.pdm_bom")
 
 
 def build_pdm_where_clauses(condition: str | List[str]) -> List[str]:

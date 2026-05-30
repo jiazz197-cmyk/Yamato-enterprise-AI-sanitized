@@ -49,4 +49,5 @@ class QuotationTask(Base):
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    awaiting_approval_at = Column(DateTime, nullable=True)
 

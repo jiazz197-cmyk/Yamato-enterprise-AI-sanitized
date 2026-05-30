@@ -6,9 +6,8 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from app.core.exceptions import APIException
-from app.ports.contracts.tasking import TaskStatePort
 from app.ports.domains.quotation import QuotationTaskRepoPort
-
+from app.usecases.quotation.purge import purge_quotation_task
 
 _TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -28,9 +27,8 @@ class DeleteQuotationTaskResult:
 
 
 class DeleteQuotationTaskUseCase:
-    def __init__(self, task_repo: QuotationTaskRepoPort, task_state: TaskStatePort):
+    def __init__(self, task_repo: QuotationTaskRepoPort):
         self._task_repo = task_repo
-        self._task_state = task_state
 
     async def execute(self, cmd: DeleteQuotationTaskCommand) -> DeleteQuotationTaskResult:
         task = self._task_repo.get_task(cmd.task_id)
@@ -44,19 +42,18 @@ class DeleteQuotationTaskUseCase:
                 error_code="INVALID_TASK_STATUS",
             )
 
-        cleanup_result = self._task_repo.cleanup_task_files(cmd.task_id)
-        self._task_repo.delete_task(cmd.task_id)
-
-        removed = False
-        try:
-            removed = await self._task_state.remove_task_record(cmd.task_id)
-        except Exception:
-            removed = False
+        result = await purge_quotation_task(cmd.task_id, allow_non_terminal=False)
+        if not result.get("purged"):
+            raise APIException(
+                "任务删除失败",
+                status_code=500,
+                error_code="PURGE_FAILED",
+            )
 
         return DeleteQuotationTaskResult(
             success=True,
             message="任务已删除",
             task_id=cmd.task_id,
-            cleanup=cleanup_result,
-            task_record_removed=removed,
+            cleanup=result.get("cleanup") or {},
+            task_record_removed=True,
         )

@@ -18,7 +18,9 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Dict, Any, Optional, Literal, List
 
-from app.core.logging import request_logger as logger
+from app.core.logging import get_logger
+
+logger = get_logger("task_manager")
 from app.core.observer import TaskSubject, TaskObserver, TaskEvent, TaskEventType
 
 
@@ -27,7 +29,7 @@ class TaskStatus:
     """任务状态数据类"""
     task_id: str
     task_type: str
-    status: Literal["pending", "running", "completed", "failed"]
+    status: str
     created_at: str
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
@@ -356,9 +358,7 @@ class TaskManager:
                 logger.error(f"创建任务失败: {task_id}")
                 raise Exception(f"无法保存任务状态: {task_id}")
 
-            logger.info(f"创建任务: {task_id} (类型: {task_type}, 存储: {self.storage_type})")
-            
-            # [note] 发布任务创建事件
+            # Lifecycle INFO is emitted by LoggingObserver via _emit_event.
             await self._emit_event(
                 TaskEventType.TASK_CREATED,
                 task_id=task_id,
@@ -387,9 +387,7 @@ class TaskManager:
 
             success = await self._save_task_status(task_status)
             if success:
-                logger.info(f"启动任务: {task_id}")
-                
-                # [note] 发布任务启动事件
+                # Lifecycle INFO is emitted by LoggingObserver via _emit_event.
                 await self._emit_event(
                     TaskEventType.TASK_STARTED,
                     task_id=task_id,
@@ -446,6 +444,32 @@ class TaskManager:
             logger.error(f"更新任务消息时发生错误 {task_id}: {e}")
             return False
 
+    async def update_status(self, task_id: str, status: str, message: str = "") -> bool:
+        """Update task status string (supports quotation-specific values)."""
+        try:
+            task_status = await self.get_task_status(task_id)
+            if not task_status:
+                return False
+
+            task_status.status = status
+            if message:
+                task_status.message = message
+
+            success = await self._save_task_status(task_status)
+            if success:
+                await self._emit_event(
+                    TaskEventType.TASK_PROGRESS_UPDATED,
+                    task_id=task_id,
+                    task_type=task_status.task_type,
+                    status=status,
+                    progress=task_status.progress,
+                    message=message or task_status.message,
+                )
+            return success
+        except Exception as e:
+            logger.error(f"更新任务状态时发生错误 {task_id}: {e}")
+            return False
+
     async def complete_task(self, task_id: str, result: Dict[str, Any], message: str = "任务完成") -> bool:
         """标记任务为完成状态"""
         try:
@@ -461,9 +485,6 @@ class TaskManager:
 
             success = await self._save_task_status(task_status)
             if success:
-                logger.info(f"完成任务: {task_id}")
-                
-                # [note] 发布任务完成事件
                 await self._emit_event(
                     TaskEventType.TASK_COMPLETED,
                     task_id=task_id,

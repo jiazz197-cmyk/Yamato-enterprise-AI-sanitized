@@ -44,6 +44,7 @@ from app.usecases.quotation.delete_task import DeleteQuotationTaskCommand, Delet
 
 router = APIRouter()
 logger = get_logger("quotation_generation")
+diag_logger = get_logger("diag.quotation")
 
 _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -227,8 +228,8 @@ def _count_statuses(tasks: List[QuotationTask]) -> Dict[str, int]:
     return counts
 
 
-def _log_list_tasks_diag(event: str, **details: Any) -> None:
-    logger.info("[quotation_tasks_diag] %s | %s", event, details)
+def _log_list_tasks_diag(**details: Any) -> None:
+    diag_logger.info("[quotation_tasks_diag] list_tasks | %s", details)
 
 
 def _serialize_task(
@@ -327,16 +328,6 @@ async def list_quotation_tasks(
     current_user: User = Depends(get_current_user),
 ) -> QuotationTaskListResponse:
     started_at = time.perf_counter()
-    _log_list_tasks_diag(
-        "list_tasks_query_started",
-        limit=limit,
-        full_result=full_result,
-        active_only=active_only,
-        status_filter=status_filter,
-        owner_username=owner_username,
-        current_user=current_user.username,
-        current_role=current_user.role.value,
-    )
     query = db.query(QuotationTask)
     if not full_result and not active_only:
         query = query.options(defer(QuotationTask.result_payload))
@@ -359,17 +350,6 @@ async def list_quotation_tasks(
     included_result_payload_count = sum(
         1 for task in tasks if (full_result or task.status == "awaiting_approval") and not active_only
     )
-    _log_list_tasks_diag(
-        "list_tasks_query_done",
-        tasks_count=len(tasks),
-        awaiting_approval_count=status_counts["awaiting_approval"],
-        active_count=status_counts["active"],
-        completed_count=status_counts["completed"],
-        included_result_payload_count=included_result_payload_count,
-        active_only=active_only,
-        query_ms=round((query_done_at - query_started_at) * 1000, 2),
-        elapsed_ms=round((query_done_at - started_at) * 1000, 2),
-    )
     load_payload_for_approval = not active_only
     serialized_items = [
         _serialize_task(
@@ -387,24 +367,23 @@ async def list_quotation_tasks(
     response_ready_at = time.perf_counter()
     approx_payload_chars = _safe_json_size(response.model_dump(mode="json"))
     _log_list_tasks_diag(
-        "list_tasks_serialize_done",
+        limit=limit,
+        full_result=full_result,
+        active_only=active_only,
+        status_filter=status_filter,
+        owner_username=owner_username,
+        current_user=current_user.username,
+        current_role=current_user.role.value,
         tasks_count=len(tasks),
-        serialize_ms=round((serialize_done_at - query_done_at) * 1000, 2),
-        elapsed_ms=round((serialize_done_at - started_at) * 1000, 2),
-        approx_payload_chars=approx_payload_chars,
-    )
-    _log_list_tasks_diag(
-        "list_tasks_response_ready",
-        tasks_count=len(tasks),
-        total_ms=round((response_ready_at - started_at) * 1000, 2),
-        query_ms=round((query_done_at - query_started_at) * 1000, 2),
-        serialize_ms=round((serialize_done_at - query_done_at) * 1000, 2),
-        response_build_ms=round((response_ready_at - serialize_done_at) * 1000, 2),
-        approx_payload_chars=approx_payload_chars,
-        included_result_payload_count=included_result_payload_count,
         awaiting_approval_count=status_counts["awaiting_approval"],
         active_count=status_counts["active"],
         completed_count=status_counts["completed"],
+        included_result_payload_count=included_result_payload_count,
+        query_ms=round((query_done_at - query_started_at) * 1000, 2),
+        serialize_ms=round((serialize_done_at - query_done_at) * 1000, 2),
+        response_build_ms=round((response_ready_at - serialize_done_at) * 1000, 2),
+        total_ms=round((response_ready_at - started_at) * 1000, 2),
+        approx_payload_chars=approx_payload_chars,
     )
     return response
 
@@ -453,7 +432,6 @@ async def delete_quotation_task(
     _check_task_permission(task, current_user)
     usecase = DeleteQuotationTaskUseCase(
         task_repo=SqlAlchemyQuotationTaskRepoAdapter(db),
-        task_state=TaskManagerStateAdapter(),
     )
     result = await usecase.execute(DeleteQuotationTaskCommand(task_id=task_id))
     return DeleteTaskResponse(**result.__dict__)
