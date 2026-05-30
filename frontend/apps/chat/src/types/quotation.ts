@@ -72,6 +72,8 @@ export interface QuotationU8ResultTypeSummary {
 }
 
 export interface QuotationTaskResult {
+  __result_compact?: boolean
+  __result_omitted?: boolean
   keywords_payload?: Record<string, unknown>
   pdm_result?: QuotationPdmResult
   pdm_partids?: string[]
@@ -112,6 +114,7 @@ export interface QuotationTaskItem {
   owner_id: string
   owner_username: string
   uploaded_file_name: string
+  display_name: string
   uploaded_file_content_type: string
   uploaded_file_size: number
   created_at: string
@@ -126,6 +129,15 @@ export interface QuotationTaskListResponse {
   items: QuotationTaskItem[]
 }
 
+export interface ListQuotationTasksParams {
+  status?: string
+  ownerUsername?: string
+  limit?: number
+  fullResult?: boolean
+  activeOnly?: boolean
+  signal?: AbortSignal
+}
+
 export interface CreateQuotationTaskResponse {
   task_id: string
   status: QuotationTaskStatus
@@ -137,4 +149,12 @@ export interface CancelQuotationTaskResponse {
   success: boolean
   message: string
   task_id: string
+}
+
+export interface DeleteQuotationTaskResponse {
+  success: boolean
+  message: string
+  task_id: string
+  cleanup: Record<string, unknown>
+  task_record_removed: boolean
 }

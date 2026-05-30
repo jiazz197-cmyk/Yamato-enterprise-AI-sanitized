@@ -11,6 +11,7 @@ from fastapi.security.api_key import APIKeyHeader
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.database import SessionLocal
 from app.core.dependencies import get_db
 
 def hash_password(password: str) -> str:
@@ -62,6 +63,37 @@ def get_current_user(
     if user is None or not user.is_active:
         raise credentials_exception
     return user
+
+
+def get_current_user_detached(token: str = Depends(oauth2_scheme)):
+    """解析 Bearer 并立即关闭 DB session；适合慢接口避免长时间占用连接。"""
+    from app.models.orm.platform.user import User
+
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        user_id: str | None = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+        user_uuid = uuid.UUID(user_id)
+    except (jwt.PyJWTError, ValueError):
+        raise credentials_exception
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_uuid).first()
+        if user is None or not user.is_active:
+            raise credentials_exception
+        db.expunge(user)
+        return user
+    finally:
+        db.close()
 
 
 def _normalize_identifier(value: object) -> str:

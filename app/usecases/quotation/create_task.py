@@ -9,8 +9,11 @@ from typing import Optional
 from uuid import uuid4
 
 from app.core.exceptions import APIException
+from app.core.logging import get_logger
 from app.ports.contracts.tasking import TaskDispatchPort, TaskExecutionPort, TaskStatePort
 from app.ports.domains.quotation import FileStoragePort, QuotationTaskRepoPort
+
+logger = get_logger("quotation.create_task")
 
 SUPPORTED_PDF_TYPES = {"application/pdf"}
 
@@ -18,11 +21,13 @@ SUPPORTED_PDF_TYPES = {"application/pdf"}
 @dataclass
 class CreateQuotationTaskCommand:
     file_name: Optional[str]
+    task_name: Optional[str]
     content_type: Optional[str]
     file_bytes: bytes
     max_file_size: int
     owner_id: str
     owner_username: str
+    owner_ip: Optional[str]
     role_snapshot: str
 
 
@@ -61,6 +66,7 @@ class CreateQuotationTaskUseCase:
         suffix = Path(cmd.file_name or "document.pdf").suffix or ".pdf"
         unique_name = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex}{suffix}"
         minio_path = f"quotation/uploads/{unique_name}"
+        display_name = str(cmd.task_name or "").strip() or (cmd.file_name or unique_name)
 
         self._file_storage.upload_pdf(
             object_path=minio_path,
@@ -79,11 +85,16 @@ class CreateQuotationTaskUseCase:
 
         task_id = await self._task_state.create_task(
             task_type="quotation_generation",
+            # owner_id is intentionally NOT replicated here: the authoritative
+            # source for quotation_generation_* tasks is the `quotation_tasks` row,
+            # resolved via TaskOwnerRegistry. owner_username/owner_ip stay only as
+            # human-readable context for event broadcasts and logs.
             metadata={
-                "owner_id": cmd.owner_id,
                 "owner_username": cmd.owner_username,
+                "owner_ip": cmd.owner_ip,
                 "file_id": stored_file_id,
                 "file_name": cmd.file_name or unique_name,
+                "task_name": display_name,
             },
         )
 
@@ -91,9 +102,11 @@ class CreateQuotationTaskUseCase:
             task_id=task_id,
             owner_id=cmd.owner_id,
             owner_username=cmd.owner_username,
+            owner_ip=cmd.owner_ip,
             role_snapshot=cmd.role_snapshot,
             uploaded_file_id=stored_file_id,
             uploaded_file_name=cmd.file_name or unique_name,
+            display_name=display_name,
             uploaded_file_minio_path=minio_path,
             uploaded_file_content_type=content_type,
             uploaded_file_size=len(cmd.file_bytes),
@@ -106,6 +119,23 @@ class CreateQuotationTaskUseCase:
         queue_position = 0
         if task.status == "queued":
             queue_position = self._task_repo.count_owner_queued_before(cmd.owner_id, task.created_at)
+
+        try:
+            from app.core.config import settings
+            from app.core.database import SessionLocal
+            from app.usecases.quotation.retention import purge_old_terminal_tasks_global
+
+            db = SessionLocal()
+            try:
+                await purge_old_terminal_tasks_global(
+                    db,
+                    max_total=settings.QUOTATION_RETENTION_MAX_TOTAL,
+                    target=settings.QUOTATION_RETENTION_TARGET,
+                )
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("Retention after create failed: %s", exc)
 
         return CreateQuotationTaskResult(
             task_id=task.task_id,

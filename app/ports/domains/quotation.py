@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Protocol
 
-from app.ports.dto.quotation import QuotationTaskSnapshot
+from app.ports.dto.quotation import QuotationSummarySelectionItem, QuotationTaskSnapshot
 
 CancelChecker = Optional[Callable[[], bool]]
 ProgressCallback = Optional[Callable[[int, str], None]]
@@ -62,9 +62,11 @@ class QuotationTaskRepoPort(Protocol):
         task_id: str,
         owner_id: str,
         owner_username: str,
+        owner_ip: Optional[str],
         role_snapshot: str,
         uploaded_file_id: int,
         uploaded_file_name: str,
+        display_name: str,
         uploaded_file_minio_path: str,
         uploaded_file_content_type: str,
         uploaded_file_size: int,
@@ -81,6 +83,25 @@ class QuotationTaskRepoPort(Protocol):
         ...
 
     def cleanup_task_files(self, task_id: str) -> Dict[str, Any]:
+        ...
+
+    def delete_task(self, task_id: str) -> None:
+        ...
+
+
+class QuotationApprovalSelectionPort(Protocol):
+    """Persistence boundary for approval-driven summary selection snapshots."""
+
+    def save_approved_selection(
+        self,
+        *,
+        task_id: str,
+        approved_partids: list[str],
+        summary_selection_items: list[QuotationSummarySelectionItem],
+    ) -> None:
+        ...
+
+    def load_summary_selection_items(self, task_id: str) -> list[QuotationSummarySelectionItem]:
         ...
 
 

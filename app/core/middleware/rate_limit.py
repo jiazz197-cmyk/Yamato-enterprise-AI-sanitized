@@ -11,7 +11,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.cache import redis_manager
 from app.core.config import settings
-from app.core.logging import request_logger
+from app.core.logging import security_logger
 
 
 @dataclass
@@ -32,7 +32,7 @@ class RateLimiter:
         self.window_size = settings.RATE_LIMIT_WINDOW
         self.expensive_path_prefixes = (
             f"{settings.API_V1_STR}/retriever",
-            f"{settings.API_V1_STR}/chat-summary",
+            f"{settings.API_V1_STR}/chat-summary/create",
             f"{settings.API_V1_STR}/context-compression",
             f"{settings.API_V1_STR}/sqlserver",
             f"{settings.API_V1_STR}/ocr",
@@ -59,7 +59,7 @@ class RateLimiter:
                     prefix = 32 if ip.version == 4 else 128
                     networks.append(ipaddress.ip_network(f"{ip}/{prefix}", strict=False))
             except ValueError:
-                request_logger.warning("Ignored invalid trusted proxy config: %s", value)
+                security_logger.warning("Ignored invalid trusted proxy config: %s", value)
         return networks
 
     def _is_trusted_proxy(self, client_ip: str) -> bool:
@@ -86,7 +86,7 @@ class RateLimiter:
         try:
             ipaddress.ip_address(first_hop)
         except ValueError:
-            request_logger.warning("Invalid X-Forwarded-For value: %s", x_forwarded_for)
+            security_logger.warning("Invalid X-Forwarded-For value: %s", x_forwarded_for)
             return direct_ip
         return first_hop
 
@@ -121,7 +121,7 @@ class RateLimiter:
             if count == 1:
                 await redis_manager.redis_client.expire(window_key, self.window_size)
         except Exception as exc:
-            request_logger.warning("Rate limiter fallback due to Redis error: %s", exc)
+            security_logger.warning("Rate limiter fallback due to Redis error: %s", exc)
             if settings.RATE_LIMIT_FAIL_OPEN:
                 return RateLimitDecision(allowed=True, redis_error=True)
             return RateLimitDecision(
@@ -133,7 +133,7 @@ class RateLimiter:
         if count > limit:
             retry_after = self.window_size - (current_time % self.window_size)
             retry_after = max(retry_after, 1)
-            request_logger.warning("Rate limit exceeded for %s", identifier)
+            security_logger.warning("Rate limit exceeded for %s", identifier)
             return RateLimitDecision(allowed=False, retry_after=retry_after)
         return RateLimitDecision(allowed=True)
 

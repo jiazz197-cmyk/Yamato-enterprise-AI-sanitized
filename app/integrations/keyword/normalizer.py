@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Sequence
 
+from app.integrations.keyword.mapping import get_attr_whitelist
+
 
 YES_VALUES = {"yes", "true", "y", "1", "是"}
 NO_VALUES = {"no", "false", "n", "0", "否", "无"}
@@ -29,6 +31,15 @@ SEMANTIC_FIELD_TOKENS: Dict[str, str] = {
 
 LFP_LIP_KEYS = {"lfplip", "lfp唇口", "lfp唇"}
 CF_L_BRACKET_KEYS = {"cflshapedbracket", "cfl型支架", "l型支架"}
+REMARKS_KEYS = {"remarks", "othersremarks", "others/remarks", "otherremarks", "备注", "其他备注"}
+FEED_BUCKET_REMARKS_SECTION_RE = re.compile(
+    r"feed\s*bucket\s*[,，、/]\s*weigh\s*bucket\s*[:：]\s*([^;\n\r；]*)",
+    re.IGNORECASE,
+)
+CAPACITY_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*[lL]\b")
+C_C_VALUE_RE = re.compile(
+    r"(?i)(?:c\s*-\s*c\s*=?\s*)?(\d+(?:\.\d+)?)"
+)
 
 
 def _normalize_key_name(key_text: str) -> str:
@@ -48,6 +59,22 @@ def _to_tristate(value: Any) -> str:
     return "other"
 
 
+def _extract_feed_bucket_remark_capacities(text: str) -> List[str]:
+    """Extract only xL capacity tokens from `Feed bucket, Weigh bucket:` remarks."""
+    capacities: List[str] = []
+    for section_match in FEED_BUCKET_REMARKS_SECTION_RE.finditer(text):
+        section = section_match.group(1)
+        for capacity_match in CAPACITY_TOKEN_RE.finditer(section):
+            capacities.append(f"{capacity_match.group(1)}L")
+    return list(dict.fromkeys(capacities))
+
+
+def _extract_c_c_value(text: str) -> str:
+    """Extract numeric C-C value; empty/non-numeric values are not query params."""
+    match = C_C_VALUE_RE.search(text)
+    return match.group(1) if match else ""
+
+
 def normalize_pdm_keywords(value: Any) -> List[List[str]]:
     """
     将 keywords 统一转换为多组原始关键词。
@@ -57,6 +84,34 @@ def normalize_pdm_keywords(value: Any) -> List[List[str]]:
     2) [{"type": "机架", "attr": {"surface": "flat", "detergent": True}}]
     3) [{"type": "机架", "attr": {"surface": "flat", "detergent": True}}, {"type": "供料斗", "attr": {"LFP唇口": "No"}}]
     """
+
+    def filter_attr_by_whitelist(item: Dict[str, Any]) -> Dict[str, Any]:
+        """根据白名单过滤 attr，返回过滤后的 item"""
+        type_name = str(item.get("type") or "").strip()
+        attr = item.get("attr")
+
+        if not isinstance(attr, dict):
+            return item
+
+        whitelist = get_attr_whitelist(type_name)
+
+        # 如果没有配置白名单（返回 None），保留所有属性
+        if whitelist is None:
+            return item
+
+        # 白名单为空列表，过滤掉所有 attr
+        if not whitelist:
+            return {"type": item.get("type")}
+
+        # 根据白名单过滤 attr
+        whitelist_normalized = {_normalize_key_name(k) for k in whitelist}
+        filtered_attr = {}
+        for key, val in attr.items():
+            key_lower = _normalize_key_name(str(key).strip())
+            if key_lower in whitelist_normalized:
+                filtered_attr[key] = val
+
+        return {"type": item.get("type"), "attr": filtered_attr} if filtered_attr else {"type": item.get("type")}
 
     def normalize_structured_item(item: Dict[str, Any]) -> List[str]:
         def append_value_with_key_semantics(container: List[str], key_text: str, value: Any) -> None:
@@ -73,8 +128,8 @@ def normalize_pdm_keywords(value: Any) -> List[List[str]]:
             is_center_vibrator_key = normalized_key in {"centervibrator", "中心振动器"}
             is_end_user_country = normalized_key in {"endusercountry", "country", "终端国家"}
             is_vibrating = "振动盘" in type_name
-            is_feeding_hopper = "供料斗" in type_name
-            is_weigh_bucket = "计量斗" in type_name
+            is_feeding_hopper = "供料斗" in type_name or "feed bucket" in type_name.lower()
+            is_weigh_bucket = "计量斗" in type_name or "weigh bucket" in type_name.lower()
             is_collecting_cone = "收集锥" in type_name or "集料漏斗" in type_name
             is_packaging = "包装" in type_name
 
@@ -85,10 +140,11 @@ def normalize_pdm_keywords(value: Any) -> List[List[str]]:
                 lower_text_value = text_value.lower()
                 if lower_text_value in NO_VALUES:
                     return
-                # C-C 有值时，优先生成 C-C=数值，同时兼容 C-C+数值 的写法。
-                container.append(f"C-C={text_value}")
-                container.append(f"C-C{text_value}")
-                container.append(f"中心距{text_value}")
+                c_c_value = _extract_c_c_value(text_value)
+                if not c_c_value:
+                    return
+                # Mapping expands this to C-C=数值 / C-C数值 alternatives.
+                container.append(f"C-C={c_c_value}")
                 return
 
             if is_collection_bucket:
@@ -142,6 +198,11 @@ def normalize_pdm_keywords(value: Any) -> List[List[str]]:
 
             text = str(value).strip()
             if not text:
+                return
+
+            if (is_feeding_hopper or is_weigh_bucket) and normalized_key in REMARKS_KEYS:
+                for capacity in _extract_feed_bucket_remark_capacities(text):
+                    container.append(capacity)
                 return
 
             if is_end_user_country and is_packaging:
@@ -206,8 +267,11 @@ def normalize_pdm_keywords(value: Any) -> List[List[str]]:
     if not all(isinstance(item, dict) for item in value):
         return []
 
+    # 先根据白名单过滤每个 item 的 attr
+    filtered_items = [filter_attr_by_whitelist(item) for item in value]
+
     groups: List[List[str]] = []
-    for item in value:
+    for item in filtered_items:
         group = normalize_structured_item(item)
         if group:
             groups.append(group)

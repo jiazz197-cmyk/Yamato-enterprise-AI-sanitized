@@ -9,7 +9,7 @@ from sqlalchemy.pool import Pool
 from app.core.config import settings
 from app.core.logging import get_logger
 
-logger = get_logger("db")
+logger = get_logger("database.pool")
 
 DATABASE_URL = settings.SQLALCHEMY_DATABASE_URI
 
@@ -118,7 +118,7 @@ def init_db_tables():
                     "FROM information_schema.columns "
                     "WHERE table_name='data_pending' AND column_name='status'"
                 )).fetchone()
-                
+
                 if not result:
                     logger.info("[info] 发现 data_pending 表缺少 status 列，正在添加...")
                     conn.execute(text(
@@ -128,6 +128,74 @@ def init_db_tables():
                     logger.info("[success] 成功向 data_pending 表添加 status 列")
         except Exception as mig_e:
             logger.error(f"[warning] data_pending 表迁移失败（如果表还未创建可忽略此错误）: {mig_e}")
+
+        try:
+            with engine.connect() as conn:
+                for col in ("image_url_1", "image_url_2"):
+                    result = conn.execute(text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name='data_pending' AND column_name=:col"
+                    ), {"col": col}).fetchone()
+                    if not result:
+                        logger.info(f"[info] 发现 data_pending 表缺少 {col} 列，正在添加...")
+                        conn.execute(text(
+                            f"ALTER TABLE data_pending ADD COLUMN {col} VARCHAR(512)"
+                        ))
+                        conn.commit()
+                        logger.info(f"[success] 成功向 data_pending 表添加 {col} 列")
+        except Exception as mig_e:
+            logger.error(f"[warning] data_pending image_url 列迁移失败: {mig_e}")
+
+        try:
+            with engine.connect() as conn:
+                owner_ip_column = conn.execute(text(
+                    "SELECT column_name "
+                    "FROM information_schema.columns "
+                    "WHERE table_name='quotation_tasks' AND column_name='owner_ip'"
+                )).fetchone()
+                if not owner_ip_column:
+                    logger.info("[info] 发现 quotation_tasks 表缺少 owner_ip 列，正在添加...")
+                    conn.execute(text("ALTER TABLE quotation_tasks ADD COLUMN owner_ip VARCHAR(64)"))
+                    conn.commit()
+                    logger.info("[success] 成功向 quotation_tasks 表添加 owner_ip 列")
+
+                display_name_column = conn.execute(text(
+                    "SELECT column_name "
+                    "FROM information_schema.columns "
+                    "WHERE table_name='quotation_tasks' AND column_name='display_name'"
+                )).fetchone()
+                if not display_name_column:
+                    logger.info("[info] 发现 quotation_tasks 表缺少 display_name 列，正在添加...")
+                    conn.execute(text("ALTER TABLE quotation_tasks ADD COLUMN display_name VARCHAR(256)"))
+                    conn.execute(text(
+                        "UPDATE quotation_tasks "
+                        "SET display_name = COALESCE(NULLIF(uploaded_file_name, ''), task_id) "
+                        "WHERE display_name IS NULL"
+                    ))
+                    conn.execute(text("ALTER TABLE quotation_tasks ALTER COLUMN display_name SET NOT NULL"))
+                    conn.commit()
+                    logger.info("[success] 成功向 quotation_tasks 表添加 display_name 列")
+
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_quotation_tasks_owner_ip "
+                    "ON quotation_tasks (owner_ip)"
+                ))
+                conn.commit()
+
+                awaiting_col = conn.execute(text(
+                    "SELECT column_name "
+                    "FROM information_schema.columns "
+                    "WHERE table_name='quotation_tasks' AND column_name='awaiting_approval_at'"
+                )).fetchone()
+                if not awaiting_col:
+                    logger.info("[info] 发现 quotation_tasks 表缺少 awaiting_approval_at 列，正在添加...")
+                    conn.execute(text(
+                        "ALTER TABLE quotation_tasks ADD COLUMN awaiting_approval_at TIMESTAMP NULL"
+                    ))
+                    conn.commit()
+                    logger.info("[success] 成功向 quotation_tasks 表添加 awaiting_approval_at 列")
+        except Exception as mig_e:
+            logger.error(f"[warning] quotation_tasks.owner_ip/display_name 迁移失败（如果表还未创建可忽略此错误）: {mig_e}")
 
         table_names = [table.name for table in Base.metadata.sorted_tables]
         logger.info(f"[success] 数据库表初始化完成，共 {len(table_names)} 个表: {', '.join(table_names)}")

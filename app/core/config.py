@@ -173,6 +173,7 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     # pymssql: query timeout (seconds) and connection/login timeout
     SQLSERVER_QUERY_TIMEOUT_SEC: int = Field(120, ge=1, le=3600, env="SQLSERVER_QUERY_TIMEOUT_SEC")
     SQLSERVER_LOGIN_TIMEOUT_SEC: int = Field(30, ge=1, le=300, env="SQLSERVER_LOGIN_TIMEOUT_SEC")
+    SQLSERVER_QUERY_MAX_WORKERS: int = Field(2, ge=1, le=8, env="SQLSERVER_QUERY_MAX_WORKERS")
 
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
@@ -208,6 +209,7 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     # Set so minio-py does not call GetBucketLocation on presign; MinIO S3 default is us-east-1
     MINIO_REGION: str = Field("us-east-1", env="MINIO_REGION")
     MINIO_BUCKET_NAME: str = Field("yamatodev", env="MINIO_BUCKET_NAME")
+    CLOSING_FORM_IMAGE_PREFIX: str = Field("form_pic", env="CLOSING_FORM_IMAGE_PREFIX")
     # Presigned GetObject for OCR / temp files (replaces bucket-wide anonymous read by default)
     MINIO_PRESIGN_EXPIRES_HOURS: int = Field(12, ge=1, le=168, env="MINIO_PRESIGN_EXPIRES_HOURS")
     # Override TLS for presign only (e.g. internal MINIO_ON https but public http). None = infer from URL or MINIO_SECURE
@@ -245,6 +247,15 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     WS_MAX_MESSAGES_PER_MINUTE: int = Field(120, env="WS_MAX_MESSAGES_PER_MINUTE")
     # Cap in-memory per-IP message counter entries to avoid unbounded growth
     WS_MAX_TRACKED_IPS_FOR_COUNTERS: int = Field(2000, ge=100, le=100000, env="WS_MAX_TRACKED_IPS_FOR_COUNTERS")
+
+    # Quotation queue runtime concurrency limits
+    QUOTATION_MAX_RUNNING_PER_OWNER: int = Field(2, ge=1, le=20, env="QUOTATION_MAX_RUNNING_PER_OWNER")
+    QUOTATION_MAX_RUNNING_PER_IP: int = Field(2, ge=1, le=20, env="QUOTATION_MAX_RUNNING_PER_IP")
+
+    QUOTATION_RETENTION_MAX_TOTAL: int = Field(100, ge=10, le=10000, env="QUOTATION_RETENTION_MAX_TOTAL")
+    QUOTATION_RETENTION_TARGET: int = Field(50, ge=1, le=5000, env="QUOTATION_RETENTION_TARGET")
+    QUOTATION_RETENTION_INTERVAL_SEC: int = Field(300, ge=60, le=86400, env="QUOTATION_RETENTION_INTERVAL_SEC")
+    QUOTATION_AWAITING_APPROVAL_TTL_HOURS: int = Field(24, ge=1, le=168, env="QUOTATION_AWAITING_APPROVAL_TTL_HOURS")
 
     # Headless document conversion; abort hung soffice processes
     LIBREOFFICE_SUBPROCESS_TIMEOUT_SEC: int = Field(300, ge=30, le=3600, env="LIBREOFFICE_SUBPROCESS_TIMEOUT_SEC")

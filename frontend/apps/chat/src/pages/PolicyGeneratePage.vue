@@ -250,6 +250,38 @@
           </div>
         </section>
 
+        <section class="form-section">
+          <div class="form-section__title">图片附件（最多2张）</div>
+          <div class="image-upload-area">
+            <div class="image-upload-item">
+              <input ref="imageInput1" type="file" accept="image/*"
+                     style="display:none" @change="onImageSelected($event, 0)" />
+              <div v-if="!imageFiles[0]" class="image-upload-placeholder"
+                   @click="triggerImageInput(0)">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                <span>上传图片1</span>
+              </div>
+              <div v-else class="image-preview">
+                <img :src="imagePreviews[0]!" alt="预览" />
+                <button type="button" class="image-remove-btn" @click="removeImage(0)">&times;</button>
+              </div>
+            </div>
+            <div v-if="imageFiles[0]" class="image-upload-item">
+              <input ref="imageInput2" type="file" accept="image/*"
+                     style="display:none" @change="onImageSelected($event, 1)" />
+              <div v-if="!imageFiles[1]" class="image-upload-placeholder"
+                   @click="triggerImageInput(1)">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                <span>上传图片2</span>
+              </div>
+              <div v-else class="image-preview">
+                <img :src="imagePreviews[1]!" alt="预览" />
+                <button type="button" class="image-remove-btn" @click="removeImage(1)">&times;</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <div class="form-actions">
           <button class="form-actions__reset" type="button" @click="resetForm">重置</button>
           <button class="form-actions__submit" type="submit" :disabled="submitting">
@@ -328,13 +360,22 @@
                   <span class="status-badge__dot"></span>
                   {{ record.status === 'approved' ? '已通过' : record.status === 'rejected' ? '不通过' : '待审批' }}
                 </span>
-                <div v-if="isSuperuser && record.status === 'approved'" class="action-buttons">
+                <div v-if="isAdmin && record.status === 'approved'" class="action-buttons">
                   <button
                     class="approve-btn reject-btn"
                     :disabled="deletingApprovedId === record.id"
                     @click.stop="openDeleteApprovedDialog(record.id)"
                   >
                     {{ deletingApprovedId === record.id ? '...' : '删除' }}
+                  </button>
+                </div>
+                <div v-if="isAdmin && record.status === 'rejected'" class="action-buttons">
+                  <button
+                    class="approve-btn reject-btn"
+                    :disabled="deletingRejectedId === record.id"
+                    @click.stop="deleteRejectedRecord(record.id)"
+                  >
+                    {{ deletingRejectedId === record.id ? '...' : '删除' }}
                   </button>
                 </div>
                 <div v-if="isAdmin && record.status === 'pending'" class="action-buttons">
@@ -383,6 +424,18 @@
                   <span class="record-field__value">{{ field.value }}</span>
                 </div>
               </div>
+              <div v-if="record.image_url_1 || record.image_url_2" class="record-images">
+                <a v-if="record.image_url_1"
+                   :href="getImageDownloadUrl(record.image_url_1)"
+                   target="_blank" class="record-image-link">
+                  图片1
+                </a>
+                <a v-if="record.image_url_2"
+                   :href="getImageDownloadUrl(record.image_url_2)"
+                   target="_blank" class="record-image-link">
+                  图片2
+                </a>
+              </div>
             </div>
           </div>
         </div>
@@ -409,11 +462,16 @@ import { ConfirmDialog, useToast } from '@yamato/components'
 import {
   approveClosingForm,
   deleteApprovedClosingForm,
+  deleteClosingFormImage,
+  deleteRejectedClosingForm,
   listClosingFormRecords,
   rejectClosingForm,
   submitClosingForm,
+  uploadClosingFormImage,
 } from '../services/closing_form'
 import { readUserRole } from '../services/auth'
+import { getAuthTokenFromStorage } from '../services/token_storage'
+import { config } from '../config'
 
 interface FormData {
   closing_date: string
@@ -444,6 +502,8 @@ interface FormRecord {
   upload_time: string | null
   uploader: string
   status: string
+  image_url_1?: string | null
+  image_url_2?: string | null
 }
 
 interface ParsedField {
@@ -492,21 +552,103 @@ const loadingRecords = ref(false)
 const expandedId = ref<string | null>(null)
 const approvingId = ref<string | null>(null)
 const deletingApprovedId = ref<string | null>(null)
+const deletingRejectedId = ref<string | null>(null)
 const showDeleteApprovedDialog = ref(false)
 const approvedToDelete = ref<string | null>(null)
 
+const imageFiles = ref<(File | null)[]>([null, null])
+const imagePreviews = ref<(string | null)[]>([null, null])
+const imageInput1 = ref<HTMLInputElement | null>(null)
+const imageInput2 = ref<HTMLInputElement | null>(null)
+
+const triggerImageInput = (index: number) => {
+  if (index === 0) imageInput1.value?.click()
+  else imageInput2.value?.click()
+}
+
+const onImageSelected = (event: Event, index: number) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  imageFiles.value[index] = file
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    imagePreviews.value[index] = e.target?.result as string
+  }
+  reader.readAsDataURL(file)
+  input.value = ''
+}
+
+const removeImage = (index: number) => {
+  imageFiles.value[index] = null
+  imagePreviews.value[index] = null
+  if (index === 0) { if (imageInput1.value) imageInput1.value.value = '' }
+  else { if (imageInput2.value) imageInput2.value.value = '' }
+}
+
+const getImageDownloadUrl = (objectName: string): string => {
+  return `${config.apiBaseUrl}/closing-form/image/${encodeURIComponent(objectName)}`
+}
+
 const resetForm = () => {
   form.value = createEmptyForm()
+  imageFiles.value = [null, null]
+  imagePreviews.value = [null, null]
+  if (imageInput1.value) imageInput1.value.value = ''
+  if (imageInput2.value) imageInput2.value.value = ''
+}
+
+const isTokenExpired = (): boolean => {
+  const token = getAuthTokenFromStorage()
+  if (!token) return true
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]))
+    return payload.exp * 1000 < Date.now()
+  } catch { return true }
+}
+
+const uploadImagesForSubmit = async (): Promise<(string | null)[]> => {
+  const urls: (string | null)[] = [null, null]
+  for (let i = 0; i < 2; i++) {
+    const file = imageFiles.value[i]
+    if (!file) continue
+    const result = await uploadClosingFormImage(file)
+    urls[i] = result.object_name
+  }
+  return urls
 }
 
 const submitForm = async () => {
+  if (submitting.value) return
+
+  if (isTokenExpired()) {
+    showError('登录已过期，请刷新页面后重新登录再提交（当前填写内容不会丢失）')
+    return
+  }
+
   submitting.value = true
+  let uploadedUrls: (string | null)[] = []
+
   try {
-    await submitClosingForm(form.value as unknown as Record<string, unknown>)
+    uploadedUrls = await uploadImagesForSubmit()
+
+    const payload: Record<string, unknown> = { ...form.value }
+    payload.image_url_1 = uploadedUrls[0] ?? null
+    payload.image_url_2 = uploadedUrls[1] ?? null
+    await submitClosingForm(payload)
+
     showSuccess('提交成功，等待审批')
     resetForm()
+    imageFiles.value = [null, null]
+    imagePreviews.value = [null, null]
   } catch (err: any) {
     showError(err?.message || err?.detail || '提交失败，请稍后重试')
+    for (const url of uploadedUrls) {
+      if (url) {
+        try { await deleteClosingFormImage(url) } catch { /* best-effort */ }
+      }
+    }
   } finally {
     submitting.value = false
   }
@@ -556,6 +698,22 @@ const openDeleteApprovedDialog = (formId: string) => {
   showDeleteApprovedDialog.value = true
 }
 
+const deleteRejectedRecord = async (formId: string) => {
+  deletingRejectedId.value = formId
+  try {
+    await deleteRejectedClosingForm(formId)
+    records.value = records.value.filter((record) => record.id !== formId)
+    if (expandedId.value === formId) {
+      expandedId.value = null
+    }
+    showSuccess('已删除不通过表单')
+  } catch (err: any) {
+    showError(err?.message || '删除失败')
+  } finally {
+    deletingRejectedId.value = null
+  }
+}
+
 const confirmDeleteApproved = async () => {
   if (!approvedToDelete.value) {
     return
@@ -581,9 +739,7 @@ const confirmDeleteApproved = async () => {
 
 const switchToRecords = () => {
   activeTab.value = 'records'
-  if (records.value.length === 0) {
-    void loadRecords()
-  }
+  void loadRecords()
 }
 
 const toggleExpand = (id: string) => {
@@ -598,7 +754,7 @@ const parseFields = (text: string): ParsedField[] => {
       if (colonIdx === -1) return null
       return { label: part.slice(0, colonIdx).trim(), value: part.slice(colonIdx + 1).trim() }
     })
-    .filter((f): f is ParsedField => f !== null)
+    .filter((f): f is ParsedField => f !== null && f.label !== '图片url')
 }
 
 const getSummary = (text: string): string => {
@@ -1104,6 +1260,86 @@ const getSummary = (text: string): string => {
 .record-field__value {
   font-size: 13px;
   color: var(--yamato-color-text-primary);
+}
+
+.image-upload-area {
+  display: flex;
+  gap: 16px;
+}
+
+.image-upload-item {
+  width: 160px;
+  height: 120px;
+  border: 2px dashed var(--yamato-color-border-subtle);
+  border-radius: var(--yamato-radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.2s ease;
+
+  &:hover {
+    border-color: var(--yamato-color-accent);
+  }
+}
+
+.image-upload-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--yamato-color-text-muted);
+  font-size: 13px;
+}
+
+.image-preview {
+  position: relative;
+  width: 100%;
+  height: 100%;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+}
+
+.image-remove-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.record-images {
+  margin-top: 12px;
+  display: flex;
+  gap: 12px;
+}
+
+.record-image-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--yamato-color-accent);
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
 }
 
 @media (max-width: 1200px) {

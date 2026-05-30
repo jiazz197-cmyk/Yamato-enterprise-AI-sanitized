@@ -41,6 +41,8 @@ from app.ragsystem.RAGretriever import create_rag_retriever_system
 import asyncio
 from contextlib import asynccontextmanager
 
+import sys
+
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -108,9 +110,11 @@ def _startup_resume_quotation_services() -> None:
             dispatch_quotation_queue_for_owner,
         )
         from app.core.database import SessionLocal
+        from app.core.task_manager import task_manager
         from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
 
         db = SessionLocal()
+        stale_task_ids: list[str] = []
         try:
             stale_running_tasks = (
                 db.query(QuotationTask)
@@ -124,6 +128,8 @@ def _startup_resume_quotation_services() -> None:
                 task.completed_at = None
                 task.error = None
                 task.progress = 0
+                task.awaiting_approval_at = None
+                stale_task_ids.append(task.task_id)
 
             if stale_running_tasks:
                 db.commit()
@@ -143,6 +149,13 @@ def _startup_resume_quotation_services() -> None:
             owner_ids = [str(row[0]).strip() for row in owner_rows if str(row[0]).strip()]
         finally:
             db.close()
+
+        async def _sync_redis_status() -> None:
+            for task_id in stale_task_ids:
+                await task_manager.update_status(task_id, "queued", "服务重启后重新排队")
+
+        if stale_task_ids:
+            asyncio.get_running_loop().create_task(_sync_redis_status())
 
         for owner_id in owner_ids:
             dispatch_quotation_queue_for_owner(owner_id)
@@ -170,6 +183,11 @@ async def lifespan(app: FastAPI):
         from app.core.executor import executor_manager
         from app.core.task_manager import task_manager
         executor_manager.set_task_manager(task_manager, auto_sync=False)  # 默认不向 TaskManager 自动同步
+        from app.core.executor import PYTHON_39_PLUS
+        print(
+            f"[info] Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}, "
+            f"advanced shutdown: {PYTHON_39_PLUS}"
+        )
         print("[success] ExecutorManager 已集成 TaskManager")
     except Exception as e:
         print(f"[warning] ExecutorManager 集成 TaskManager 失败: {e}")
@@ -206,6 +224,15 @@ async def lifespan(app: FastAPI):
 
     _startup_check_sqlserver_connectivity(app)
     _startup_resume_quotation_services()
+
+    try:
+        from app.core.retention_scheduler import run_retention_once, start_retention_scheduler
+
+        await run_retention_once()
+        app.state.retention_task = start_retention_scheduler()
+        print("[success] 报价任务 retention 调度已启动")
+    except Exception as e:
+        print(f"[warning] 报价任务 retention 调度启动失败: {e}")
     
     try:
         await redis_manager.test_connection()
@@ -281,6 +308,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"[warning] 清理观察者时出错: {e}")
         
+        try:
+            from app.core.retention_scheduler import stop_retention_scheduler
+            await stop_retention_scheduler()
+            print("[success] 报价任务 retention 调度已停止")
+        except Exception as e:
+            print(f"[warning] 停止 retention 调度时出错: {e}")
+
         try:
             from app.core.websocket_task_manager import ws_manager
             await asyncio.wait_for(ws_manager.disconnect_all(), timeout=1.0)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import asdict
 from io import BytesIO
 from typing import Any, Dict, Optional
 
@@ -10,16 +11,22 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import APIException
 from app.core.storage import upload_stream_to_minio
+from app.integrations.Quotation_Generation.quotation_task_cleanup import (
+    safe_cleanup_quotation_task_files,
+)
 from app.integrations.Quotation_Generation.quotation_task_workers import (
     dispatch_quotation_phase2,
     dispatch_quotation_queue_for_owner,
-    safe_cleanup_quotation_task_files,
 )
 from app.models.orm.file_resource import FileResource
 from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
 from app.ports.contracts.tasking import TaskDispatchPort
-from app.ports.domains.quotation import FileStoragePort, QuotationTaskRepoPort
-from app.ports.dto.quotation import QuotationTaskSnapshot
+from app.ports.domains.quotation import (
+    FileStoragePort,
+    QuotationApprovalSelectionPort,
+    QuotationTaskRepoPort,
+)
+from app.ports.dto.quotation import QuotationSummarySelectionItem, QuotationTaskSnapshot
 
 
 class MinioFileStorageAdapter(FileStoragePort):
@@ -48,12 +55,14 @@ class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):
             task_id=task.task_id,
             owner_id=task.owner_id,
             owner_username=task.owner_username,
+            owner_ip=task.owner_ip,
             role_snapshot=task.role_snapshot,
             status=task.status,
             progress=task.progress,
             message=task.message,
             uploaded_file_id=task.uploaded_file_id,
             uploaded_file_name=task.uploaded_file_name,
+            display_name=task.display_name,
             uploaded_file_minio_path=task.uploaded_file_minio_path,
             uploaded_file_content_type=task.uploaded_file_content_type,
             uploaded_file_size=task.uploaded_file_size,
@@ -95,9 +104,11 @@ class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):
         task_id: str,
         owner_id: str,
         owner_username: str,
+        owner_ip: Optional[str],
         role_snapshot: str,
         uploaded_file_id: int,
         uploaded_file_name: str,
+        display_name: str,
         uploaded_file_minio_path: str,
         uploaded_file_content_type: str,
         uploaded_file_size: int,
@@ -106,12 +117,14 @@ class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):
             task_id=task_id,
             owner_id=owner_id,
             owner_username=owner_username,
+            owner_ip=(owner_ip or None),
             role_snapshot=role_snapshot,
             status=QuotationTaskStatus.queued.value,
             progress=0,
             message="任务已排队",
             uploaded_file_id=uploaded_file_id,
             uploaded_file_name=uploaded_file_name,
+            display_name=display_name,
             uploaded_file_minio_path=uploaded_file_minio_path,
             uploaded_file_content_type=uploaded_file_content_type,
             uploaded_file_size=uploaded_file_size,
@@ -155,6 +168,79 @@ class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):
         if task is None:
             raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
         return safe_cleanup_quotation_task_files(self._db, task, task_id)
+
+    def delete_task(self, task_id: str) -> None:
+        task = self._get_task_entity(task_id)
+        if task is None:
+            raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
+        self._db.delete(task)
+        self._db.commit()
+
+
+class ResultPayloadQuotationApprovalSelectionAdapter(QuotationApprovalSelectionPort):
+    def __init__(self, db: Session):
+        self._db = db
+
+    def _get_task_entity(self, task_id: str) -> Optional[QuotationTask]:
+        return self._db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
+
+    def save_approved_selection(
+        self,
+        *,
+        task_id: str,
+        approved_partids: list[str],
+        summary_selection_items: list[QuotationSummarySelectionItem],
+    ) -> None:
+        task = self._get_task_entity(task_id)
+        if task is None:
+            raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
+
+        payload = dict(task.result_payload or {})
+        payload["approved_partids"] = approved_partids
+        payload["summary_selection_items"] = [asdict(item) for item in summary_selection_items]
+        task.result_payload = payload
+        self._db.commit()
+
+    def load_summary_selection_items(self, task_id: str) -> list[QuotationSummarySelectionItem]:
+        task = self._get_task_entity(task_id)
+        if task is None:
+            raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
+
+        payload = dict(task.result_payload or {})
+        raw_items = payload.get("summary_selection_items")
+        if not isinstance(raw_items, list):
+            return []
+
+        result: list[QuotationSummarySelectionItem] = []
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                continue
+            result.append(
+                QuotationSummarySelectionItem(
+                    selection_index=int(raw.get("selection_index") or 0),
+                    partid=str(raw.get("partid") or "").strip(),
+                    u8_parent_inv_code=str(raw.get("u8_parent_inv_code") or "").strip(),
+                    type_name=str(raw.get("type_name") or "").strip(),
+                    pdm_name=str(raw.get("pdm_name") or "").strip(),
+                    query_index=raw.get("query_index") if isinstance(raw.get("query_index"), int) else None,
+                    query_keywords=[
+                        str(item).strip()
+                        for item in raw.get("query_keywords", [])
+                        if str(item).strip()
+                    ]
+                    if isinstance(raw.get("query_keywords"), list)
+                    else [],
+                    query_expanded_keywords=[
+                        str(item).strip()
+                        for item in raw.get("query_expanded_keywords", [])
+                        if str(item).strip()
+                    ]
+                    if isinstance(raw.get("query_expanded_keywords"), list)
+                    else [],
+                    matched_pdm_row=bool(raw.get("matched_pdm_row")),
+                )
+            )
+        return result
 
 
 class QuotationDispatchAdapter(TaskDispatchPort):

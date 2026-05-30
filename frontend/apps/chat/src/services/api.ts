@@ -2,6 +2,40 @@ import { config } from '../config'
 import type { ApiError } from '../types/chat'
 import { clearAuthTokenFromStorage, getAuthTokenFromStorage } from './token_storage'
 
+const DEBUG_API_DIAGNOSTICS = true
+const FETCH_PENDING_WARN_MS = 20000
+let authorizedFetchSeq = 0
+
+const logApiDiag = (event: string, details?: Record<string, unknown>): void => {
+  if (!DEBUG_API_DIAGNOSTICS) return
+  try {
+    console.info('[ApiDiag]', {
+      event,
+      ts: new Date().toISOString(),
+      ...details,
+    })
+  } catch {
+    // ignore logging failures
+  }
+}
+
+const logApiDiagError = (event: string, error: unknown, details?: Record<string, unknown>): void => {
+  if (!DEBUG_API_DIAGNOSTICS) return
+  try {
+    const cast = error as { message?: string; stack?: string; name?: string }
+    console.error('[ApiDiagError]', {
+      event,
+      ts: new Date().toISOString(),
+      errorName: cast?.name,
+      errorMessage: cast?.message,
+      errorStack: cast?.stack,
+      ...details,
+    })
+  } catch {
+    // ignore logging failures
+  }
+}
+
 const handleUnauthorized = (): void => {
   clearAuthTokenFromStorage()
   try {
@@ -108,18 +142,76 @@ export const apiRequest = async <T>(
   return response.json()
 }
 
+export const apiRequestFormData = async <T>(
+  endpoint: string,
+  formData: FormData
+): Promise<T> => {
+  const response = await authorizedFetch(endpoint, {
+    method: 'POST',
+    body: formData,
+  }, { jsonContentType: false })
+
+  if (!response.ok) {
+    await handleApiError(response)
+  }
+  return response.json()
+}
+
 export const authorizedFetch = async (
   endpoint: string,
   options?: RequestInit,
   authOptions?: { jsonContentType?: boolean }
 ): Promise<Response> => {
   const url = `${config.apiBaseUrl}${endpoint}`
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...createAuthHeaders(authOptions),
-      ...options?.headers,
-    },
+  const method = String(options?.method ?? 'GET').toUpperCase()
+  const requestId = ++authorizedFetchSeq
+  const startedAt = Date.now()
+  const pendingTimer = window.setTimeout(() => {
+    logApiDiag('authorized_fetch_pending_too_long', {
+      requestId,
+      endpoint,
+      url,
+      method,
+      elapsedMs: Date.now() - startedAt,
+    })
+  }, FETCH_PENDING_WARN_MS)
+
+  logApiDiag('authorized_fetch_start', {
+    requestId,
+    endpoint,
+    url,
+    method,
   })
-  return response
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        ...createAuthHeaders(authOptions),
+        ...options?.headers,
+      },
+    })
+
+    logApiDiag('authorized_fetch_resolved', {
+      requestId,
+      endpoint,
+      url,
+      method,
+      status: response.status,
+      ok: response.ok,
+      elapsedMs: Date.now() - startedAt,
+    })
+    return response
+  } catch (error) {
+    logApiDiagError('authorized_fetch_rejected', error, {
+      requestId,
+      endpoint,
+      url,
+      method,
+      elapsedMs: Date.now() - startedAt,
+    })
+    throw error
+  } finally {
+    window.clearTimeout(pendingTimer)
+  }
 }

@@ -8,7 +8,9 @@ from app.domain.quotation.pdm_result import (
     summarize_partid_list,
 )
 from app.domain.quotation.results import Phase1Result, Phase2Result
+from app.domain.quotation.summary_selection import build_summary_selection_items
 from app.domain.quotation.u8_grouping import group_u8_result_by_type
+from app.domain.quotation.workbook import build_quotation_workbook_data
 
 __all__ = [
     "QuotationPipelineCancelledError",
@@ -20,5 +22,7 @@ __all__ = [
     "collect_pdm_partids",
     "summarize_pdm_query_params",
     "summarize_partid_list",
+    "build_summary_selection_items",
     "group_u8_result_by_type",
+    "build_quotation_workbook_data",
 ]

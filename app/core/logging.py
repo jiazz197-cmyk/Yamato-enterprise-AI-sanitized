@@ -65,6 +65,7 @@ def _build_logging_config() -> Dict[str, Any]:
         "loggers": {
             "app": {"handlers": ["default"], "level": LOG_LEVEL, "propagate": False},
             "app.database": {"handlers": ["plain"], "level": LOG_LEVEL, "propagate": False},
+            "app.diag": {"handlers": ["plain"], "level": LOG_LEVEL, "propagate": False},
             "app.requests": {"handlers": ["plain"], "level": LOG_LEVEL, "propagate": False},
             "app.security": {"handlers": ["plain"], "level": LOG_LEVEL, "propagate": False},
             "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
@@ -78,13 +79,16 @@ def _build_logging_config() -> Dict[str, Any]:
     }
     config["handlers"]["app_file"] = _file_handler("app.log")
     config["handlers"]["database_file"] = _file_handler("database.log")
+    config["handlers"]["diag_file"] = _file_handler("diag.log")
     config["handlers"]["requests_file"] = _file_handler("requests.log")
     config["handlers"]["security_file"] = _file_handler("security.log")
 
     config["loggers"]["app"]["handlers"].append("app_file")
     config["loggers"]["app.database"]["handlers"].append("database_file")
+    config["loggers"]["app.diag"]["handlers"].append("diag_file")
     config["loggers"]["app.requests"]["handlers"].append("requests_file")
     config["loggers"]["app.security"]["handlers"].append("security_file")
+
     return config
 
 

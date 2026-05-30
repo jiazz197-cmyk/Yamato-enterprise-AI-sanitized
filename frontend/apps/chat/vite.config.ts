@@ -31,6 +31,7 @@ export default defineConfig(({ mode }) => {
     target,
     changeOrigin: true,
     secure: false,
+    ws: true,
     configure: (proxy: any) => {
       if (injectedApiKey) {
         proxy.on('proxyReq', (proxyReq: any) => {

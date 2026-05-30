@@ -1,31 +1,130 @@
-"""Group flat U8 BOM rows by product type from keywords + PDM→U8 mapping (pure)."""
+"""Group flat U8 BOM rows by product type from keywords + PDM/U8 mapping."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from collections.abc import Mapping
+from typing import Any, Dict, List, Optional, Tuple
 
 
-def group_u8_result_by_type(
-    *,
-    keywords_payload: Dict[str, Any],
-    u8_result: Dict[str, Any],
-    pdm_to_u8_mappings: List[Dict[str, str]],
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Build type-grouped U8 payload using PDM->U8 mapping + U8 root code.
-
-    Returns:
-        (u8_result_by_type, u8_result_type_summary)
-    """
-    items = u8_result.get("items") if isinstance(u8_result, dict) else None
-    if not isinstance(items, list):
-        return {"total": 0, "items": []}, {"total_types": 0, "types": []}
-
-    keywords = keywords_payload.get("keywords") if isinstance(keywords_payload, dict) else None
+def _normalized_keywords(keywords_payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    keywords = keywords_payload.get("keywords") if isinstance(keywords_payload, Mapping) else None
     if isinstance(keywords, dict):
         keywords = [keywords]
     if not isinstance(keywords, list):
-        keywords = []
+        return []
+    return [entry for entry in keywords if isinstance(entry, dict)]
 
+
+def _normalized_partids(values: Any) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    ordered: List[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        partid = str(raw).strip()
+        if not partid or partid in seen:
+            continue
+        seen.add(partid)
+        ordered.append(partid)
+    return ordered
+
+
+def _query_index_to_type(keywords: List[Dict[str, Any]]) -> Dict[int, str]:
+    mapping: Dict[int, str] = {}
+    for idx, entry in enumerate(keywords, start=1):
+        mapping[idx] = str(entry.get("type") or "").strip() or "Uncategorized"
+    return mapping
+
+
+def _selection_to_types(
+    *,
+    approved_partids: List[str],
+    pdm_result: Mapping[str, Any],
+    query_index_to_type: Dict[int, str],
+) -> Dict[str, str]:
+    items = pdm_result.get("items") if isinstance(pdm_result, Mapping) else None
+    if not isinstance(items, list) or not approved_partids:
+        return {}
+
+    approved_set = set(approved_partids)
+    partid_to_type: Dict[str, str] = {}
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        partid = str(item.get("PARTID") or "").strip()
+        if not partid or partid not in approved_set or partid in partid_to_type:
+            continue
+
+        query_index = item.get("QUERY_INDEX")
+        if isinstance(query_index, str):
+            try:
+                query_index = int(query_index.strip())
+            except ValueError:
+                query_index = None
+        if not isinstance(query_index, int):
+            continue
+
+        partid_to_type[partid] = query_index_to_type.get(query_index, "Uncategorized")
+    return partid_to_type
+
+
+def _selection_to_u8_codes(
+    *,
+    approved_partids: List[str],
+    pdm_to_u8_mappings: List[Dict[str, str]],
+) -> Dict[str, str]:
+    if not approved_partids:
+        return {}
+
+    approved_set = set(approved_partids)
+    partid_to_code: Dict[str, str] = {}
+    for mapping in pdm_to_u8_mappings:
+        if not isinstance(mapping, dict):
+            continue
+        partid = str(mapping.get("pdm_partid") or "").strip()
+        code = str(mapping.get("u8_parent_inv_code") or "").strip()
+        if not partid or not code or partid not in approved_set or partid in partid_to_code:
+            continue
+        partid_to_code[partid] = code
+    return partid_to_code
+
+
+def _build_selection_driven_groups(
+    *,
+    approved_partids: List[str],
+    partid_to_type: Dict[str, str],
+    partid_to_code: Dict[str, str],
+) -> Tuple[Dict[str, List[str]], List[Dict[str, Any]]]:
+    type_to_codes: Dict[str, List[str]] = {}
+    type_entries: List[Dict[str, Any]] = []
+
+    for partid in approved_partids:
+        type_name = partid_to_type.get(partid)
+        code = partid_to_code.get(partid)
+        matched = bool(type_name and code)
+        type_entries.append(
+            {
+                "pdm_partid": partid,
+                "type": type_name or "Uncategorized",
+                "u8_parent_inv_code": code or "",
+                "matched": matched,
+            }
+        )
+        if not matched:
+            continue
+
+        codes = type_to_codes.setdefault(type_name, [])
+        if code not in codes:
+            codes.append(code)
+
+    return type_to_codes, type_entries
+
+
+def _build_positional_groups(
+    *,
+    keywords: List[Dict[str, Any]],
+    pdm_to_u8_mappings: List[Dict[str, str]],
+) -> Tuple[Dict[str, List[str]], List[Dict[str, Any]]]:
     mapped_order: List[str] = []
     mapped_set: set[str] = set()
     for mapping in pdm_to_u8_mappings:
@@ -39,12 +138,8 @@ def group_u8_result_by_type(
 
     type_entries: List[Dict[str, Any]] = []
     type_to_codes: Dict[str, List[str]] = {}
-    fallback_name = "未命名"
-
     for idx, entry in enumerate(keywords, start=1):
-        if not isinstance(entry, dict):
-            continue
-        type_name = str(entry.get("type") or "").strip() or fallback_name
+        type_name = str(entry.get("type") or "").strip() or "Uncategorized"
         part_code = mapped_order[idx - 1] if idx - 1 < len(mapped_order) else ""
         if not part_code:
             continue
@@ -56,6 +151,52 @@ def group_u8_result_by_type(
                 "u8_parent_inv_code": part_code,
                 "matched": True,
             }
+        )
+    return type_to_codes, type_entries
+
+
+def group_u8_result_by_type(
+    *,
+    keywords_payload: Dict[str, Any],
+    pdm_result: Optional[Dict[str, Any]] = None,
+    approved_partids: Optional[List[str]] = None,
+    u8_result: Dict[str, Any],
+    pdm_to_u8_mappings: List[Dict[str, str]],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Build type-grouped U8 payload.
+
+    When approval context is available, the grouping follows the approved PARTIDs
+    and their original QUERY_INDEX/type association. Otherwise it falls back to
+    the previous positional behavior.
+    """
+
+    items = u8_result.get("items") if isinstance(u8_result, dict) else None
+    if not isinstance(items, list):
+        return {"total": 0, "items": []}, {"total_types": 0, "types": []}
+
+    keywords = _normalized_keywords(keywords_payload)
+    normalized_approved_partids = _normalized_partids(approved_partids)
+    query_index_to_type = _query_index_to_type(keywords)
+    partid_to_type = _selection_to_types(
+        approved_partids=normalized_approved_partids,
+        pdm_result=pdm_result or {},
+        query_index_to_type=query_index_to_type,
+    )
+    partid_to_code = _selection_to_u8_codes(
+        approved_partids=normalized_approved_partids,
+        pdm_to_u8_mappings=pdm_to_u8_mappings,
+    )
+
+    if normalized_approved_partids and partid_to_type and partid_to_code:
+        type_to_codes, type_entries = _build_selection_driven_groups(
+            approved_partids=normalized_approved_partids,
+            partid_to_type=partid_to_type,
+            partid_to_code=partid_to_code,
+        )
+    else:
+        type_to_codes, type_entries = _build_positional_groups(
+            keywords=keywords,
+            pdm_to_u8_mappings=pdm_to_u8_mappings,
         )
 
     root_to_rows: Dict[str, List[Dict[str, Any]]] = {}
@@ -81,11 +222,12 @@ def group_u8_result_by_type(
             }
         )
 
-    unmatched_codes = [code for code in mapped_order if code not in root_to_rows]
+    selected_codes = [code for codes in type_to_codes.values() for code in codes]
+    unmatched_codes = [code for code in selected_codes if code not in root_to_rows]
     summary = {
         "total_types": len(grouped_items),
         "total_items": len(items),
-        "matched_root_codes": len(mapped_order) - len(unmatched_codes),
+        "matched_root_codes": len(selected_codes) - len(unmatched_codes),
         "unmatched_root_codes": unmatched_codes,
         "types": [
             {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy.orm import Session
 
 from app.models.orm.platform.user import User, UserRole
@@ -64,3 +66,23 @@ class DeleteApprovedClosingFormUseCase:
 
     def execute(self, db: Session, record_id: int, current_user: User):
         return self._svc.delete_approved_closing_form(db, record_id, current_user.username)
+
+
+class DeleteRejectedClosingFormUseCase:
+    def __init__(self, svc: ClosingFormServicePort):
+        self._svc = svc
+
+    def execute(self, db: Session, form_id: int, current_user: User):
+        return self._svc.delete_rejected_closing_form(db, form_id, current_user.username)
+
+
+class UploadClosingFormImageUseCase:
+    def __init__(self, svc: ClosingFormServicePort):
+        self._svc = svc
+
+    def execute(
+        self, file_stream: Any, original_filename: str, content_type: str, uploader: str
+    ) -> str:
+        return self._svc.upload_closing_form_image(
+            file_stream, original_filename, content_type, uploader
+        )

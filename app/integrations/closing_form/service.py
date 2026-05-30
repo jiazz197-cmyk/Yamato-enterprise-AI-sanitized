@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List
+from pathlib import Path
+from typing import List, Optional
+from uuid import uuid4
 
 from llama_index.core.schema import TextNode
 from sqlalchemy import text
@@ -11,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.storage import delete_from_minio, upload_stream_to_minio
 from app.integrations.closing_form.constants import (
     CLOSING_FORM_INSTANCE_ID,
     CLOSING_FORM_TABLE,
@@ -43,21 +46,46 @@ _vector_fail_msg = "写入知识库失败，表单已保留，请稍后重试"
 _generic_approve_fail = "审批失败，表单已保留，请稍后重试"
 
 
+def upload_closing_form_image(
+    file_stream, original_filename: str, content_type: str, uploader: str
+) -> str:
+    """上传报单图片到 MinIO，返回 object_name"""
+    prefix = settings.CLOSING_FORM_IMAGE_PREFIX
+    ext = Path(original_filename).suffix or ".jpg"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_name = f"{ts}_{uuid4().hex}{ext}"
+    object_name = f"{prefix}/{uploader}_{unique_name}"
+
+    result = upload_stream_to_minio(file_stream, object_name, content_type=content_type)
+    if result.startswith("Error"):
+        raise RuntimeError(result)
+
+    logger.info("上传报单图片成功: user=%s, object=%s", uploader, object_name)
+    return object_name
+
+
 def submit_closing_form(db: Session, uploader: str, form_data: ClosingFormSubmit) -> ClosingFormSubmitResponse:
     form_text = clean_text_for_postgres(form_data.to_formatted_text())
     upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     db.execute(
         text(
-            f"INSERT INTO {PENDING_TABLE} (text, uploader, upload_time, status)"
-            " VALUES (:t, :u, :ts, :st)"
+            f"INSERT INTO {PENDING_TABLE} "
+            "(text, uploader, upload_time, status, image_url_1, image_url_2)"
+            " VALUES (:t, :u, :ts, :st, :img1, :img2)"
         ),
-        {"t": form_text, "u": uploader, "ts": upload_time, "st": "pending"},
+        {
+            "t": form_text, "u": uploader, "ts": upload_time, "st": "pending",
+            "img1": form_data.image_url_1,
+            "img2": form_data.image_url_2,
+        },
     )
     logger.info("填表已暂存至待审批队列: uploader=%s, upload_time=%s", uploader, upload_time)
     return ClosingFormSubmitResponse(
         success=True,
         message="提交成功，等待审批",
         form_text=form_text,
+        image_url_1=form_data.image_url_1,
+        image_url_2=form_data.image_url_2,
     )
 
 
@@ -67,7 +95,7 @@ def list_merged_forms(
     if is_privileged:
         pending_rows = db.execute(
             text(
-                f"SELECT id, text, uploader, upload_time, status"
+                f"SELECT id, text, uploader, upload_time, status, image_url_1, image_url_2"
                 f" FROM {PENDING_TABLE}"
                 f" ORDER BY upload_time DESC"
             )
@@ -75,7 +103,7 @@ def list_merged_forms(
     else:
         pending_rows = db.execute(
             text(
-                f"SELECT id, text, uploader, upload_time, status"
+                f"SELECT id, text, uploader, upload_time, status, image_url_1, image_url_2"
                 f" FROM {PENDING_TABLE}"
                 f" WHERE uploader = :uploader"
                 f" ORDER BY upload_time DESC"
@@ -88,7 +116,9 @@ def list_merged_forms(
             text(
                 f"SELECT id, text,"
                 f" metadata_->>'upload_time' AS upload_time,"
-                f" metadata_->>'uploader'   AS uploader"
+                f" metadata_->>'uploader'   AS uploader,"
+                f" metadata_->>'image_url_1' AS image_url_1,"
+                f" metadata_->>'image_url_2' AS image_url_2"
                 f" FROM {CLOSING_FORM_TABLE}"
                 f" ORDER BY metadata_->>'upload_time' DESC"
             )
@@ -98,7 +128,9 @@ def list_merged_forms(
             text(
                 f"SELECT id, text,"
                 f" metadata_->>'upload_time' AS upload_time,"
-                f" metadata_->>'uploader'   AS uploader"
+                f" metadata_->>'uploader'   AS uploader,"
+                f" metadata_->>'image_url_1' AS image_url_1,"
+                f" metadata_->>'image_url_2' AS image_url_2"
                 f" FROM {CLOSING_FORM_TABLE}"
                 f" WHERE metadata_->>'uploader' = :uploader"
                 f" ORDER BY metadata_->>'upload_time' DESC"
@@ -113,6 +145,8 @@ def list_merged_forms(
             upload_time=row.upload_time,
             uploader=row.uploader or "",
             status=getattr(row, "status", "pending"),
+            image_url_1=getattr(row, "image_url_1", None) or None,
+            image_url_2=getattr(row, "image_url_2", None) or None,
         )
         for row in pending_rows
     ] + [
@@ -122,6 +156,8 @@ def list_merged_forms(
             upload_time=row.upload_time,
             uploader=row.uploader or "",
             status="approved",
+            image_url_1=getattr(row, "image_url_1", None) or None,
+            image_url_2=getattr(row, "image_url_2", None) or None,
         )
         for row in approved_rows
     ]
@@ -140,7 +176,7 @@ def approve_pending_form(
 ) -> ClosingFormApproveResponse:
     row = db.execute(
         text(
-            f"SELECT id, text, uploader, upload_time, status"
+            f"SELECT id, text, uploader, upload_time, status, image_url_1, image_url_2"
             f" FROM {PENDING_TABLE}"
             f" WHERE id = :id"
         ),
@@ -161,6 +197,8 @@ def approve_pending_form(
                 "uploader": row.uploader,
                 "upload_time": row.upload_time,
                 "status": "approved",
+                "image_url_1": row.image_url_1 or "",
+                "image_url_2": row.image_url_2 or "",
             },
         )
         db_config = {
@@ -209,7 +247,7 @@ def approve_pending_form(
 def reject_pending_form(db: Session, form_id: int, rejected_by_username: str) -> ClosingFormRejectResponse:
     row = db.execute(
         text(
-            f"SELECT id, uploader, status"
+            f"SELECT id, uploader, status, image_url_1, image_url_2"
             f" FROM {PENDING_TABLE}"
             f" WHERE id = :id"
         ),
@@ -223,8 +261,12 @@ def reject_pending_form(db: Session, form_id: int, rejected_by_username: str) ->
         raise ValidationError(
             f"表单状态不是待审批（当前状态：{getattr(row, 'status', 'pending')}）"
         )
+
+    _delete_form_images(row.image_url_1, row.image_url_2)
+
     db.execute(
-        text(f"UPDATE {PENDING_TABLE} SET status = 'rejected' WHERE id = :id"),
+        text(f"UPDATE {PENDING_TABLE} SET status = 'rejected',"
+             f" image_url_1 = NULL, image_url_2 = NULL WHERE id = :id"),
         {"id": form_id},
     )
     logger.info(
@@ -234,6 +276,31 @@ def reject_pending_form(db: Session, form_id: int, rejected_by_username: str) ->
         rejected_by_username,
     )
     return ClosingFormRejectResponse(success=True, message="审批已拒绝")
+
+
+def delete_rejected_closing_form(
+    db: Session, form_id: int, deleted_by_username: str
+) -> ClosingFormDeleteResponse:
+    row = db.execute(
+        text(f"SELECT id, status FROM {PENDING_TABLE} WHERE id = :id"),
+        {"id": form_id},
+    ).first()
+    if row is None:
+        from app.core.exceptions import NotFoundError
+        raise NotFoundError("记录不存在")
+    if getattr(row, "status", "") != "rejected":
+        from app.core.exceptions import ValidationError
+        raise ValidationError("仅允许删除不通过状态的表单")
+
+    db.execute(text(f"DELETE FROM {PENDING_TABLE} WHERE id = :id"), {"id": form_id})
+    logger.info(
+        "删除不通过表单记录: form_id=%s, deleted_by=%s",
+        form_id,
+        deleted_by_username,
+    )
+    return ClosingFormDeleteResponse(
+        success=True, message="删除成功", deleted_id=str(form_id)
+    )
 
 
 def list_collection2(db: Session) -> Collection2ListResponse:
@@ -291,13 +358,18 @@ def delete_collection2_record(
 def delete_approved_closing_form(
     db: Session, record_id: int, deleted_by_username: str
 ) -> ClosingFormDeleteResponse:
-    exists = db.execute(
-        text(f"SELECT id FROM {CLOSING_FORM_TABLE} WHERE id = :id"),
+    row = db.execute(
+        text(f"SELECT id, metadata_->>'image_url_1' AS image_url_1,"
+             f" metadata_->>'image_url_2' AS image_url_2"
+             f" FROM {CLOSING_FORM_TABLE} WHERE id = :id"),
         {"id": record_id},
     ).first()
-    if exists is None:
+    if row is None:
         from app.core.exceptions import NotFoundError
         raise NotFoundError("记录不存在")
+
+    _delete_form_images(row.image_url_1, row.image_url_2)
+
     delete_result = db.execute(
         text(f"DELETE FROM {CLOSING_FORM_TABLE} WHERE id = :id"),
         {"id": record_id},
@@ -313,3 +385,22 @@ def delete_approved_closing_form(
     return ClosingFormDeleteResponse(
         success=True, message="删除成功", deleted_id=str(record_id)
     )
+
+
+def _delete_form_images(*image_urls: Optional[str]) -> None:
+    """删除表单关联的 MinIO 图片。
+
+    与 file_manager 的 delete_file_and_object 策略一致：
+    - MinIO 删除失败仅打 warning，不抛异常
+    - 业务操作（删除表单/拒绝审批）不受影响
+    - 孤儿文件可通过 form_pic/ 前缀定期批量清理
+    """
+    for url in image_urls:
+        if not url:
+            continue
+        if not delete_from_minio(url):
+            logger.warning(
+                "MinIO 图片删除失败（已继续业务流程）: object=%s", url
+            )
+        else:
+            logger.debug("已删除 MinIO 图片: %s", url)

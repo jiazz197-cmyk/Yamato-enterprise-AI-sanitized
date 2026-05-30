@@ -3,6 +3,7 @@
 interface AppConfig {
   port: number
   apiBaseUrl: string
+  wsBaseUrl?: string
   env: string
   userName?: string
   userAvatarUrl?: string
@@ -51,6 +52,7 @@ const getConfig = (): AppConfig => {
   return {
     port: portNumber,
     apiBaseUrl,
+    wsBaseUrl: import.meta.env.VITE_WS_BASE_URL || undefined,
     env: import.meta.env.VITE_ENV || import.meta.env.MODE,
     userName: import.meta.env.VITE_USER_NAME,
     userAvatarUrl: import.meta.env.VITE_USER_AVATAR_URL,

@@ -20,7 +20,7 @@ from app.schemas.platform.token import TokenResponse
 from app.schemas.platform.user import UserLogin, UserRead, UserRoleUpdate, UserRegister
 
 router = APIRouter()
-logger = get_logger("auth")
+logger = get_logger("security.auth")
 
 
 @router.post("/login", response_model=TokenResponse, summary="用户登录")

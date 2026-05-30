@@ -16,7 +16,7 @@
         </p>
       </div>
       <div class="header-actions">
-        <button class="secondary-btn" :disabled="loading" @click="loadTasks">
+        <button class="secondary-btn" :disabled="loading" @click="() => loadTasks()">
           刷新
         </button>
         <button class="primary-btn" :disabled="uploading" @click="openFilePicker">
@@ -38,8 +38,9 @@
           v-for="task in queuedTasks"
           :key="task.task_id"
           :task="task"
-          :show-owner="isAdminLike"
+          :show-owner="true"
           :can-cancel="canCancel(task)"
+          :can-delete="false"
           @cancel="handleCancel(task.task_id)"
           @view-result="openResultModal(task)"
           @view-file="handleViewFile(task.task_id)"
@@ -57,8 +58,9 @@
           v-for="task in runningTasks"
           :key="task.task_id"
           :task="task"
-          :show-owner="isAdminLike"
+          :show-owner="true"
           :can-cancel="canCancel(task)"
+          :can-delete="false"
           :is-approving="approvingTasks.has(task.task_id)"
           @cancel="handleCancel(task.task_id)"
           @approve="(partids: string[]) => handleApprove(task.task_id, partids)"
@@ -80,9 +82,11 @@
             v-for="task in doneTasks"
             :key="task.task_id"
             :task="task"
-            :show-owner="isAdminLike"
+            :show-owner="true"
             :can-cancel="false"
+            :can-delete="canDelete(task)"
             @cancel="handleCancel(task.task_id)"
+            @delete="handleDelete(task.task_id)"
             @view-result="openResultModal(task)"
             @view-file="handleViewFile(task.task_id)"
             @download-u8-xlsx="handleDownloadU8Xlsx(task.task_id)"
@@ -94,13 +98,16 @@
     <div v-if="resultModalVisible" class="result-modal-mask" @click.self="closeResultModal">
       <div class="result-modal">
         <div class="result-modal__header">
-          <h3>任务结果：{{ selectedTask?.uploaded_file_name }}</h3>
+          <h3>任务结果：{{ selectedTask?.display_name || selectedTask?.uploaded_file_name }}</h3>
           <button class="icon-btn" @click="closeResultModal">关闭</button>
         </div>
         <div class="result-modal__content">
           <p><strong>任务ID：</strong>{{ selectedTask?.task_id }}</p>
           <p><strong>状态：</strong>{{ selectedTask?.status }}</p>
           <p><strong>消息：</strong>{{ selectedTask?.message }}</p>
+          <p v-if="isCompactResult" class="result-compact-tip">
+            当前显示的是轻量摘要，完整 U8 明细请下载 Excel 查看。
+          </p>
           <pre class="result-json">{{ formattedResult }}</pre>
         </div>
       </div>
@@ -116,6 +123,7 @@ import {
   approveQuotationTask,
   cancelQuotationTask,
   createQuotationTask,
+  deleteQuotationTask,
   downloadQuotationTaskFile,
   downloadQuotationU8ByTypeWorkbook,
   getQuotationTask,
@@ -131,9 +139,505 @@ const errorMessage = ref('')
 const wsConnections = ref(0)
 const selectedTask = ref<QuotationTaskItem | null>(null)
 const resultModalVisible = ref(false)
-const pollingTimer = ref<number | null>(null)
 
 const wsMap = new Map<string, WebSocket>()
+const wsTaskEpochMap = new Map<string, number>()
+const wsConnectQueue: string[] = []
+const wsConnectQueuedTaskIds = new Set<string>()
+let wsConnectBatchTimer: number | null = null
+const refreshTimers = new Map<string, number>()
+const refreshInFlightTaskIds = new Set<string>()
+const refreshQueuedTaskIds = new Set<string>()
+const approvalDetailRequestedTaskIds = new Set<string>()
+let loadTasksAbortController: AbortController | null = null
+let loadTasksTimeoutId: number | null = null
+let isPageUnmounted = false
+
+const wsDisabledUntilByTaskId = new Map<string, number>()
+const taskPollingTimerByTaskId = new Map<string, number>()
+const taskSyncModeByTaskId = new Map<string, 'ws' | 'polling'>()
+const wsFailureCountByTaskId = new Map<string, number>()
+const wsExpectedCloseReasonsByTaskId = new Map<string, string>()
+
+let listRefreshTimerId: number | null = null
+let listRefreshBackoffMultiplier = 1
+let listRefreshSuccessiveFailures = 0
+
+const ACTIVE_STATUSES: string[] = ['queued', 'running', 'awaiting_approval']
+const TERMINAL_STATUSES: string[] = ['completed', 'failed', 'cancelled']
+const ENABLE_TASK_WEBSOCKET = true
+const DEBUG_FILE_MANAGER_DIAGNOSTICS = true
+const WS_CONNECT_BATCH_SIZE = 4
+const WS_CONNECT_BATCH_INTERVAL_MS = 100
+const UPLOAD_CREATE_TASK_PENDING_WARN_MS = 20000
+const WS_FAILURE_WINDOW_MS = 30000
+const WS_FAILURE_WARN_COUNT = 6
+const WS_QUEUE_WARN_LENGTH = 12
+const EVENT_LOOP_LAG_SAMPLE_INTERVAL_MS = 1000
+const EVENT_LOOP_LAG_WARN_MS = 250
+const WS_COOLDOWN_MS = 60000
+const WS_MAX_PER_TASK_FAILURES = 2
+const TASK_POLLING_INTERVAL_MS = 4000
+const LIST_REFRESH_NORMAL_MS = 60000
+const LIST_REFRESH_BACKOFF_1_MS = 90000
+const LIST_REFRESH_BACKOFF_2_MS = 120000
+const LIST_REFRESH_BACKOFF_MAX_MS = 180000
+
+let loadTasksRequestSeq = 0
+let loadTasksActiveSeq = 0
+let uploadAttemptSeq = 0
+let stateEpoch = 0
+let wsConnectAttemptSeq = 0
+let wsConnectFailureSeq = 0
+let wsConsecutiveFailures = 0
+let wsMaxQueueLengthSeen = 0
+let loadTasksAbortErrorCount = 0
+let loadTasksForceAbortCount = 0
+let loadTasksSkipWhileLoadingCount = 0
+let loadTasksInFlightRequestId: number | null = null
+let eventLoopLagProbeTimer: number | null = null
+let eventLoopLagProbeLastTickMs = 0
+let eventLoopLagWarnCount = 0
+const wsFailureTimestamps: number[] = []
+
+const logDiag = (event: string, details?: Record<string, unknown>): void => {
+  if (!DEBUG_FILE_MANAGER_DIAGNOSTICS) return
+  try {
+    console.info('[FileManagerDiag]', {
+      event,
+      ts: new Date().toISOString(),
+      route: window.location.pathname,
+      tasks: tasks.value.length,
+      wsConnections: wsMap.size,
+      loading: loading.value,
+      ...details,
+    })
+  } catch {
+    // ignore logging failures
+  }
+}
+
+const logDiagError = (event: string, error: unknown, details?: Record<string, unknown>): void => {
+  if (!DEBUG_FILE_MANAGER_DIAGNOSTICS) return
+  try {
+    const cast = error as { message?: string; stack?: string; name?: string }
+    console.error('[FileManagerDiagError]', {
+      event,
+      ts: new Date().toISOString(),
+      route: window.location.pathname,
+      tasks: tasks.value.length,
+      wsConnections: wsMap.size,
+      loading: loading.value,
+      errorName: cast?.name,
+      errorMessage: cast?.message,
+      errorStack: cast?.stack,
+      ...details,
+    })
+  } catch {
+    // ignore logging failures
+  }
+}
+
+const logDiagCritical = (event: string, details?: Record<string, unknown>): void => {
+  if (!DEBUG_FILE_MANAGER_DIAGNOSTICS) return
+  try {
+    console.error('[FileManagerDiagCritical]', {
+      event,
+      ts: new Date().toISOString(),
+      route: window.location.pathname,
+      tasks: tasks.value.length,
+      wsConnections: wsMap.size,
+      loading: loading.value,
+      ...details,
+    })
+  } catch {
+    // ignore logging failures
+  }
+}
+
+const getArrayLength = (value: unknown): number => (Array.isArray(value) ? value.length : 0)
+
+const getObjectKeyCount = (value: unknown): number => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 0
+  return Object.keys(value as Record<string, unknown>).length
+}
+
+const computeApproxJsonSize = (value: unknown): number | null => {
+  try {
+    return JSON.stringify(value).length
+  } catch {
+    return null
+  }
+}
+
+const logPhase2ResultSnapshot = (task: QuotationTaskItem, source: string): void => {
+  const result = task.result
+  if (!result || typeof result !== 'object') return
+
+  const keywordsPayload = (result as { keywords_payload?: unknown }).keywords_payload
+  const keywords =
+    keywordsPayload && typeof keywordsPayload === 'object'
+      ? (keywordsPayload as { keywords?: unknown }).keywords
+      : undefined
+  const pdmItems = result.pdm_result?.items
+  const queryIndexSet = new Set<number>()
+
+  if (Array.isArray(pdmItems)) {
+    pdmItems.forEach((item) => {
+      const value: unknown = item?.QUERY_INDEX
+      if (typeof value === 'number' && Number.isFinite(value)) queryIndexSet.add(Math.trunc(value))
+      if (typeof value === 'string') {
+        const parsed = Number.parseInt(value.trim(), 10)
+        if (Number.isFinite(parsed)) queryIndexSet.add(parsed)
+      }
+    })
+  }
+
+  logDiag('phase2_result_snapshot', {
+    source,
+    taskId: task.task_id,
+    status: task.status,
+    isCompact: Boolean(result.__result_compact),
+    isOmitted: Boolean(result.__result_omitted),
+    keywordCount: getArrayLength(keywords),
+    pdmItemCount: getArrayLength(pdmItems),
+    pdmDistinctQueryIndexCount: queryIndexSet.size,
+    pdmDeclaredTotal: typeof result.pdm_result?.total === 'number' ? result.pdm_result.total : null,
+    approvedPartidsCount: getArrayLength(result.approved_partids),
+    pdmPartidsCount: getArrayLength(result.pdm_partids),
+    u8ByTypeCount: getArrayLength(result.u8_result_by_type?.items),
+    u8ByTypeSummaryTypeCount: getArrayLength(result.u8_result_type_summary?.types),
+    u8ByTypeSummaryMappingCount: getArrayLength(result.u8_result_type_summary?.mapping),
+    rawExtractedInfoKeyCount: getObjectKeyCount(result.raw_extracted_info),
+    resultApproxJsonChars: computeApproxJsonSize(result),
+  })
+}
+
+const pruneWsFailureTimestamps = (nowMs: number): void => {
+  while (wsFailureTimestamps.length > 0 && nowMs - wsFailureTimestamps[0] > WS_FAILURE_WINDOW_MS) {
+    wsFailureTimestamps.shift()
+  }
+}
+
+const recordWsQueuePressure = (source: string): void => {
+  const queueLength = wsConnectQueue.length
+  if (queueLength > wsMaxQueueLengthSeen) {
+    wsMaxQueueLengthSeen = queueLength
+    logDiag('ws_queue_new_peak', {
+      source,
+      queueLength,
+      maxQueueLengthSeen: wsMaxQueueLengthSeen,
+      queuedTaskIds: wsConnectQueue.slice(0, 8),
+    })
+  }
+
+  if (queueLength >= WS_QUEUE_WARN_LENGTH) {
+    logDiag('ws_queue_pressure_warn', {
+      source,
+      queueLength,
+      activeConnections: wsMap.size,
+      activeTasks: tasks.value.filter((task) => ACTIVE_STATUSES.includes(task.status)).length,
+      queuedTaskIds: wsConnectQueue.slice(0, 12),
+    })
+  }
+}
+
+const recordWsFailure = (source: string, taskId: string, error?: unknown): void => {
+  const nowMs = Date.now()
+  wsConnectFailureSeq += 1
+  wsConsecutiveFailures += 1
+  wsFailureTimestamps.push(nowMs)
+  pruneWsFailureTimestamps(nowMs)
+
+  const prevCount = wsFailureCountByTaskId.get(taskId) ?? 0
+  const newCount = prevCount + 1
+  wsFailureCountByTaskId.set(taskId, newCount)
+
+  logDiagError('ws_failure_observed', error ?? new Error('ws connection failure'), {
+    source,
+    taskId,
+    failureSeq: wsConnectFailureSeq,
+    consecutiveFailures: wsConsecutiveFailures,
+    perTaskFailureCount: newCount,
+    perTaskThreshold: WS_MAX_PER_TASK_FAILURES,
+    failuresInWindow: wsFailureTimestamps.length,
+    failureWindowMs: WS_FAILURE_WINDOW_MS,
+    queueLength: wsConnectQueue.length,
+    connections: wsMap.size,
+  })
+
+  if (wsFailureTimestamps.length >= WS_FAILURE_WARN_COUNT) {
+    logDiag('ws_failure_burst_detected', {
+      source,
+      taskId,
+      failuresInWindow: wsFailureTimestamps.length,
+      failureWindowMs: WS_FAILURE_WINDOW_MS,
+      consecutiveFailures: wsConsecutiveFailures,
+    })
+  }
+
+  if (newCount >= WS_MAX_PER_TASK_FAILURES) {
+    const cooldownUntil = nowMs + WS_COOLDOWN_MS
+    wsDisabledUntilByTaskId.set(taskId, cooldownUntil)
+    switchTaskSyncMode(taskId, 'polling', 'ws_cooldown_after_failures')
+    closeSocket(taskId, 'ws_cooldown')
+    logDiagCritical('ws_task_cooldown_activated', {
+      taskId,
+      perTaskFailureCount: newCount,
+      cooldownUntil,
+      cooldownMs: WS_COOLDOWN_MS,
+      syncMode: taskSyncModeByTaskId.get(taskId),
+    })
+  }
+}
+
+const recordWsConnectSuccess = (taskId: string): void => {
+  const nowMs = Date.now()
+  pruneWsFailureTimestamps(nowMs)
+  if (wsConsecutiveFailures > 0) {
+    logDiag('ws_recovered_after_failures', {
+      taskId,
+      consecutiveFailuresBeforeRecovery: wsConsecutiveFailures,
+      failuresStillInWindow: wsFailureTimestamps.length,
+    })
+  }
+  wsConsecutiveFailures = 0
+  wsFailureCountByTaskId.delete(taskId)
+  wsDisabledUntilByTaskId.delete(taskId)
+}
+
+const recordWsHandshakeSuccess = (taskId: string): void => {
+  recordWsConnectSuccess(taskId)
+}
+
+const switchTaskSyncMode = (taskId: string, newMode: 'ws' | 'polling', reason: string): void => {
+  const oldMode = taskSyncModeByTaskId.get(taskId) ?? 'ws'
+  if (oldMode === newMode) return
+  taskSyncModeByTaskId.set(taskId, newMode)
+  logDiagCritical('task_sync_mode_changed', {
+    taskId,
+    oldMode,
+    newMode,
+    reason,
+  })
+  if (newMode === 'polling') {
+    startTaskPolling(taskId)
+    logDiagCritical('task_sync_mode_ws_to_polling', { taskId, reason })
+  } else {
+    stopTaskPolling(taskId)
+    wsDisabledUntilByTaskId.delete(taskId)
+    wsFailureCountByTaskId.delete(taskId)
+    logDiagCritical('task_sync_mode_polling_to_ws', { taskId, reason })
+  }
+}
+
+const startTaskPolling = (taskId: string): void => {
+  if (taskPollingTimerByTaskId.has(taskId)) return
+  const task = tasks.value.find((t) => t.task_id === taskId)
+  if (!task) return
+  if (!ACTIVE_STATUSES.includes(task.status)) return
+
+  logDiagCritical('task_polling_started', {
+    taskId,
+    status: task.status,
+    intervalMs: TASK_POLLING_INTERVAL_MS,
+  })
+  taskPollingTick(taskId)
+}
+
+const stopTaskPolling = (taskId: string): void => {
+  const timer = taskPollingTimerByTaskId.get(taskId)
+  if (timer !== undefined) {
+    window.clearTimeout(timer)
+    taskPollingTimerByTaskId.delete(taskId)
+  }
+  taskSyncModeByTaskId.delete(taskId)
+  logDiagCritical('task_polling_stopped', { taskId })
+}
+
+const TASK_POLLING_BACKOFF_MAX_MS = 30000
+const TASK_POLLING_429_BACKOFF_MULTIPLIER = 2
+
+const taskPollingTick = (taskId: string, backoffMs?: number): void => {
+  if (isPageUnmounted) return
+  const task = tasks.value.find((t) => t.task_id === taskId)
+  if (!task) {
+    stopTaskPolling(taskId)
+    return
+  }
+  if (!ACTIVE_STATUSES.includes(task.status)) {
+    stopTaskPolling(taskId)
+    closeSocket(taskId, 'task_polling_terminal')
+    return
+  }
+  if (taskSyncModeByTaskId.get(taskId) !== 'polling') return
+
+  const effectiveInterval = typeof backoffMs === 'number' && backoffMs > 0
+    ? backoffMs
+    : TASK_POLLING_INTERVAL_MS
+
+  logDiag('task_polling_tick', { taskId, status: task.status, backoffMs: effectiveInterval })
+  const epoch = stateEpoch
+  getQuotationTask(taskId)
+    .then((task) => {
+      applyTaskUpsertById(task, { epoch, source: 'task_polling_tick' })
+      if (TERMINAL_STATUSES.includes(task.status)) {
+        stopTaskPolling(taskId)
+        return
+      }
+      taskPollingTimerByTaskId.set(
+        taskId,
+        window.setTimeout(() => taskPollingTick(taskId, TASK_POLLING_INTERVAL_MS), TASK_POLLING_INTERVAL_MS)
+      )
+    })
+    .catch((error: unknown) => {
+      const is429 = (error as { status?: number })?.status === 429
+        || String((error as { message?: string })?.message ?? '').includes('过于频繁')
+      const nextBackoff = is429
+        ? Math.min(
+            effectiveInterval * TASK_POLLING_429_BACKOFF_MULTIPLIER,
+            TASK_POLLING_BACKOFF_MAX_MS
+          )
+        : effectiveInterval
+      logDiagCritical('task_polling_tick_failed', {
+        taskId,
+        is429,
+        backoffMs: effectiveInterval,
+        nextBackoffMs: nextBackoff,
+        errorMessage: (error as { message?: string })?.message ?? '',
+      })
+      taskPollingTimerByTaskId.set(
+        taskId,
+        window.setTimeout(() => taskPollingTick(taskId, nextBackoff), nextBackoff)
+      )
+    })
+}
+
+const getNavigatorOnline = (): boolean | null => {
+  if (typeof navigator === 'undefined') return null
+  return typeof navigator.onLine === 'boolean' ? navigator.onLine : null
+}
+
+const getUserAgent = (): string => {
+  if (typeof navigator === 'undefined') return ''
+  return String(navigator.userAgent ?? '')
+}
+
+const logPageEnvironment = (event: string, details?: Record<string, unknown>): void => {
+  logDiag(event, {
+    visibilityState: document.visibilityState,
+    online: getNavigatorOnline(),
+    hasFocus: typeof document.hasFocus === 'function' ? document.hasFocus() : null,
+    userAgent: getUserAgent(),
+    ...details,
+  })
+}
+
+const getWebSocketReadyStateLabel = (socket: WebSocket | null | undefined): string => {
+  if (!socket) return 'missing'
+  if (socket.readyState === WebSocket.CONNECTING) return 'connecting'
+  if (socket.readyState === WebSocket.OPEN) return 'open'
+  if (socket.readyState === WebSocket.CLOSING) return 'closing'
+  if (socket.readyState === WebSocket.CLOSED) return 'closed'
+  return `unknown_${socket.readyState}`
+}
+
+const describeWebSocket = (socket: WebSocket | null | undefined): Record<string, unknown> => ({
+  readyState: socket?.readyState ?? null,
+  readyStateLabel: getWebSocketReadyStateLabel(socket),
+  bufferedAmount: socket?.bufferedAmount ?? null,
+  protocol: socket?.protocol ?? '',
+  extensions: socket?.extensions ?? '',
+  url: socket?.url ?? '',
+})
+
+const startEventLoopLagProbe = (): void => {
+  if (eventLoopLagProbeTimer !== null) return
+  eventLoopLagProbeLastTickMs = Date.now()
+
+  eventLoopLagProbeTimer = window.setInterval(() => {
+    const nowMs = Date.now()
+    const elapsedMs = nowMs - eventLoopLagProbeLastTickMs
+    eventLoopLagProbeLastTickMs = nowMs
+    const lagMs = elapsedMs - EVENT_LOOP_LAG_SAMPLE_INTERVAL_MS
+
+    if (lagMs >= EVENT_LOOP_LAG_WARN_MS) {
+      eventLoopLagWarnCount += 1
+      logDiag('event_loop_lag_warn', {
+        lagMs,
+        elapsedMs,
+        warnCount: eventLoopLagWarnCount,
+        queueLength: wsConnectQueue.length,
+        wsConnections: wsMap.size,
+        taskCount: tasks.value.length,
+        visibilityState: document.visibilityState,
+      })
+    }
+  }, EVENT_LOOP_LAG_SAMPLE_INTERVAL_MS)
+
+  logDiag('event_loop_lag_probe_started', {
+    sampleIntervalMs: EVENT_LOOP_LAG_SAMPLE_INTERVAL_MS,
+    warnThresholdMs: EVENT_LOOP_LAG_WARN_MS,
+  })
+}
+
+const stopEventLoopLagProbe = (): void => {
+  if (eventLoopLagProbeTimer === null) return
+  window.clearInterval(eventLoopLagProbeTimer)
+  eventLoopLagProbeTimer = null
+  logDiag('event_loop_lag_probe_stopped', {
+    warnCount: eventLoopLagWarnCount,
+  })
+}
+
+const handleWindowError = (event: ErrorEvent): void => {
+  logDiagError('window_error', event.error ?? new Error(event.message), {
+    message: event.message,
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno,
+  })
+}
+
+const handleUnhandledRejection = (event: PromiseRejectionEvent): void => {
+  const reason = event.reason as { message?: string; stack?: string; name?: string } | undefined
+  logDiagError('window_unhandled_rejection', reason ?? event.reason, {
+    reasonType: typeof event.reason,
+  })
+}
+
+const handleVisibilityChange = (): void => {
+  logPageEnvironment('page_visibility_changed')
+  if (document.visibilityState === 'visible') {
+    triggerResumeSync('visibility_change')
+  }
+}
+
+const handleOnline = (): void => {
+  logPageEnvironment('page_online_state_changed', {
+    onlineEvent: 'online',
+  })
+  triggerResumeSync('online')
+}
+
+const handleOffline = (): void => {
+  logPageEnvironment('page_online_state_changed', {
+    onlineEvent: 'offline',
+  })
+}
+
+const handleFocus = (): void => {
+  logPageEnvironment('page_focus_changed', {
+    focusEvent: 'focus',
+  })
+  triggerResumeSync('focus')
+}
+
+const handleBlur = (): void => {
+  logPageEnvironment('page_focus_changed', {
+    focusEvent: 'blur',
+  })
+}
 
 const readUserRole = (): string => {
   try {
@@ -147,7 +651,6 @@ const readUserRole = (): string => {
 }
 
 const currentRole = ref(readUserRole())
-const isAdminLike = computed(() => currentRole.value === 'admin' || currentRole.value === 'superuser')
 
 const statusOrder = (status: string): number => {
   if (status === 'running') return 0
@@ -186,102 +689,898 @@ const doneTasks = computed(() => {
     .sort(byDateDesc)
 })
 
+const compactJsonValue = (value: unknown, depth = 0): unknown => {
+  if (depth >= 4) return '[Object]'
+  if (!value || typeof value !== 'object') return value
+
+  if (Array.isArray(value)) {
+    const preview = value.slice(0, 20).map((item) => compactJsonValue(item, depth + 1))
+    if (value.length > preview.length) {
+      preview.push(`... ${value.length - preview.length} more items`)
+    }
+    return preview
+  }
+
+  const source = value as Record<string, unknown>
+  const result: Record<string, unknown> = {}
+  Object.entries(source).forEach(([key, item]) => {
+    result[key] = compactJsonValue(item, depth + 1)
+  })
+  return result
+}
+
+const isCompactResult = computed(() => {
+  return Boolean(selectedTask.value?.result?.__result_compact)
+})
+
 const formattedResult = computed(() => {
   if (!selectedTask.value?.result) {
     return '暂无结果数据'
   }
-  return JSON.stringify(selectedTask.value.result, null, 2)
+  return JSON.stringify(compactJsonValue(selectedTask.value.result), null, 2)
 })
 
 const syncWsConnections = (): void => {
   wsConnections.value = wsMap.size
 }
 
-const upsertTask = (incoming: QuotationTaskItem): void => {
-  const index = tasks.value.findIndex((task) => task.task_id === incoming.task_id)
-  if (index < 0) {
-    tasks.value.unshift(incoming)
-  } else {
-    tasks.value[index] = incoming
-  }
-  tasks.value = [...tasks.value].sort((a, b) => statusOrder(a.status) - statusOrder(b.status))
+const isCurrentEpoch = (epoch?: number): boolean => {
+  if (epoch === undefined) return true
+  return epoch === stateEpoch
 }
 
-const closeSocket = (taskId: string): void => {
+const guardEpoch = (epoch: number | undefined, source: string, details?: Record<string, unknown>): boolean => {
+  if (isCurrentEpoch(epoch)) return true
+  logDiag('state_epoch_discard', {
+    source,
+    receivedEpoch: epoch,
+    currentEpoch: stateEpoch,
+    ...details,
+  })
+  return false
+}
+
+const sortTasksByStatus = (items: QuotationTaskItem[]): QuotationTaskItem[] => {
+  return [...items].sort((a, b) => statusOrder(a.status) - statusOrder(b.status))
+}
+
+const mergeTaskListItem = (
+  incoming: QuotationTaskItem,
+  existing?: QuotationTaskItem
+): QuotationTaskItem => {
+  if (incoming.result?.__result_omitted && existing?.result && !existing.result.__result_omitted) {
+    return {
+      ...incoming,
+      result: existing.result,
+    }
+  }
+  return incoming
+}
+
+const syncSelectedTaskRef = (): void => {
+  const selectedTaskId = selectedTask.value?.task_id
+  if (!selectedTaskId) return
+  const next = tasks.value.find((task) => task.task_id === selectedTaskId) ?? null
+  selectedTask.value = next
+}
+
+const applyTaskListSnapshot = (incomingTasks: QuotationTaskItem[], options?: { epoch?: number; source?: string }): boolean => {
+  if (!guardEpoch(options?.epoch, options?.source ?? 'apply_task_list_snapshot')) {
+    return false
+  }
+
+  const existingById = new Map(tasks.value.map((task) => [task.task_id, task]))
+  const nextTasks = incomingTasks.map((incoming) =>
+    mergeTaskListItem(incoming, existingById.get(incoming.task_id))
+  )
+  tasks.value = sortTasksByStatus(nextTasks)
+  syncSelectedTaskRef()
+
+  nextTasks
+    .filter((task) => Boolean(task.result) && (task.status === 'awaiting_approval' || task.status === 'completed'))
+    .slice(0, 20)
+    .forEach((task) => {
+      logPhase2ResultSnapshot(task, options?.source ?? 'apply_task_list_snapshot')
+    })
+
+  return true
+}
+
+const applyTaskPatchById = (
+  taskId: string,
+  buildNext: (current: QuotationTaskItem) => QuotationTaskItem,
+  options?: { epoch?: number; source?: string }
+): QuotationTaskItem | null => {
+  if (!guardEpoch(options?.epoch, options?.source ?? 'apply_task_patch', { taskId })) {
+    return null
+  }
+
+  const index = tasks.value.findIndex((task) => task.task_id === taskId)
+  if (index < 0) return null
+
+  const current = tasks.value[index]
+  const next = buildNext(current)
+  const nextTasks = [...tasks.value]
+  nextTasks[index] = next
+  tasks.value = sortTasksByStatus(nextTasks)
+
+  if (selectedTask.value?.task_id === taskId) {
+    selectedTask.value = next
+  }
+
+  return next
+}
+
+const applyTaskUpsertById = (
+  incoming: QuotationTaskItem,
+  options?: { epoch?: number; source?: string }
+): QuotationTaskItem | null => {
+  if (!guardEpoch(options?.epoch, options?.source ?? 'apply_task_upsert', {
+    taskId: incoming.task_id,
+  })) {
+    return null
+  }
+
+  const index = tasks.value.findIndex((task) => task.task_id === incoming.task_id)
+  const existing = index >= 0 ? tasks.value[index] : undefined
+  const merged = mergeTaskListItem(incoming, existing)
+  const nextTasks = [...tasks.value]
+
+  if (index < 0) {
+    nextTasks.unshift(merged)
+  } else {
+    nextTasks[index] = merged
+  }
+
+  tasks.value = sortTasksByStatus(nextTasks)
+
+  if (selectedTask.value?.task_id === incoming.task_id) {
+    selectedTask.value = merged
+  }
+
+  if (merged.result && (merged.status === 'awaiting_approval' || merged.status === 'completed')) {
+    logPhase2ResultSnapshot(merged, options?.source ?? 'apply_task_upsert')
+  }
+
+  return merged
+}
+
+const hasApprovalItems = (task: QuotationTaskItem): boolean => {
+  const items = task.result?.pdm_result?.items
+  return Array.isArray(items) && items.length > 0
+}
+
+const removeQueuedTaskSocket = (taskId: string): void => {
+  const queueIndex = wsConnectQueue.indexOf(taskId)
+  if (queueIndex >= 0) {
+    wsConnectQueue.splice(queueIndex, 1)
+  }
+  wsConnectQueuedTaskIds.delete(taskId)
+}
+
+const clearWsConnectScheduler = (): void => {
+  if (wsConnectBatchTimer !== null) {
+    window.clearTimeout(wsConnectBatchTimer)
+    wsConnectBatchTimer = null
+  }
+  wsConnectQueue.forEach((taskId) => {
+    wsTaskEpochMap.delete(taskId)
+  })
+  wsConnectQueue.length = 0
+  wsConnectQueuedTaskIds.clear()
+}
+
+const closeSocket = (taskId: string, reason?: 'ws_cooldown' | 'task_polling_terminal' | 'task_inactive' | 'sync_mode_switch' | undefined): void => {
+  removeQueuedTaskSocket(taskId)
+  wsTaskEpochMap.delete(taskId)
+  if (reason) {
+    wsExpectedCloseReasonsByTaskId.set(taskId, reason)
+  }
+
   const socket = wsMap.get(taskId)
   if (!socket) return
+
+  logDiag('ws_close_initiated', {
+    taskId,
+    reason: reason ?? 'unspecified',
+    beforeConnections: wsMap.size,
+  })
+
   socket.close()
   wsMap.delete(taskId)
   syncWsConnections()
+
+  logDiag('ws_close_done', {
+    taskId,
+    afterConnections: wsMap.size,
+  })
 }
 
-const refreshSingleTask = async (taskId: string): Promise<void> => {
-  try {
-    const task = await getQuotationTask(taskId)
-    upsertTask(task)
-    if (['completed', 'failed', 'cancelled'].includes(task.status)) {
-      closeSocket(taskId)
+const isTaskCurrentlyActive = (taskId: string): boolean => {
+  return tasks.value.some((task) => task.task_id === taskId && ACTIVE_STATUSES.includes(task.status))
+}
+
+const patchTaskFromEvent = (
+  eventPayload: {
+    task_id?: string
+    status?: string
+    progress?: number
+    message?: string
+    error?: string | null
+  },
+  epoch?: number
+): void => {
+  const taskId = String(eventPayload.task_id ?? '').trim()
+  if (!taskId) return
+
+  logDiag('ws_event_received', {
+    taskId,
+    status: eventPayload.status,
+    progress: eventPayload.progress,
+    epoch,
+    beforeTaskCount: tasks.value.length,
+  })
+
+  const next = applyTaskPatchById(
+    taskId,
+    (current) => ({
+      ...current,
+      status:
+        ACTIVE_STATUSES.includes(String(eventPayload.status ?? '')) ||
+        TERMINAL_STATUSES.includes(String(eventPayload.status ?? ''))
+          ? (eventPayload.status as QuotationTaskItem['status'])
+          : current.status,
+      progress: typeof eventPayload.progress === 'number' ? eventPayload.progress : current.progress,
+      message: typeof eventPayload.message === 'string' ? eventPayload.message : current.message,
+      error: typeof eventPayload.error === 'string' ? eventPayload.error : current.error,
+    }),
+    {
+      epoch,
+      source: 'patch_task_from_event',
     }
-  } catch (error) {
-    await loadTasks()
+  )
+
+  if (!next) {
+    if (isCurrentEpoch(epoch)) {
+      logDiag('ws_event_task_missing', {
+        taskId,
+        status: eventPayload.status,
+        currentTaskCount: tasks.value.length,
+      })
+    }
+    return
+  }
+
+  logDiag('ws_event_applied', {
+    taskId,
+    toStatus: next.status,
+    afterTaskCount: tasks.value.length,
+  })
+
+  if (TERMINAL_STATUSES.includes(next.status)) {
+    approvalDetailRequestedTaskIds.delete(taskId)
+    closeSocket(taskId)
   }
 }
 
-const ensureTaskSockets = (): void => {
+const connectTaskSocket = (taskId: string): void => {
+  const epoch = wsTaskEpochMap.get(taskId)
+  if (epoch === undefined || !guardEpoch(epoch, 'ws_connect_guard', { taskId })) {
+    removeQueuedTaskSocket(taskId)
+    return
+  }
+
+  if (isPageUnmounted || !isTaskCurrentlyActive(taskId) || wsMap.has(taskId)) {
+    removeQueuedTaskSocket(taskId)
+    return
+  }
+
+  const wsAttemptId = ++wsConnectAttemptSeq
+  const attemptStartedAt = Date.now()
+  let firstMessageObserved = false
+  logDiagCritical('ws_connect_attempt', {
+    wsAttemptId,
+    taskId,
+    epoch,
+    queueLengthBeforeAttempt: wsConnectQueue.length,
+    currentConnections: wsMap.size,
+    consecutiveFailures: wsConsecutiveFailures,
+    visibilityState: document.visibilityState,
+    online: getNavigatorOnline(),
+    userAgent: getUserAgent(),
+  })
+
+  try {
+    let socketRef: WebSocket | null = null
+    const socket = createTaskWebSocket(taskId, {
+      onOpen: (openedSocket) => {
+        recordWsHandshakeSuccess(taskId)
+        logDiagCritical('ws_open', {
+          wsAttemptId,
+          taskId,
+          epoch,
+          elapsedMs: Date.now() - attemptStartedAt,
+          queueLengthAfterOpen: wsConnectQueue.length,
+          currentConnections: wsMap.size,
+          ...describeWebSocket(openedSocket),
+        })
+      },
+      onMessage: (payload, rawEvent) => {
+        if (!socketRef || wsMap.get(taskId) !== socketRef) return
+        if (!firstMessageObserved) {
+          firstMessageObserved = true
+          logDiagCritical('ws_first_message', {
+            wsAttemptId,
+            taskId,
+            elapsedMs: Date.now() - attemptStartedAt,
+            payloadType: typeof payload,
+            dataLength:
+              typeof rawEvent.data === 'string'
+                ? rawEvent.data.length
+                : rawEvent.data instanceof Blob
+                  ? rawEvent.data.size
+                  : null,
+            ...describeWebSocket(socketRef),
+          })
+        }
+        if (!payload || typeof payload !== 'object') return
+        const eventPayload = payload as {
+          type?: string
+          task_id?: string
+          event_type?: string
+          status?: string
+          progress?: number
+          message?: string
+          error?: string | null
+        }
+        if (eventPayload.type === 'task_event' && eventPayload.task_id) {
+          patchTaskFromEvent(eventPayload, wsTaskEpochMap.get(taskId))
+        }
+      },
+      onError: (event, errorSocket) => {
+        if (!socketRef || wsMap.get(taskId) !== socketRef) return
+        logDiag('ws_on_error', {
+          wsAttemptId,
+          taskId,
+          currentConnections: wsMap.size,
+          elapsedMs: Date.now() - attemptStartedAt,
+          eventType: event.type,
+          hadFirstMessage: firstMessageObserved,
+          ...describeWebSocket(errorSocket),
+          visibilityState: document.visibilityState,
+          online: getNavigatorOnline(),
+        })
+        recordWsFailure('ws_on_error', taskId, new Error('ws onerror callback invoked'))
+        closeSocket(taskId)
+      },
+      onClose: (event, closedSocket) => {
+        if (!socketRef || wsMap.get(taskId) !== socketRef) return
+        const expectedReason = wsExpectedCloseReasonsByTaskId.get(taskId)
+        wsExpectedCloseReasonsByTaskId.delete(taskId)
+        wsMap.delete(taskId)
+        wsTaskEpochMap.delete(taskId)
+        syncWsConnections()
+        logDiagCritical('ws_on_close', {
+          wsAttemptId,
+          taskId,
+          currentConnections: wsMap.size,
+          elapsedMs: Date.now() - attemptStartedAt,
+          closeCode: event.code,
+          closeReason: event.reason,
+          wasClean: event.wasClean,
+          expectedCloseReason: expectedReason ?? null,
+          hadFirstMessage: firstMessageObserved,
+          ...describeWebSocket(closedSocket),
+          visibilityState: document.visibilityState,
+          online: getNavigatorOnline(),
+        })
+      },
+    })
+
+    socketRef = socket
+    wsMap.set(taskId, socket)
+    syncWsConnections()
+
+    logDiag('ws_connect_ok', {
+      wsAttemptId,
+      taskId,
+      epoch,
+      currentConnections: wsMap.size,
+      elapsedMs: Date.now() - attemptStartedAt,
+      ...describeWebSocket(socket),
+    })
+  } catch (error) {
+    recordWsFailure('ws_connect_failed', taskId, error)
+    logDiagError('ws_connect_failed', error, {
+      wsAttemptId,
+      taskId,
+      epoch,
+      currentConnections: wsMap.size,
+      elapsedMs: Date.now() - attemptStartedAt,
+      visibilityState: document.visibilityState,
+      online: getNavigatorOnline(),
+      userAgent: getUserAgent(),
+    })
+    // Ignore websocket startup failures and keep polling fallback.
+  }
+}
+
+const drainWsConnectQueue = (): void => {
+  if (isPageUnmounted) {
+    clearWsConnectScheduler()
+    return
+  }
+
+  if (wsConnectQueue.length > 0) {
+    logDiag('ws_queue_drain_start', {
+      queueLength: wsConnectQueue.length,
+      batchSize: WS_CONNECT_BATCH_SIZE,
+      currentConnections: wsMap.size,
+    })
+  }
+
+  let processed = 0
+  while (processed < WS_CONNECT_BATCH_SIZE && wsConnectQueue.length > 0) {
+    const taskId = wsConnectQueue.shift()
+    if (!taskId) break
+
+    wsConnectQueuedTaskIds.delete(taskId)
+
+    if (!isTaskCurrentlyActive(taskId) || wsMap.has(taskId)) {
+      processed += 1
+      continue
+    }
+
+    connectTaskSocket(taskId)
+    processed += 1
+  }
+
+  if (wsConnectQueue.length > 0) {
+    recordWsQueuePressure('drain_ws_connect_queue_remains')
+    wsConnectBatchTimer = window.setTimeout(() => {
+      wsConnectBatchTimer = null
+      drainWsConnectQueue()
+    }, WS_CONNECT_BATCH_INTERVAL_MS)
+  }
+}
+
+const scheduleWsConnectDrain = (): void => {
+  if (wsConnectBatchTimer !== null || wsConnectQueue.length === 0 || isPageUnmounted) return
+
+  wsConnectBatchTimer = window.setTimeout(() => {
+    wsConnectBatchTimer = null
+    drainWsConnectQueue()
+  }, 0)
+}
+
+const enqueueTaskSocketConnect = (taskId: string, epoch: number): void => {
+  wsTaskEpochMap.set(taskId, epoch)
+  if (wsMap.has(taskId) || wsConnectQueuedTaskIds.has(taskId) || isPageUnmounted) return
+
+  wsConnectQueue.push(taskId)
+  wsConnectQueuedTaskIds.add(taskId)
+  recordWsQueuePressure('enqueue_task_socket_connect')
+  scheduleWsConnectDrain()
+}
+
+const refreshSingleTask = async (taskId: string, epoch = stateEpoch): Promise<void> => {
+  if (refreshInFlightTaskIds.has(taskId)) {
+    refreshQueuedTaskIds.add(taskId)
+    logDiag('refresh_single_task_deduped', {
+      taskId,
+      epoch,
+      inFlightSize: refreshInFlightTaskIds.size,
+      queuedSize: refreshQueuedTaskIds.size,
+    })
+    return
+  }
+
+  refreshInFlightTaskIds.add(taskId)
+  logDiag('refresh_single_task_start', {
+    taskId,
+    epoch,
+    inFlightSize: refreshInFlightTaskIds.size,
+  })
+  try {
+    const task = await getQuotationTask(taskId)
+    const updated = applyTaskUpsertById(task, {
+      epoch,
+      source: 'refresh_single_task_success',
+    })
+    if (updated && ['completed', 'failed', 'cancelled'].includes(updated.status)) {
+      stopTaskPolling(taskId)
+      closeSocket(taskId)
+    }
+    logDiag('refresh_single_task_success', {
+      taskId,
+      epoch,
+      status: task.status,
+      progress: task.progress,
+    })
+  } catch (error) {
+    logDiagError('refresh_single_task_failed', error, { taskId, epoch })
+    // Keep existing task data; detail refresh failures must not trigger a list refresh loop.
+  } finally {
+    refreshInFlightTaskIds.delete(taskId)
+    if (refreshQueuedTaskIds.delete(taskId)) {
+      scheduleRefreshSingleTask(taskId, 300, stateEpoch)
+    }
+    logDiag('refresh_single_task_end', {
+      taskId,
+      epoch,
+      inFlightSize: refreshInFlightTaskIds.size,
+      queuedSize: refreshQueuedTaskIds.size,
+    })
+  }
+}
+
+const scheduleRefreshSingleTask = (taskId: string, delay = 500, epoch = stateEpoch): void => {
+  const existingTimer = refreshTimers.get(taskId)
+  if (existingTimer !== undefined) {
+    window.clearTimeout(existingTimer)
+  }
+  const timer = window.setTimeout(() => {
+    refreshTimers.delete(taskId)
+    void refreshSingleTask(taskId, epoch)
+  }, delay)
+  refreshTimers.set(taskId, timer)
+}
+
+const ensureTaskSockets = (epoch = stateEpoch): void => {
+  if (!ENABLE_TASK_WEBSOCKET) {
+    logDiag('ws_disabled_cleanup_start', { existingConnections: wsMap.size })
+    clearWsConnectScheduler()
+    for (const [taskId] of wsMap) {
+      closeSocket(taskId)
+    }
+    syncWsConnections()
+    logDiag('ws_disabled_cleanup_done', { remainingConnections: wsMap.size })
+    return
+  }
+
+  const nowMs = Date.now()
   const activeTaskIds = new Set(
     tasks.value
-      .filter((task) => ['queued', 'running', 'awaiting_approval'].includes(task.status))
+      .filter((task) => ACTIVE_STATUSES.includes(task.status))
       .map((task) => task.task_id)
   )
 
+  logDiag('ws_ensure_start', {
+    epoch,
+    activeTasks: activeTaskIds.size,
+    existingConnections: wsMap.size,
+    queuedConnections: wsConnectQueue.length,
+    maxQueueLengthSeen: wsMaxQueueLengthSeen,
+    recentFailuresInWindow: wsFailureTimestamps.length,
+    consecutiveFailures: wsConsecutiveFailures,
+  })
+
   for (const existingTaskId of wsMap.keys()) {
     if (!activeTaskIds.has(existingTaskId)) {
-      closeSocket(existingTaskId)
+      closeSocket(existingTaskId, 'task_inactive')
+      continue
+    }
+    const syncMode = taskSyncModeByTaskId.get(existingTaskId)
+    if (syncMode === 'polling') {
+      closeSocket(existingTaskId, 'sync_mode_switch')
+      continue
+    }
+    wsTaskEpochMap.set(existingTaskId, epoch)
+  }
+
+  for (let i = wsConnectQueue.length - 1; i >= 0; i -= 1) {
+    const queuedTaskId = wsConnectQueue[i]
+    if (!activeTaskIds.has(queuedTaskId)) {
+      wsConnectQueue.splice(i, 1)
+      wsConnectQueuedTaskIds.delete(queuedTaskId)
+      wsTaskEpochMap.delete(queuedTaskId)
+      continue
+    }
+    if (taskSyncModeByTaskId.get(queuedTaskId) === 'polling') {
+      wsConnectQueue.splice(i, 1)
+      wsConnectQueuedTaskIds.delete(queuedTaskId)
+      wsTaskEpochMap.delete(queuedTaskId)
     }
   }
 
   activeTaskIds.forEach((taskId) => {
     if (wsMap.has(taskId)) return
-    try {
-      const socket = createTaskWebSocket(taskId, {
-        onMessage: (payload) => {
-          if (!payload || typeof payload !== 'object') return
-          const eventPayload = payload as { type?: string; task_id?: string; event_type?: string; status?: string; progress?: number }
-          if (eventPayload.type === 'task_event' && eventPayload.task_id) {
-            void refreshSingleTask(eventPayload.task_id)
-          }
-        },
-        onError: () => {
-          void refreshSingleTask(taskId)
-        },
-        onClose: () => {
-          wsMap.delete(taskId)
-          syncWsConnections()
-          void refreshSingleTask(taskId)
-        },
+    const cooldownUntil = wsDisabledUntilByTaskId.get(taskId)
+    if (cooldownUntil !== undefined && nowMs < cooldownUntil) {
+      logDiagCritical('ws_connect_suppressed_due_to_cooldown', {
+        taskId,
+        cooldownUntil,
+        remainingMs: cooldownUntil - nowMs,
       })
-      wsMap.set(taskId, socket)
-      syncWsConnections()
-    } catch {
-      // Ignore websocket startup failures and keep polling fallback.
+      if (taskSyncModeByTaskId.get(taskId) !== 'polling') {
+        switchTaskSyncMode(taskId, 'polling', 'cooldown_suppress')
+      }
+      return
     }
+    const syncMode = taskSyncModeByTaskId.get(taskId)
+    if (syncMode === 'polling') {
+      startTaskPolling(taskId)
+      return
+    }
+    enqueueTaskSocketConnect(taskId, epoch)
+  })
+
+  recordWsQueuePressure('ensure_task_sockets')
+  scheduleWsConnectDrain()
+
+  logDiag('ws_ensure_done', {
+    epoch,
+    activeTasks: activeTaskIds.size,
+    finalConnections: wsMap.size,
+    queuedConnections: wsConnectQueue.length,
   })
 }
 
-const loadTasks = async (): Promise<void> => {
-  if (loading.value) return
-  loading.value = true
-  errorMessage.value = ''
-  currentRole.value = readUserRole()
-  try {
-    const response = await listQuotationTasks({ limit: 300 })
-    tasks.value = response.items
-    ensureTaskSockets()
-  } catch (error) {
-    errorMessage.value = (error as { message?: string })?.message ?? '加载任务失败'
-  } finally {
-    loading.value = false
+const clearLoadTasksTimeout = (): void => {
+  if (loadTasksTimeoutId !== null) {
+    window.clearTimeout(loadTasksTimeoutId)
+    loadTasksTimeoutId = null
   }
+}
+
+const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promise<void> => {
+  const requestId = ++loadTasksRequestSeq
+  const mySeq = ++loadTasksActiveSeq
+  const startedAt = Date.now()
+
+  if (loading.value) {
+    if (!options?.force) {
+      loadTasksSkipWhileLoadingCount += 1
+      logDiag('load_tasks_skip_due_to_loading', {
+        requestId,
+        force: false,
+        skipCount: loadTasksSkipWhileLoadingCount,
+        inFlightRequestId: loadTasksInFlightRequestId,
+      })
+      return
+    }
+    loadTasksForceAbortCount += 1
+    logDiag('load_tasks_abort_previous', {
+      requestId,
+      abortReason: 'force_refresh',
+      inFlightRequestId: loadTasksInFlightRequestId,
+      forceAbortCount: loadTasksForceAbortCount,
+    })
+    loadTasksAbortController?.abort()
+  }
+
+  const requestEpoch = ++stateEpoch
+
+  logDiag('load_tasks_start', {
+    requestId,
+    requestEpoch,
+    force: Boolean(options?.force),
+    silent: Boolean(options?.silent),
+    loadingBefore: loading.value,
+    inFlightRequestIdBeforeStart: loadTasksInFlightRequestId,
+    visibilityState: document.visibilityState,
+    online: getNavigatorOnline(),
+  })
+
+  clearLoadTasksTimeout()
+  const controller = new AbortController()
+  loadTasksAbortController = controller
+  loadTasksInFlightRequestId = requestId
+  loadTasksTimeoutId = window.setTimeout(() => {
+    logDiag('load_tasks_timeout_abort', {
+      requestId,
+      requestEpoch,
+      abortReason: 'timeout',
+      elapsedMs: Date.now() - startedAt,
+      inFlightRequestId: loadTasksInFlightRequestId,
+    })
+    controller.abort()
+  }, 15000)
+
+  loading.value = true
+  if (!options?.silent) {
+    errorMessage.value = ''
+  }
+  currentRole.value = readUserRole()
+  let loadSucceeded = false
+  try {
+    const fetchStartedAt = Date.now()
+    logDiag('load_tasks_fetch_start', {
+      requestId,
+      requestEpoch,
+      limit: 100,
+    })
+    const response = await listQuotationTasks({
+      limit: 100,
+      signal: controller.signal,
+    })
+    const responseReceivedAt = Date.now()
+    const fetchMs = responseReceivedAt - fetchStartedAt
+    const items = Array.isArray(response.items) ? response.items : []
+    const awaitingApprovalCount = items.filter((task) => task.status === 'awaiting_approval').length
+    const activeCount = items.filter((task) => ACTIVE_STATUSES.includes(task.status)).length
+    const completedCount = items.filter((task) => task.status === 'completed').length
+    const responseApproxJsonChars = computeApproxJsonSize(response)
+    const responseItemsApproxJsonChars = computeApproxJsonSize(items)
+
+    logDiag('load_tasks_response_received', {
+      requestId,
+      requestEpoch,
+      items: items.length,
+      fetchMs,
+      elapsedMs: responseReceivedAt - startedAt,
+      awaitingApprovalCount,
+      activeCount,
+      completedCount,
+      responseApproxJsonChars,
+      responseItemsApproxJsonChars,
+    })
+
+    const snapshotApplyStartedAt = Date.now()
+    const snapshotApplied = applyTaskListSnapshot(items, {
+      epoch: requestEpoch,
+      source: 'load_tasks_snapshot_apply',
+    })
+    const snapshotApplyMs = Date.now() - snapshotApplyStartedAt
+    logDiag('load_tasks_snapshot_apply_done', {
+      requestId,
+      requestEpoch,
+      snapshotApplied,
+      snapshotApplyMs,
+      taskCountAfterApply: tasks.value.length,
+    })
+    if (!snapshotApplied) {
+      return
+    }
+
+    const ensureSocketsStartedAt = Date.now()
+    ensureTaskSockets(requestEpoch)
+    const ensureSocketsMs = Date.now() - ensureSocketsStartedAt
+    logDiag('load_tasks_socket_ensure_done', {
+      requestId,
+      requestEpoch,
+      ensureSocketsMs,
+      wsConnections: wsMap.size,
+      wsQueueLength: wsConnectQueue.length,
+    })
+
+    const approvalRefreshScheduleStartedAt = Date.now()
+    tasks.value
+      .filter((task) =>
+        task.status === 'awaiting_approval'
+        && !hasApprovalItems(task)
+        && !approvalDetailRequestedTaskIds.has(task.task_id)
+      )
+      .slice(0, 2)
+      .forEach((task, index) => {
+        approvalDetailRequestedTaskIds.add(task.task_id)
+        scheduleRefreshSingleTask(task.task_id, 800 + index * 500, requestEpoch)
+      })
+    const approvalRefreshScheduleMs = Date.now() - approvalRefreshScheduleStartedAt
+
+    logDiag('load_tasks_success', {
+      requestId,
+      requestEpoch,
+      totalTasksAfterMerge: tasks.value.length,
+      fetchMs,
+      snapshotApplyMs,
+      ensureSocketsMs,
+      approvalRefreshScheduleMs,
+      elapsedMs: Date.now() - startedAt,
+    })
+    loadSucceeded = true
+    listRefreshSuccessiveFailures = 0
+    listRefreshBackoffMultiplier = 1
+  } catch (error) {
+    listRefreshSuccessiveFailures += 1
+    listRefreshBackoffMultiplier = Math.min(listRefreshBackoffMultiplier + 1, 3)
+    if (!isCurrentEpoch(requestEpoch)) {
+      logDiag('load_tasks_error_ignored_stale_epoch', {
+        requestId,
+        requestEpoch,
+        currentEpoch: stateEpoch,
+      })
+      return
+    }
+
+    if ((error as { name?: string })?.name === 'AbortError') {
+      loadTasksAbortErrorCount += 1
+      const isTimeout = controller.signal.aborted && loadTasksTimeoutId === null
+      const isUnmount = isPageUnmounted
+      const abortReason = isUnmount ? 'unmount' : isTimeout ? 'timeout' : 'force_refresh'
+      logDiag('load_tasks_abort_error_observed', {
+        requestId,
+        requestEpoch,
+        abortErrorCount: loadTasksAbortErrorCount,
+        abortReason,
+        signalAborted: controller.signal.aborted,
+        elapsedMs: Date.now() - startedAt,
+      })
+    }
+
+    logDiagError('load_tasks_failed', error, {
+      requestId,
+      requestEpoch,
+      silent: Boolean(options?.silent),
+      elapsedMs: Date.now() - startedAt,
+      visibilityState: document.visibilityState,
+      online: getNavigatorOnline(),
+    })
+    if (!options?.silent) {
+      if ((error as { name?: string })?.name === 'AbortError') {
+        errorMessage.value = '加载任务超时，请稍后刷新'
+      } else {
+        errorMessage.value = (error as { message?: string })?.message ?? '加载任务失败'
+      }
+    }
+  } finally {
+    if (loadTasksAbortController === controller) {
+      clearLoadTasksTimeout()
+      loadTasksAbortController = null
+      loading.value = false
+      loadTasksInFlightRequestId = null
+    }
+    logDiag('load_tasks_end', {
+      requestId,
+      requestEpoch,
+      currentEpoch: stateEpoch,
+      elapsedMs: Date.now() - startedAt,
+      loadingAfter: loading.value,
+      taskCount: tasks.value.length,
+      inFlightRequestIdAfterEnd: loadTasksInFlightRequestId,
+    })
+
+    if (mySeq === loadTasksActiveSeq) {
+      scheduleNextListRefresh(loadSucceeded)
+    }
+  }
+}
+
+const computeListRefreshDelayMs = (successiveFailures: number, backoffMultiplier: number): number => {
+  if (successiveFailures <= 0) return LIST_REFRESH_NORMAL_MS
+  if (backoffMultiplier <= 1) return LIST_REFRESH_BACKOFF_1_MS
+  if (backoffMultiplier <= 2) return LIST_REFRESH_BACKOFF_2_MS
+  return LIST_REFRESH_BACKOFF_MAX_MS
+}
+
+const scheduleNextListRefresh = (justSucceeded: boolean): void => {
+  if (isPageUnmounted) return
+  if (listRefreshTimerId !== null) {
+    window.clearTimeout(listRefreshTimerId)
+    listRefreshTimerId = null
+  }
+  const delayMs = computeListRefreshDelayMs(
+    listRefreshSuccessiveFailures,
+    listRefreshBackoffMultiplier
+  )
+  logDiagCritical('list_refresh_backoff_scheduled', {
+    delayMs,
+    successiveFailures: listRefreshSuccessiveFailures,
+    backoffMultiplier: listRefreshBackoffMultiplier,
+    justSucceeded,
+  })
+  listRefreshTimerId = window.setTimeout(() => {
+    listRefreshTimerId = null
+    void loadTasks({ silent: true })
+  }, delayMs)
+}
+
+let resumeSyncDebounceTimer: number | null = null
+
+const triggerResumeSync = (trigger: string): void => {
+  logDiagCritical('page_resume_sync_triggered', {
+    trigger,
+    taskCount: tasks.value.length,
+    activeCount: tasks.value.filter((t) => ACTIVE_STATUSES.includes(t.status)).length,
+    wsConnections: wsMap.size,
+  })
+  if (resumeSyncDebounceTimer !== null) {
+    window.clearTimeout(resumeSyncDebounceTimer)
+  }
+  resumeSyncDebounceTimer = window.setTimeout(() => {
+    resumeSyncDebounceTimer = null
+    void loadTasks({ silent: true })
+  }, 500)
 }
 
 const openFilePicker = (): void => {
@@ -292,27 +1591,130 @@ const handleFileSelected = async (event: Event): Promise<void> => {
   const target = event.target as HTMLInputElement
   const selectedFile = target.files?.[0]
   target.value = ''
+  const uploadId = ++uploadAttemptSeq
+  logDiag('upload_selected', {
+    uploadId,
+    hasFile: Boolean(selectedFile),
+    selectedCount: target.files?.length ?? 0,
+    wsMapSizeBeforeUpload: wsMap.size,
+    taskCountBeforeUpload: tasks.value.length,
+    visibilityState: document.visibilityState,
+    online: navigator.onLine,
+    loadingAtSelect: loading.value,
+    uploadingAtSelect: uploading.value,
+  })
+
   if (!selectedFile) return
 
   if (selectedFile.type !== 'application/pdf' && !selectedFile.name.toLowerCase().endsWith('.pdf')) {
+    logDiag('upload_rejected_invalid_file_type', {
+      uploadId,
+      fileName: selectedFile.name,
+      fileType: selectedFile.type,
+    })
     errorMessage.value = '仅支持上传 PDF 文件'
     return
   }
 
+  const defaultTaskName = selectedFile.name.replace(/\.pdf$/i, '') || selectedFile.name
+  const customTaskNameInput = window.prompt('请输入任务名称（仅用于展示）', defaultTaskName)
+  if (customTaskNameInput === null) {
+    logDiag('upload_cancelled_by_prompt', {
+      uploadId,
+      defaultTaskName,
+    })
+    return
+  }
+  const customTaskName = customTaskNameInput.trim() || defaultTaskName
+
+  const uploadStartedAt = Date.now()
+  let createTaskStartedAt = 0
+  let createTaskPendingWarnTimer: number | null = null
+
   uploading.value = true
   errorMessage.value = ''
+  logDiag('upload_begin', {
+    uploadId,
+    fileName: selectedFile.name,
+    fileType: selectedFile.type,
+    fileSize: selectedFile.size,
+    taskNameLength: customTaskName.length,
+    wsMapSizeAtBegin: wsMap.size,
+    taskCountAtBegin: tasks.value.length,
+    visibilityState: document.visibilityState,
+    online: navigator.onLine,
+    loadingAtBegin: loading.value,
+  })
   try {
-    await createQuotationTask(selectedFile)
+    createTaskStartedAt = Date.now()
+    logDiag('upload_before_create_task', {
+      uploadId,
+      endpoint: '/quotation/tasks',
+      visibilityState: document.visibilityState,
+      online: navigator.onLine,
+      loadingBeforeCreateTask: loading.value,
+      wsMapSizeBeforeCreateTask: wsMap.size,
+      taskCountBeforeCreateTask: tasks.value.length,
+      elapsedFromUploadBeginMs: createTaskStartedAt - uploadStartedAt,
+    })
+
+    createTaskPendingWarnTimer = window.setTimeout(() => {
+      logDiag('upload_create_task_pending_too_long', {
+        uploadId,
+        endpoint: '/quotation/tasks',
+        elapsedMs: Date.now() - createTaskStartedAt,
+        visibilityState: document.visibilityState,
+        online: navigator.onLine,
+        loadingNow: loading.value,
+        wsMapSizeNow: wsMap.size,
+        taskCountNow: tasks.value.length,
+      })
+    }, UPLOAD_CREATE_TASK_PENDING_WARN_MS)
+
+    await createQuotationTask(selectedFile, customTaskName)
+    logDiag('upload_after_create_task', {
+      uploadId,
+      createTaskElapsedMs: Date.now() - createTaskStartedAt,
+      totalUploadElapsedMs: Date.now() - uploadStartedAt,
+    })
     await loadTasks()
+    logDiag('upload_after_load_tasks', {
+      uploadId,
+      taskCountAfterLoad: tasks.value.length,
+      totalUploadElapsedMs: Date.now() - uploadStartedAt,
+    })
   } catch (error) {
+    logDiagError('upload_failed', error, {
+      uploadId,
+      fileName: selectedFile.name,
+      wsMapSizeOnError: wsMap.size,
+      loadingOnError: loading.value,
+      onlineOnError: navigator.onLine,
+      visibilityStateOnError: document.visibilityState,
+      totalUploadElapsedMs: Date.now() - uploadStartedAt,
+      createTaskElapsedMs: createTaskStartedAt > 0 ? Date.now() - createTaskStartedAt : null,
+    })
     errorMessage.value = (error as { message?: string })?.message ?? '创建任务失败'
   } finally {
+    if (createTaskPendingWarnTimer !== null) {
+      window.clearTimeout(createTaskPendingWarnTimer)
+    }
     uploading.value = false
+    logDiag('upload_end', {
+      uploadId,
+      uploadingAfter: uploading.value,
+      errorMessage: errorMessage.value,
+      totalUploadElapsedMs: Date.now() - uploadStartedAt,
+    })
   }
 }
 
 const canCancel = (task: QuotationTaskItem): boolean => {
-  return ['queued', 'running', 'awaiting_approval'].includes(task.status)
+  return ACTIVE_STATUSES.includes(task.status)
+}
+
+const canDelete = (task: QuotationTaskItem): boolean => {
+  return TERMINAL_STATUSES.includes(task.status)
 }
 
 const handleApprove = async (taskId: string, approvedPartids: string[]): Promise<void> => {
@@ -343,7 +1745,39 @@ const handleCancel = async (taskId: string): Promise<void> => {
   }
 }
 
+const handleDelete = async (taskId: string): Promise<void> => {
+  const task = tasks.value.find((item) => item.task_id === taskId)
+  const taskName = task?.display_name || task?.uploaded_file_name || taskId
+  const confirmed = window.confirm(`确定删除任务「${taskName}」吗？此操作不可恢复。`)
+  if (!confirmed) return
+
+  try {
+    await deleteQuotationTask(taskId)
+    closeSocket(taskId)
+    approvalDetailRequestedTaskIds.delete(taskId)
+    refreshInFlightTaskIds.delete(taskId)
+    refreshQueuedTaskIds.delete(taskId)
+
+    const timer = refreshTimers.get(taskId)
+    if (timer !== undefined) {
+      window.clearTimeout(timer)
+      refreshTimers.delete(taskId)
+    }
+
+    const deletingSelectedTask = selectedTask.value?.task_id === taskId
+    tasks.value = tasks.value.filter((item) => item.task_id !== taskId)
+    syncSelectedTaskRef()
+    if (deletingSelectedTask) {
+      selectedTask.value = null
+      resultModalVisible.value = false
+    }
+  } catch (error) {
+    errorMessage.value = (error as { message?: string })?.message ?? '删除任务失败'
+  }
+}
+
 const openResultModal = (task: QuotationTaskItem): void => {
+  logPhase2ResultSnapshot(task, 'open_result_modal')
   selectedTask.value = task
   resultModalVisible.value = true
 }
@@ -391,20 +1825,62 @@ const handleDownloadU8Xlsx = async (taskId: string): Promise<void> => {
 }
 
 onMounted(() => {
+  isPageUnmounted = false
+  window.addEventListener('error', handleWindowError)
+  window.addEventListener('unhandledrejection', handleUnhandledRejection)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  window.addEventListener('online', handleOnline)
+  window.addEventListener('offline', handleOffline)
+  window.addEventListener('focus', handleFocus)
+  window.addEventListener('blur', handleBlur)
+  startEventLoopLagProbe()
+  logPageEnvironment('page_mounted', {
+    userRole: currentRole.value,
+  })
+
   void loadTasks()
-  pollingTimer.value = window.setInterval(() => {
-    void loadTasks()
-  }, 20000)
 })
 
 onUnmounted(() => {
-  if (pollingTimer.value !== null) {
-    window.clearInterval(pollingTimer.value)
-    pollingTimer.value = null
+  isPageUnmounted = true
+  window.removeEventListener('error', handleWindowError)
+  window.removeEventListener('unhandledrejection', handleUnhandledRejection)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  window.removeEventListener('online', handleOnline)
+  window.removeEventListener('offline', handleOffline)
+  window.removeEventListener('focus', handleFocus)
+  window.removeEventListener('blur', handleBlur)
+  stopEventLoopLagProbe()
+  logPageEnvironment('page_unmounted_start', {
+    connectionsBeforeCleanup: wsMap.size,
+  })
+
+  if (listRefreshTimerId !== null) {
+    window.clearTimeout(listRefreshTimerId)
+    listRefreshTimerId = null
   }
+  loadTasksAbortController?.abort()
+  clearLoadTasksTimeout()
+  clearWsConnectScheduler()
+  if (resumeSyncDebounceTimer !== null) {
+    window.clearTimeout(resumeSyncDebounceTimer)
+    resumeSyncDebounceTimer = null
+  }
+  for (const timer of refreshTimers.values()) {
+    window.clearTimeout(timer)
+  }
+  refreshTimers.clear()
+  for (const timer of taskPollingTimerByTaskId.values()) {
+    window.clearTimeout(timer)
+  }
+  taskPollingTimerByTaskId.clear()
   for (const [taskId] of wsMap) {
     closeSocket(taskId)
   }
+
+  logPageEnvironment('page_unmounted_done', {
+    connectionsAfterCleanup: wsMap.size,
+  })
 })
 
 const TaskItemCard = defineComponent({
@@ -422,12 +1898,16 @@ const TaskItemCard = defineComponent({
       type: Boolean,
       required: true,
     },
+    canDelete: {
+      type: Boolean,
+      required: true,
+    },
     isApproving: {
       type: Boolean,
       default: false,
     },
   },
-  emits: ['cancel', 'approve', 'view-result', 'view-file', 'download-u8-xlsx'],
+  emits: ['cancel', 'delete', 'approve', 'view-result', 'view-file', 'download-u8-xlsx'],
   setup(props, { emit }) {
     const RING_RADIUS = 20
     const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
@@ -455,6 +1935,10 @@ const TaskItemCard = defineComponent({
       const items = result?.pdm_result?.items
       return Array.isArray(items) ? items : []
     })
+
+    let lastPhase2UiSnapshotAt = 0
+    let lastApprovalGroupComputeLogAt = 0
+    let lastPdmRenderCostLogAt = 0
 
     interface PdmApprovalRow {
       key: string
@@ -530,6 +2014,7 @@ const TaskItemCard = defineComponent({
     }
 
     const approvalGroups = computed<PdmApprovalGroup[]>(() => {
+      const startedAt = performance.now()
       const orderedGroups: PdmApprovalGroup[] = []
       const groupMap = new Map<string, { group: PdmApprovalGroup; seenRowKeys: Set<string> }>()
 
@@ -572,11 +2057,44 @@ const TaskItemCard = defineComponent({
         })
       }
 
+      const elapsedMs = performance.now() - startedAt
+      const nowMs = Date.now()
+      if (elapsedMs >= 30 || nowMs - lastApprovalGroupComputeLogAt >= 5000) {
+        lastApprovalGroupComputeLogAt = nowMs
+        logDiag('phase2_approval_groups_compute_cost', {
+          taskId: props.task.task_id,
+          taskStatus: props.task.status,
+          pdmItemCount: pdmItems.value.length,
+          groupCount: orderedGroups.length,
+          elapsedMs,
+        })
+      }
+
       return orderedGroups
     })
 
     const allApprovalRows = computed<PdmApprovalRow[]>(() =>
       approvalGroups.value.flatMap((group) => group.rows)
+    )
+
+    watch(
+      [approvalGroups, allApprovalRows, keywordTypeByIndex],
+      ([groups, rows, keywordTypeMap]) => {
+        const nowMs = Date.now()
+        if (nowMs - lastPhase2UiSnapshotAt < 1500) return
+        lastPhase2UiSnapshotAt = nowMs
+
+        logDiag('phase2_ui_snapshot', {
+          taskId: props.task.task_id,
+          taskStatus: props.task.status,
+          pdmItemCount: pdmItems.value.length,
+          groupCount: groups.length,
+          rowCount: rows.length,
+          keywordTypeCount: keywordTypeMap.size,
+          resultApproxJsonChars: computeApproxJsonSize(props.task.result),
+        })
+      },
+      { immediate: true }
     )
 
     const approvedRowKeys = ref<Set<string>>(new Set())
@@ -777,16 +2295,30 @@ const TaskItemCard = defineComponent({
 
     const renderPdmTable = () => {
       if (props.task.status !== 'awaiting_approval') return null
+      const renderStartedAt = performance.now()
       const items = pdmItems.value
       if (items.length === 0) {
-        return h('div', { class: 'pdm-approval' }, [h('p', { class: 'pdm-approval__empty' }, 'PDM 未返回任何数据')])
+        const emptyNode = h('div', { class: 'pdm-approval' }, [h('p', { class: 'pdm-approval__empty' }, 'PDM 未返回任何数据')])
+        const elapsedMs = performance.now() - renderStartedAt
+        if (elapsedMs >= 20) {
+          logDiag('phase2_render_pdm_table_cost', {
+            taskId: props.task.task_id,
+            taskStatus: props.task.status,
+            pdmItemCount: items.length,
+            groupCount: 0,
+            rowCount: 0,
+            elapsedMs,
+            isEmpty: true,
+          })
+        }
+        return emptyNode
       }
 
       const groups = approvalGroups.value
       const rowCount = allApprovalRows.value.length
       const partidCount = approvedPartidsPreview.value.length
 
-      return h('div', { class: 'pdm-approval' }, [
+      const node = h('div', { class: 'pdm-approval' }, [
         h(
           'p',
           { class: 'pdm-approval__title' },
@@ -874,6 +2406,24 @@ const TaskItemCard = defineComponent({
             : `提交已批准项（${partidCount} 个 PARTID）并继续 U8 查询`
         ),
       ])
+
+      const elapsedMs = performance.now() - renderStartedAt
+      const nowMs = Date.now()
+      if (elapsedMs >= 25 || nowMs - lastPdmRenderCostLogAt >= 5000) {
+        lastPdmRenderCostLogAt = nowMs
+        logDiag('phase2_render_pdm_table_cost', {
+          taskId: props.task.task_id,
+          taskStatus: props.task.status,
+          pdmItemCount: items.length,
+          groupCount: groups.length,
+          rowCount,
+          approvedCount: approvedCount.value,
+          elapsedMs,
+          isEmpty: false,
+        })
+      }
+
+      return node
     }
     const progressMessage = computed(() => {
       const raw = String(props.task.message ?? '').trim()
@@ -902,14 +2452,12 @@ const TaskItemCard = defineComponent({
     }
 
     const hasU8ByTypeWorkbook = computed(() => {
-      if (props.task.status !== 'completed') return false
-      const path = props.task.result?.u8_result_by_type_xlsx_minio_path
-      return typeof path === 'string' && path.length > 0
+      return props.task.status === 'completed'
     })
 
     return () =>
       h('article', { class: 'task-card' }, [
-        h('div', { class: 'task-card__title' }, props.task.uploaded_file_name),
+        h('div', { class: 'task-card__title' }, props.task.display_name || props.task.uploaded_file_name),
         h('div', { class: 'task-card__meta' }, [h('span', { class: ['status', `status--${props.task.status}`] }, statusText.value)]),
         h('div', { class: 'task-card__progress' }, [
           h(
@@ -966,6 +2514,13 @@ const TaskItemCard = defineComponent({
                   onClick: () => emit('download-u8-xlsx'),
                 },
                 '下载Excel'
+              )
+            : null,
+          props.canDelete
+            ? h(
+                'button',
+                { class: 'task-action-btn task-action-btn--danger', onClick: () => emit('delete') },
+                '删除'
               )
             : null,
         ]),
@@ -1622,6 +3177,15 @@ const TaskItemCard = defineComponent({
 
 .result-modal__content {
   overflow: auto;
+}
+
+.result-compact-tip {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: var(--yamato-radius-sm);
+  background: var(--yamato-color-warning-soft);
+  color: var(--yamato-color-warning);
+  font-size: 12px;
 }
 
 .result-json {

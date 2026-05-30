@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 from typing import Dict, Set
@@ -22,44 +23,49 @@ class WebSocketConnectionManager:
     """按 task_id 挂连接；按 IP 限连接数与每分钟消息数。"""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self.active_connections: Dict[str, Set[WebSocket]] = {}
         self.ip_connections: Dict[str, int] = {}
         self.ip_message_counters: Dict[str, Dict[str, int]] = {}
 
     async def connect(self, websocket: WebSocket, task_id: str, client_ip: str) -> None:
-        current_count = self.ip_connections.get(client_ip, 0)
-        if current_count >= settings.WS_MAX_CONNECTIONS_PER_IP:
-            raise WebSocketException(
-                code=status.WS_1008_POLICY_VIOLATION,
-                reason="连接数超过限制",
-            )
+        with self._lock:
+            current_count = self.ip_connections.get(client_ip, 0)
+            if current_count >= settings.WS_MAX_CONNECTIONS_PER_IP:
+                raise WebSocketException(
+                    code=status.WS_1008_POLICY_VIOLATION,
+                    reason="连接数超过限制",
+                )
         await websocket.accept()
-        if task_id not in self.active_connections:
-            self.active_connections[task_id] = set()
-        self.active_connections[task_id].add(websocket)
-        self.ip_connections[client_ip] = current_count + 1
-        websocket.state.client_ip = client_ip
-        logger.info(
-            "[success] WebSocket client connected: task_id=%s, connections=%s",
-            task_id,
-            len(self.active_connections[task_id]),
-        )
+        self.register(websocket, task_id, client_ip)
+
+    def register(self, websocket: WebSocket, task_id: str, client_ip: str) -> None:
+        """注册已 accept 的 WebSocket（不调用 accept）。"""
+        with self._lock:
+            current_count = self.ip_connections.get(client_ip, 0)
+            if task_id not in self.active_connections:
+                self.active_connections[task_id] = set()
+            self.active_connections[task_id].add(websocket)
+            self.ip_connections[client_ip] = current_count + 1
+            websocket.state.client_ip = client_ip
 
     def disconnect(self, websocket: WebSocket, task_id: str) -> None:
-        if task_id in self.active_connections:
-            self.active_connections[task_id].discard(websocket)
-            if not self.active_connections[task_id]:
-                del self.active_connections[task_id]
-            client_ip = getattr(websocket.state, "client_ip", "")
-            if client_ip:
-                next_count = max(self.ip_connections.get(client_ip, 1) - 1, 0)
-                if next_count == 0:
-                    self.ip_connections.pop(client_ip, None)
-                else:
-                    self.ip_connections[client_ip] = next_count
-            logger.info("[error] WebSocket client disconnected: task_id=%s", task_id)
+        with self._lock:
+            if task_id in self.active_connections:
+                self.active_connections[task_id].discard(websocket)
+                if not self.active_connections[task_id]:
+                    del self.active_connections[task_id]
+                client_ip = getattr(websocket.state, "client_ip", "")
+                if client_ip:
+                    next_count = max(self.ip_connections.get(client_ip, 1) - 1, 0)
+                    if next_count == 0:
+                        self.ip_connections.pop(client_ip, None)
+                    else:
+                        self.ip_connections[client_ip] = next_count
+        logger.info("[error] WebSocket client disconnected: task_id=%s", task_id)
 
     def _trim_message_counters_if_needed(self) -> None:
+        """必须在持锁下调用。"""
         cap = settings.WS_MAX_TRACKED_IPS_FOR_COUNTERS
         if len(self.ip_message_counters) <= cap:
             return
@@ -69,22 +75,24 @@ class WebSocketConnectionManager:
 
     def allow_message(self, client_ip: str) -> bool:
         current_window = int(time.time()) // 60
-        counter = self.ip_message_counters.get(client_ip)
-        if not counter or counter["window"] != current_window:
-            self.ip_message_counters[client_ip] = {"window": current_window, "count": 1}
+        with self._lock:
+            counter = self.ip_message_counters.get(client_ip)
+            if not counter or counter["window"] != current_window:
+                self.ip_message_counters[client_ip] = {"window": current_window, "count": 1}
+                self._trim_message_counters_if_needed()
+                return True
+            counter["count"] += 1
+            ok = counter["count"] <= settings.WS_MAX_MESSAGES_PER_MINUTE
             self._trim_message_counters_if_needed()
-            return True
-        counter["count"] += 1
-        ok = counter["count"] <= settings.WS_MAX_MESSAGES_PER_MINUTE
-        self._trim_message_counters_if_needed()
-        return ok
+            return ok
 
     async def send_to_task(self, task_id: str, message: dict) -> None:
-        if task_id not in self.active_connections:
-            return
+        with self._lock:
+            if task_id not in self.active_connections:
+                return
+            subscribers = list(self.active_connections.get(task_id, set()))
         message_text = json.dumps(message, ensure_ascii=False)
         disconnected = []
-        subscribers = list(self.active_connections.get(task_id, set()))
         for ws in subscribers:
             try:
                 await ws.send_text(message_text)
@@ -100,23 +108,28 @@ class WebSocketConnectionManager:
             self.disconnect(ws, task_id)
 
     def get_connection_count(self, task_id: str | None = None) -> int:
-        if task_id:
-            return len(self.active_connections.get(task_id, set()))
-        return sum(len(conns) for conns in self.active_connections.values())
+        with self._lock:
+            if task_id:
+                return len(self.active_connections.get(task_id, set()))
+            return sum(len(conns) for conns in self.active_connections.values())
 
     async def disconnect_all(self) -> None:
-        total_count = self.get_connection_count()
+        with self._lock:
+            total_count = sum(len(conns) for conns in self.active_connections.values())
         if total_count == 0:
             logger.info("没有活跃的 WebSocket 连接需要关闭")
             return
         logger.info("正在关闭 %s 个 WebSocket 连接...", total_count)
-        for _tid, websockets in list(self.active_connections.items()):
+        with self._lock:
+            snapshot = list(self.active_connections.items())
+        for _tid, websockets in snapshot:
             for ws in list(websockets):
                 try:
                     await ws.close(code=1001, reason="Server shutdown")
                 except Exception as e:
                     logger.debug("关闭 WebSocket 时出错: %s", e)
-        self.active_connections.clear()
+        with self._lock:
+            self.active_connections.clear()
         logger.info("[success] 所有 WebSocket 连接已关闭")
 
 
@@ -160,7 +173,6 @@ class WebSocketTaskObserver(TaskObserver):
             "status": event.status,
             "progress": event.progress,
             "message": event.message,
-            "result": event.result,
             "error": event.error,
             "timestamp": event.timestamp,
         }
