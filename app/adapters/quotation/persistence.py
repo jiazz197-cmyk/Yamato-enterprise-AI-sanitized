@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import APIException
 from app.core.storage import upload_stream_to_minio
-from app.integrations.Quotation_Generation.quotation_task_cleanup import (
+from app.core.quotation_task_cleanup import (
     safe_cleanup_quotation_task_files,
 )
 from app.integrations.Quotation_Generation.quotation_task_workers import (
