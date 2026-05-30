@@ -17,7 +17,7 @@ from app.core.executor import CancellationToken, executor_manager
 from app.core.logging import get_logger
 from app.core.quotation_dispatcher import quotation_dispatcher
 from app.core.storage import download_object_stream
-from app.integrations.Quotation_Generation.quotation_task_cleanup import (
+from app.core.quotation_task_cleanup import (
     cleanup_task_files_by_id,
 )
 from app.core.task_owner_registry import task_owner_registry

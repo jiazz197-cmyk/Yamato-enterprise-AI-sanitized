@@ -10,7 +10,7 @@ from app.core.database import SessionLocal
 from app.core.executor import executor_manager
 from app.core.task_manager import task_manager
 from app.core.task_owner_registry import task_owner_registry
-from app.integrations.Quotation_Generation.quotation_task_cleanup import (
+from app.core.quotation_task_cleanup import (
     safe_cleanup_quotation_task_files,
 )
 from app.models.orm.quotation_task import QuotationTask
