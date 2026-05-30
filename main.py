@@ -412,4 +412,6 @@ if __name__ == "__main__":
         host=settings.HOST,
         port=settings.PORT,
         reload=settings.RELOAD,
+        ws_ping_interval=30.0,
+        ws_ping_timeout=60.0,
     )

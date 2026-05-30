@@ -94,11 +94,15 @@ export const cancelQuotationTask = async (taskId: string): Promise<CancelQuotati
 
 export const approveQuotationTask = async (
   taskId: string,
-  approvedPartids: string[]
+  approvedPartids: string[],
+  extraPartids: string[] = []
 ): Promise<ApproveQuotationTaskResponse> => {
   return apiRequest<ApproveQuotationTaskResponse>(`/quotation/tasks/${encodeURIComponent(taskId)}/approve`, {
     method: 'POST',
-    body: JSON.stringify({ approved_partids: approvedPartids }),
+    body: JSON.stringify({
+      approved_partids: approvedPartids,
+      extra_partids: extraPartids,
+    }),
   })
 }
 

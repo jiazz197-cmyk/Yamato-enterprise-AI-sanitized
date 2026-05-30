@@ -63,7 +63,7 @@
           :can-delete="false"
           :is-approving="approvingTasks.has(task.task_id)"
           @cancel="handleCancel(task.task_id)"
-          @approve="(partids: string[]) => handleApprove(task.task_id, partids)"
+          @approve="(partids: string[], extra: string[]) => handleApprove(task.task_id, partids, extra)"
           @view-result="openResultModal(task)"
           @view-file="handleViewFile(task.task_id)"
           @download-u8-xlsx="handleDownloadU8Xlsx(task.task_id)"
@@ -158,6 +158,7 @@ const taskPollingTimerByTaskId = new Map<string, number>()
 const taskSyncModeByTaskId = new Map<string, 'ws' | 'polling'>()
 const wsFailureCountByTaskId = new Map<string, number>()
 const wsExpectedCloseReasonsByTaskId = new Map<string, string>()
+const wsHeartbeatTimerByTaskId = new Map<string, number>()
 
 let listRefreshTimerId: number | null = null
 let listRefreshBackoffMultiplier = 1
@@ -873,6 +874,7 @@ const clearWsConnectScheduler = (): void => {
 const closeSocket = (taskId: string, reason?: 'ws_cooldown' | 'task_polling_terminal' | 'task_inactive' | 'sync_mode_switch' | undefined): void => {
   removeQueuedTaskSocket(taskId)
   wsTaskEpochMap.delete(taskId)
+  stopWsHeartbeat(taskId)
   if (reason) {
     wsExpectedCloseReasonsByTaskId.set(taskId, reason)
   }
@@ -898,6 +900,36 @@ const closeSocket = (taskId: string, reason?: 'ws_cooldown' | 'task_polling_term
 
 const isTaskCurrentlyActive = (taskId: string): boolean => {
   return tasks.value.some((task) => task.task_id === taskId && ACTIVE_STATUSES.includes(task.status))
+}
+
+const WS_HEARTBEAT_INTERVAL_MS = 30000
+
+const startWsHeartbeat = (taskId: string): void => {
+  stopWsHeartbeat(taskId)
+  const socket = wsMap.get(taskId)
+  if (!socket || socket.readyState !== WebSocket.OPEN) return
+  const timer = window.setInterval(() => {
+    const s = wsMap.get(taskId)
+    if (!s || s.readyState !== WebSocket.OPEN) {
+      stopWsHeartbeat(taskId)
+      return
+    }
+    try {
+      s.send(JSON.stringify({ type: 'ping' }))
+    } catch {
+      stopWsHeartbeat(taskId)
+    }
+  }, WS_HEARTBEAT_INTERVAL_MS)
+  wsHeartbeatTimerByTaskId.set(taskId, timer)
+  logDiag('ws_heartbeat_started', { taskId, intervalMs: WS_HEARTBEAT_INTERVAL_MS })
+}
+
+const stopWsHeartbeat = (taskId: string): void => {
+  const timer = wsHeartbeatTimerByTaskId.get(taskId)
+  if (timer !== undefined) {
+    window.clearInterval(timer)
+    wsHeartbeatTimerByTaskId.delete(taskId)
+  }
 }
 
 const patchTaskFromEvent = (
@@ -994,7 +1026,9 @@ const connectTaskSocket = (taskId: string): void => {
     let socketRef: WebSocket | null = null
     const socket = createTaskWebSocket(taskId, {
       onOpen: (openedSocket) => {
-        recordWsHandshakeSuccess(taskId)
+        // 注意：onOpen 只是 TCP+WS 握手完成，auth 尚未验证。
+        // 不在此调用 recordWsHandshakeSuccess，否则会过早重置失败计数器，
+        // 导致服务端随后 1008 拒绝时 cooldown 机制永远无法生效。
         logDiagCritical('ws_open', {
           wsAttemptId,
           taskId,
@@ -1035,6 +1069,16 @@ const connectTaskSocket = (taskId: string): void => {
         }
         if (eventPayload.type === 'task_event' && eventPayload.task_id) {
           patchTaskFromEvent(eventPayload, wsTaskEpochMap.get(taskId))
+        } else if (eventPayload.type === 'connection_established') {
+          // 收到 connection_established 说明 auth 已通过，此时才确认握手成功
+          recordWsHandshakeSuccess(taskId)
+          logDiagCritical('ws_auth_confirmed', {
+            wsAttemptId,
+            taskId,
+            elapsedMs: Date.now() - attemptStartedAt,
+          })
+          // 启动应用层心跳（30s 一次），防止代理/负载均衡因空闲断开连接
+          startWsHeartbeat(taskId)
         }
       },
       onError: (event, errorSocket) => {
@@ -1060,6 +1104,18 @@ const connectTaskSocket = (taskId: string): void => {
         wsMap.delete(taskId)
         wsTaskEpochMap.delete(taskId)
         syncWsConnections()
+
+        // 服务端主动关闭（如 1008 鉴权拒绝）只触发 onClose 不触发 onError，
+        // 必须在此记录失败，否则失败计数永远为 0，cooldown/polling 降级永远不会触发。
+        const isExpectedClose = Boolean(expectedReason)
+        const isAbnormalClose = event.code === 1006 || event.code === 1008 || event.code === 1011
+          || (event.code >= 3000 && event.code <= 3999)
+        if (!isExpectedClose && (isAbnormalClose || !event.wasClean)) {
+          recordWsFailure('ws_on_close_abnormal', taskId, new Error(
+            `ws abnormal close: code=${event.code} reason=${event.reason} wasClean=${event.wasClean}`
+          ))
+        }
+
         logDiagCritical('ws_on_close', {
           wsAttemptId,
           taskId,
@@ -1299,8 +1355,9 @@ const ensureTaskSockets = (epoch = stateEpoch): void => {
     }
     const syncMode = taskSyncModeByTaskId.get(taskId)
     if (syncMode === 'polling') {
-      startTaskPolling(taskId)
-      return
+      // cooldown 已过期，切换回 WS 模式
+      stopTaskPolling(taskId)
+      logDiagCritical('task_sync_mode_polling_to_ws', { taskId, reason: 'cooldown_expired' })
     }
     enqueueTaskSocketConnect(taskId, epoch)
   })
@@ -1717,15 +1774,15 @@ const canDelete = (task: QuotationTaskItem): boolean => {
   return TERMINAL_STATUSES.includes(task.status)
 }
 
-const handleApprove = async (taskId: string, approvedPartids: string[]): Promise<void> => {
+const handleApprove = async (taskId: string, approvedPartids: string[], extraPartids: string[] = []): Promise<void> => {
   if (approvingTasks.value.has(taskId)) return
-  if (!approvedPartids.length) {
+  if (!approvedPartids.length && !extraPartids.length) {
     errorMessage.value = '请至少保留一个已批准的 PARTID'
     return
   }
   approvingTasks.value = new Set([...approvingTasks.value, taskId])
   try {
-    await approveQuotationTask(taskId, approvedPartids)
+    await approveQuotationTask(taskId, approvedPartids, extraPartids)
     await refreshSingleTask(taskId)
   } catch (error) {
     errorMessage.value = (error as { message?: string })?.message ?? '提交审核同意失败'
@@ -1874,6 +1931,10 @@ onUnmounted(() => {
     window.clearTimeout(timer)
   }
   taskPollingTimerByTaskId.clear()
+  for (const timer of wsHeartbeatTimerByTaskId.values()) {
+    window.clearInterval(timer)
+  }
+  wsHeartbeatTimerByTaskId.clear()
   for (const [taskId] of wsMap) {
     closeSocket(taskId)
   }
@@ -2099,6 +2160,38 @@ const TaskItemCard = defineComponent({
 
     const approvedRowKeys = ref<Set<string>>(new Set())
     const expandedGroupKeys = ref<Set<string>>(new Set())
+    const manualPartidRows = ref<string[]>([''])
+
+    const extraPartidsFromManual = computed<string[]>(() => {
+      const seen = new Set<string>()
+      const result: string[] = []
+      for (const raw of manualPartidRows.value) {
+        const v = String(raw ?? '').trim()
+        if (v && !seen.has(v)) {
+          seen.add(v)
+          result.push(v)
+        }
+      }
+      return result
+    })
+
+    const updateManualPartidRow = (index: number, value: string): void => {
+      const next = [...manualPartidRows.value]
+      next[index] = value
+      manualPartidRows.value = next
+    }
+
+    const addManualPartidRow = (): void => {
+      manualPartidRows.value = [...manualPartidRows.value, '']
+    }
+
+    const removeManualPartidRow = (index: number): void => {
+      if (manualPartidRows.value.length <= 1) {
+        manualPartidRows.value = ['']
+        return
+      }
+      manualPartidRows.value = manualPartidRows.value.filter((_, i) => i !== index)
+    }
 
     watch(
       allApprovalRows,
@@ -2140,7 +2233,7 @@ const TaskItemCard = defineComponent({
     const allSelected = computed(
       () => allApprovalRows.value.length > 0 && approvedCount.value === allApprovalRows.value.length
     )
-    const noneSelected = computed(() => approvedCount.value === 0)
+    const noneSelected = computed(() => approvedCount.value === 0 && extraPartidsFromManual.value.length === 0)
 
     const approvedPartidsPreview = computed<string[]>(() => {
       const seen = new Set<string>()
@@ -2229,7 +2322,7 @@ const TaskItemCard = defineComponent({
     }
 
     const submitApproval = (): void => {
-      emit('approve', [...approvedPartidsPreview.value])
+      emit('approve', [...approvedPartidsPreview.value], [...extraPartidsFromManual.value])
     }
 
     const formatList = (value: unknown): string => {
@@ -2394,6 +2487,62 @@ const TaskItemCard = defineComponent({
             ])
           })
         ),
+        h('div', { class: 'pdm-approval__manual' }, [
+          h('label', { class: 'pdm-approval__manual-label' },
+            '手动补充 PARTID（可与上方表格同时使用）'
+          ),
+          h(
+            'div',
+            { class: 'pdm-approval__manual-rows' },
+            manualPartidRows.value.map((rowValue, index) =>
+              h('div', { key: index, class: 'pdm-approval__manual-row' }, [
+                h('input', {
+                  type: 'text',
+                  class: 'pdm-approval__manual-input',
+                  placeholder: '50GB-XXXXXX',
+                  disabled: props.isApproving,
+                  value: rowValue,
+                  onInput: (e: Event) => {
+                    updateManualPartidRow(index, (e.target as HTMLInputElement).value)
+                  },
+                }),
+                index === manualPartidRows.value.length - 1
+                  ? h(
+                      'button',
+                      {
+                        type: 'button',
+                        class: 'pdm-approval__manual-add-btn',
+                        disabled: props.isApproving,
+                        'aria-label': '添加一行 PARTID',
+                        title: '添加一行',
+                        onClick: addManualPartidRow,
+                      },
+                      '+'
+                    )
+                  : null,
+                manualPartidRows.value.length > 1
+                  ? h(
+                      'button',
+                      {
+                        type: 'button',
+                        class: 'pdm-approval__manual-remove-btn',
+                        disabled: props.isApproving,
+                        'aria-label': '删除此行',
+                        title: '删除此行',
+                        onClick: () => removeManualPartidRow(index),
+                      },
+                      '−'
+                    )
+                  : null,
+              ])
+            )
+          ),
+          extraPartidsFromManual.value.length > 0
+            ? h('p', { class: 'pdm-approval__manual-hint' },
+                `已识别 ${extraPartidsFromManual.value.length} 个 PARTID`
+              )
+            : null,
+        ]),
         h(
           'button',
           {
@@ -2401,9 +2550,15 @@ const TaskItemCard = defineComponent({
             disabled: props.isApproving || noneSelected.value,
             onClick: submitApproval,
           },
-          props.isApproving
-            ? '提交中...'
-            : `提交已批准项（${partidCount} 个 PARTID）并继续 U8 查询`
+          (() => {
+            if (props.isApproving) return '提交中...'
+            const manualCount = extraPartidsFromManual.value.length
+            const total = partidCount + manualCount
+            if (manualCount > 0) {
+              return `提交（${partidCount} 表格 + ${manualCount} 手动 = ${total} 个 PARTID）并继续 U8 查询`
+            }
+            return `提交已批准项（${partidCount} 个 PARTID）并继续 U8 查询`
+          })()
         ),
       ])
 
@@ -3055,6 +3210,87 @@ const TaskItemCard = defineComponent({
 :deep(.pdm-approval__approve) {
   align-self: flex-start;
   margin-top: 2px;
+}
+
+:deep(.pdm-approval__manual) {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+:deep(.pdm-approval__manual-label) {
+  font-size: 12px;
+  color: #4d4c48;
+  font-weight: 500;
+}
+
+:deep(.pdm-approval__manual-rows) {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+:deep(.pdm-approval__manual-row) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+:deep(.pdm-approval__manual-input) {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid #d1cdc7;
+  border-radius: 4px;
+  background: #fafaf8;
+  color: #3c3a36;
+}
+
+:deep(.pdm-approval__manual-input:focus) {
+  outline: none;
+  border-color: #8b7355;
+}
+
+:deep(.pdm-approval__manual-input:disabled) {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+:deep(.pdm-approval__manual-add-btn),
+:deep(.pdm-approval__manual-remove-btn) {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #d1cdc7;
+  border-radius: 4px;
+  background: #fafaf8;
+  color: #4d4c48;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+:deep(.pdm-approval__manual-add-btn:hover:not(:disabled)),
+:deep(.pdm-approval__manual-remove-btn:hover:not(:disabled)) {
+  border-color: #8b7355;
+  color: #8b7355;
+}
+
+:deep(.pdm-approval__manual-add-btn:disabled),
+:deep(.pdm-approval__manual-remove-btn:disabled) {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+:deep(.pdm-approval__manual-hint) {
+  font-size: 11px;
+  color: #6b7280;
+  margin: 0;
 }
 
 :deep(.task-card__actions) {

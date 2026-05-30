@@ -14,6 +14,11 @@ from app.ports.domains.quotation import QuotationApprovalSelectionPort, Quotatio
 class ApproveQuotationTaskCommand:
     task_id: str
     approved_partids: list[str]
+    extra_partids: list[str] = None
+
+    def __post_init__(self) -> None:
+        if self.extra_partids is None:
+            self.extra_partids = []
 
 
 @dataclass
@@ -80,7 +85,24 @@ class ApproveQuotationTaskUseCase:
                 status_code=400,
                 error_code="UNKNOWN_PARTIDS",
             )
-        if not approved_partids:
+        if not approved_partids and not cmd.extra_partids:
+            raise APIException(
+                "审核列表为空，至少需要保留 1 个 PARTID",
+                status_code=422,
+                error_code="EMPTY_APPROVAL_LIST",
+            )
+
+        # Merge manually supplied extra PARTIDs (not validated against pdm_partids)
+        extra_clean: list[str] = []
+        for raw in cmd.extra_partids:
+            value = str(raw).strip()
+            if value and value not in seen:
+                seen.add(value)
+                extra_clean.append(value)
+
+        final_partids = approved_partids + extra_clean
+
+        if not final_partids:
             raise APIException(
                 "审核列表为空，至少需要保留 1 个 PARTID",
                 status_code=422,
@@ -88,7 +110,7 @@ class ApproveQuotationTaskUseCase:
             )
 
         summary_selection_items = build_summary_selection_items(
-            approved_partids=approved_partids,
+            approved_partids=final_partids,
             pdm_result=payload.get("pdm_result") if isinstance(payload.get("pdm_result"), dict) else {},
             keywords_payload=(
                 payload.get("keywords_payload") if isinstance(payload.get("keywords_payload"), dict) else {}
@@ -96,12 +118,15 @@ class ApproveQuotationTaskUseCase:
         )
         self._approval_selection.save_approved_selection(
             task_id=cmd.task_id,
-            approved_partids=approved_partids,
+            approved_partids=final_partids,
             summary_selection_items=summary_selection_items,
         )
 
         progress = max(task.progress, 55)
-        message = f"已同意 {len(approved_partids)}/{len(available_partids)} 项，开始 U8 查询"
+        if extra_clean:
+            message = f"已同意 {len(approved_partids)} 项 + {len(extra_clean)} 手动项，开始 U8 查询"
+        else:
+            message = f"已同意 {len(approved_partids)}/{len(available_partids)} 项，开始 U8 查询"
 
         updated = self._task_repo.patch_task(
             cmd.task_id,
@@ -122,5 +147,5 @@ class ApproveQuotationTaskUseCase:
             message="已触发 U8 BOM Inventory 查询",
             task_id=cmd.task_id,
             status=updated.status,
-            approved_count=len(approved_partids),
+            approved_count=len(final_partids),
         )

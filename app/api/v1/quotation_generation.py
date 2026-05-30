@@ -98,6 +98,10 @@ class ApproveTaskRequest(BaseModel):
         min_length=1,
         description="用户勾选的 PARTID 列表，仅这些将被送入 U8 BOM Inventory",
     )
+    extra_partids: List[str] = Field(
+        default_factory=list,
+        description="用户手动补充的 PARTID，不受限于 Phase1 结果，与表格勾选合并后一同送入 Phase2",
+    )
 
 
 class ApproveTaskResponse(BaseModel):
@@ -457,7 +461,11 @@ async def approve_quotation_task(
         task_dispatch=QuotationDispatchAdapter(),
     )
     result = await usecase.execute(
-        ApproveQuotationTaskCommand(task_id=task_id, approved_partids=request.approved_partids)
+        ApproveQuotationTaskCommand(
+            task_id=task_id,
+            approved_partids=request.approved_partids,
+            extra_partids=request.extra_partids,
+        )
     )
     return ApproveTaskResponse(**result.__dict__)
 
