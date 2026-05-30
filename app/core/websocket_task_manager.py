@@ -48,11 +48,6 @@ class WebSocketConnectionManager:
             self.active_connections[task_id].add(websocket)
             self.ip_connections[client_ip] = current_count + 1
             websocket.state.client_ip = client_ip
-        logger.info(
-            "[success] WebSocket client connected: task_id=%s, connections=%s",
-            task_id,
-            len(self.active_connections.get(task_id, set())),
-        )
 
     def disconnect(self, websocket: WebSocket, task_id: str) -> None:
         with self._lock:

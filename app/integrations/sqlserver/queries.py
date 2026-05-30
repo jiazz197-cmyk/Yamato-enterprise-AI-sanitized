@@ -27,7 +27,7 @@ from app.integrations.sqlserver.u8_bom import (
     split_parent_inv_codes,
 )
 
-logger = get_logger("sqlserver")
+logger = get_logger("database.sqlserver")
 
 
 def run_u8_bom_inventory_query(

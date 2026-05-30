@@ -30,7 +30,12 @@ def _to_snapshot(ts: Any) -> TaskManagerTaskSnapshot:
 
 class TaskManagerStateAdapter(TaskStatePort):
     async def create_task(self, task_type: str, metadata: Optional[Dict[str, Any]] = None) -> str:
-        return await task_manager.create_task(task_type=task_type, metadata=metadata)
+        task_id = await task_manager.create_task(task_type=task_type, metadata=metadata)
+        await task_manager.update_status(task_id, "queued", "任务已排队")
+        return task_id
+
+    async def update_status(self, task_id: str, status: str, message: str = "") -> bool:
+        return await task_manager.update_status(task_id, status, message)
 
     async def fail_task(self, task_id: str, error: str, message: str = "任务失败") -> bool:
         return await task_manager.fail_task(task_id, error, message)

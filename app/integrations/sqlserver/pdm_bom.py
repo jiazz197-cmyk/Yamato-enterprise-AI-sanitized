@@ -14,7 +14,7 @@ from app.core.logging import get_logger
 
 from app.integrations.sqlserver.client import get_sql_client
 
-logger = get_logger("sqlserver.pdm_bom")
+logger = get_logger("database.sqlserver.pdm_bom")
 
 # 默认排除的关键词（停用、禁用等）
 _DEFAULT_EXCLUDE_KEYWORDS = ["停用", "暂停使用", "禁用", "作废", "废弃"]

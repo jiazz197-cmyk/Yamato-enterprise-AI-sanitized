@@ -57,7 +57,7 @@ class CancelQuotationTaskUseCase:
                     "completed_at": datetime.utcnow(),
                 },
             )
-            await self._task_state.fail_task(cmd.task_id, "用户取消", "任务已取消")
+            await self._task_state.update_status(cmd.task_id, "cancelled", "任务已取消")
             self._task_dispatch.dispatch_owner_queue(task.owner_id)
             return CancelQuotationTaskResult(True, "排队任务已取消", cmd.task_id)
 
@@ -72,10 +72,11 @@ class CancelQuotationTaskUseCase:
                     "message": "任务已取消（审核阶段）",
                     "error": "用户取消",
                     "completed_at": datetime.utcnow(),
+                    "awaiting_approval_at": None,
                     "result_payload": payload,
                 },
             )
-            await self._task_state.fail_task(cmd.task_id, "用户取消", "任务已取消")
+            await self._task_state.update_status(cmd.task_id, "cancelled", "任务已取消")
             self._task_dispatch.dispatch_owner_queue(task.owner_id)
             return CancelQuotationTaskResult(True, "审核阶段任务已取消", cmd.task_id)
 
@@ -90,7 +91,7 @@ class CancelQuotationTaskUseCase:
                     "completed_at": datetime.utcnow(),
                 },
             )
-            await self._task_state.fail_task(cmd.task_id, "用户取消", "任务已取消")
+            await self._task_state.update_status(cmd.task_id, "cancelled", "任务已取消")
             self._task_dispatch.dispatch_owner_queue(task.owner_id)
             return CancelQuotationTaskResult(True, "任务已标记取消", cmd.task_id)
 

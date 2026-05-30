@@ -9,7 +9,7 @@ from sqlalchemy.pool import Pool
 from app.core.config import settings
 from app.core.logging import get_logger
 
-logger = get_logger("db")
+logger = get_logger("database.pool")
 
 DATABASE_URL = settings.SQLALCHEMY_DATABASE_URI
 
@@ -181,6 +181,19 @@ def init_db_tables():
                     "ON quotation_tasks (owner_ip)"
                 ))
                 conn.commit()
+
+                awaiting_col = conn.execute(text(
+                    "SELECT column_name "
+                    "FROM information_schema.columns "
+                    "WHERE table_name='quotation_tasks' AND column_name='awaiting_approval_at'"
+                )).fetchone()
+                if not awaiting_col:
+                    logger.info("[info] 发现 quotation_tasks 表缺少 awaiting_approval_at 列，正在添加...")
+                    conn.execute(text(
+                        "ALTER TABLE quotation_tasks ADD COLUMN awaiting_approval_at TIMESTAMP NULL"
+                    ))
+                    conn.commit()
+                    logger.info("[success] 成功向 quotation_tasks 表添加 awaiting_approval_at 列")
         except Exception as mig_e:
             logger.error(f"[warning] quotation_tasks.owner_ip/display_name 迁移失败（如果表还未创建可忽略此错误）: {mig_e}")
 

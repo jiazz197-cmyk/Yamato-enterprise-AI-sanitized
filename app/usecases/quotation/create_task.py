@@ -9,8 +9,11 @@ from typing import Optional
 from uuid import uuid4
 
 from app.core.exceptions import APIException
+from app.core.logging import get_logger
 from app.ports.contracts.tasking import TaskDispatchPort, TaskExecutionPort, TaskStatePort
 from app.ports.domains.quotation import FileStoragePort, QuotationTaskRepoPort
+
+logger = get_logger("quotation.create_task")
 
 SUPPORTED_PDF_TYPES = {"application/pdf"}
 
@@ -116,6 +119,23 @@ class CreateQuotationTaskUseCase:
         queue_position = 0
         if task.status == "queued":
             queue_position = self._task_repo.count_owner_queued_before(cmd.owner_id, task.created_at)
+
+        try:
+            from app.core.config import settings
+            from app.core.database import SessionLocal
+            from app.usecases.quotation.retention import purge_old_terminal_tasks_global
+
+            db = SessionLocal()
+            try:
+                await purge_old_terminal_tasks_global(
+                    db,
+                    max_total=settings.QUOTATION_RETENTION_MAX_TOTAL,
+                    target=settings.QUOTATION_RETENTION_TARGET,
+                )
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("Retention after create failed: %s", exc)
 
         return CreateQuotationTaskResult(
             task_id=task.task_id,

@@ -110,10 +110,11 @@ class ApproveQuotationTaskUseCase:
                 "message": message,
                 "progress": progress,
                 "error": None,
+                "awaiting_approval_at": None,
             },
         )
 
-        await self._task_state.update_task_progress(cmd.task_id, progress, message)
+        await self._task_state.update_status(cmd.task_id, "running", message)
         self._task_dispatch.dispatch_phase2(cmd.task_id, updated.owner_id)
 
         return ApproveQuotationTaskResult(

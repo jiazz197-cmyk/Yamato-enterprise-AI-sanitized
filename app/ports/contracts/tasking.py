@@ -20,6 +20,9 @@ class TaskStatePort(Protocol):
     async def update_task_message(self, task_id: str, message: str) -> bool:
         ...
 
+    async def update_status(self, task_id: str, status: str, message: str = "") -> bool:
+        ...
+
     async def get_task_snapshot(self, task_id: str) -> Optional[TaskManagerTaskSnapshot]:
         ...
 

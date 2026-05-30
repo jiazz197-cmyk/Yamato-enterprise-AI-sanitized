@@ -17,6 +17,7 @@ from app.core.websocket_task_manager import (
 from app.models.orm.platform.user import User, UserRole
 
 logger = get_logger("websocket_notifier")
+ws_diag_logger = get_logger("diag.ws")
 
 router = APIRouter()
 
@@ -46,7 +47,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
     started_at = time.perf_counter()
     client_ip = (websocket.client.host if websocket.client else "") or "unknown"
     user_agent = _extract_ws_user_agent(websocket)
-    logger.info(
+    ws_diag_logger.info(
         "[ws_diag] ws_connect_requested: task_id=%s client_ip=%s user_agent=%s",
         task_id,
         client_ip,
@@ -58,7 +59,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
     try:
         raw_auth = await asyncio.wait_for(websocket.receive_text(), timeout=_WS_AUTH_TIMEOUT)
     except asyncio.TimeoutError:
-        logger.warning(
+        ws_diag_logger.warning(
             "[ws_diag] ws_connect_rejected: task_id=%s client_ip=%s reason=auth_timeout elapsed_ms=%.2f",
             task_id,
             client_ip,
@@ -70,7 +71,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
     try:
         token = _parse_auth_message(raw_auth)
     except WebSocketException as exc:
-        logger.warning(
+        ws_diag_logger.warning(
             "[ws_diag] ws_connect_rejected: task_id=%s client_ip=%s reason=invalid_auth close_code=%s elapsed_ms=%.2f",
             task_id,
             client_ip,
@@ -83,7 +84,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
     try:
         user_id = decode_ws_bearer_user_id(token)
     except WebSocketException as exc:
-        logger.warning(
+        ws_diag_logger.warning(
             "[ws_diag] ws_connect_rejected: task_id=%s client_ip=%s reason=invalid_token close_code=%s close_reason=%s elapsed_ms=%.2f",
             task_id,
             client_ip,
@@ -96,7 +97,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
 
     owner_id = await resolve_task_owner_id(task_id)
     if not owner_id:
-        logger.warning(
+        ws_diag_logger.warning(
             "[ws_diag] ws_connect_rejected: task_id=%s client_ip=%s user_id=%s reason=missing_owner elapsed_ms=%.2f",
             task_id,
             client_ip,
@@ -109,7 +110,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
     ws_user = load_user_for_websocket(user_id)
     is_admin_like = bool(ws_user and ws_user.role in (UserRole.admin, UserRole.superuser))
     if owner_id != user_id and not is_admin_like:
-        logger.warning(
+        ws_diag_logger.warning(
             "[ws_diag] ws_connect_rejected: task_id=%s client_ip=%s user_id=%s owner_id=%s reason=forbidden elapsed_ms=%.2f",
             task_id,
             client_ip,
@@ -122,7 +123,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
 
     try:
         ws_manager.register(websocket, task_id, client_ip)
-        logger.info(
+        ws_diag_logger.info(
             "[ws_diag] ws_connect_accepted: task_id=%s client_ip=%s user_id=%s owner_id=%s task_connections=%s total_connections=%s elapsed_ms=%.2f",
             task_id,
             client_ip,
@@ -133,7 +134,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
             (time.perf_counter() - started_at) * 1000,
         )
     except WebSocketException as exc:
-        logger.warning(
+        ws_diag_logger.warning(
             "[ws_diag] ws_connect_rejected: task_id=%s client_ip=%s user_id=%s reason=manager_rejected close_code=%s close_reason=%s elapsed_ms=%.2f",
             task_id,
             client_ip,
@@ -156,7 +157,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
                 ensure_ascii=False,
             )
         )
-        logger.info(
+        ws_diag_logger.info(
             "[ws_diag] ws_connection_established_sent: task_id=%s client_ip=%s elapsed_ms=%.2f",
             task_id,
             client_ip,
@@ -164,7 +165,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
         )
         while True:
             if not ws_manager.allow_message(client_ip):
-                logger.warning(
+                ws_diag_logger.warning(
                     "[ws_diag] ws_disconnect_observed: task_id=%s client_ip=%s reason=message_rate_limited elapsed_ms=%.2f",
                     task_id,
                     client_ip,
@@ -179,7 +180,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
             logger.debug("Received client message: %s", data)
     except WebSocketDisconnect as exc:
         ws_manager.disconnect(websocket, task_id)
-        logger.info(
+        ws_diag_logger.info(
             "[ws_diag] ws_disconnect_observed: task_id=%s client_ip=%s code=%s task_connections=%s total_connections=%s elapsed_ms=%.2f",
             task_id,
             client_ip,
@@ -190,7 +191,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
         )
         logger.info("[event] Client disconnected: task_id=%s", task_id)
     except Exception as e:
-        logger.error(
+        ws_diag_logger.error(
             "[ws_diag] ws_exception_observed: task_id=%s client_ip=%s error=%s elapsed_ms=%.2f",
             task_id,
             client_ip,
