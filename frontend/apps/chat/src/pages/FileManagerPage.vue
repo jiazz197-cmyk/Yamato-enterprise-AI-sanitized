@@ -149,6 +149,7 @@ const refreshTimers = new Map<string, number>()
 const refreshInFlightTaskIds = new Set<string>()
 const refreshQueuedTaskIds = new Set<string>()
 const approvalDetailRequestedTaskIds = new Set<string>()
+const completedRefreshRequestedTaskIds = new Set<string>()
 let loadTasksAbortController: AbortController | null = null
 let loadTasksTimeoutId: number | null = null
 let isPageUnmounted = false
@@ -989,6 +990,17 @@ const patchTaskFromEvent = (
     afterTaskCount: tasks.value.length,
   })
 
+  // WS 事件只携带 status/progress/message/error，不携带 result。
+  // 当任务进入 awaiting_approval 但本地 result 还没有 PDM items 时（phase1→phase2 的时序漏洞），
+  // 必须立即拉一次完整任务详情，否则 UI 会显示 "PDM 未返回任何数据"，直到用户手动刷新。
+  requestApprovalDetailRefresh(next, 200, stateEpoch, 'patch_task_from_event_awaiting')
+
+  // 完成态时也补一次详情拉取，确保最终 result 完整（U8 数据、统计等）。
+  // 用专属去重集合：终态附近后端常推多帧 task_event，无去重会反复重置 200ms timer 反而延迟首次 GET。
+  if (next.status === 'completed') {
+    requestCompletedDetailRefresh(taskId, 200, stateEpoch, 'patch_task_from_event_completed')
+  }
+
   if (TERMINAL_STATUSES.includes(next.status)) {
     approvalDetailRequestedTaskIds.delete(taskId)
     closeSocket(taskId)
@@ -1282,6 +1294,58 @@ const scheduleRefreshSingleTask = (taskId: string, delay = 500, epoch = stateEpo
   refreshTimers.set(taskId, timer)
 }
 
+/**
+ * 统一的 awaiting_approval 详情补拉：当任务进入 awaiting_approval 状态但本地 result 缺 PDM
+ * items 时调度一次详情拉取。返回 true 表示真正发起了调度，false 表示已被去重 / 不需要。
+ *
+ * 同时被 loadTasks (轮询/手动刷新) 和 patchTaskFromEvent (WS 事件) 复用，确保去重和触发
+ * 规则单点定义，避免两路径策略漂移。
+ */
+const requestApprovalDetailRefresh = (
+  task: QuotationTaskItem,
+  delay: number,
+  epoch: number,
+  source: string,
+): boolean => {
+  if (task.status !== 'awaiting_approval') return false
+  if (hasApprovalItems(task)) return false
+  if (approvalDetailRequestedTaskIds.has(task.task_id)) return false
+  approvalDetailRequestedTaskIds.add(task.task_id)
+  logDiag('approval_detail_refresh_scheduled', {
+    taskId: task.task_id,
+    delay,
+    epoch,
+    source,
+  })
+  scheduleRefreshSingleTask(task.task_id, delay, epoch)
+  return true
+}
+
+/**
+ * 完成态详情补拉：WS task_event 只携带 status/progress/message/error，不带 result。任务进入
+ * completed 时本地 result 可能仍是中间态，需要拉一次完整详情确保 U8 数据 / 最终统计可见。
+ *
+ * 与 awaiting_approval 不同，completed 是真正的终态，正常生命周期内不会重复进入；这里用专属
+ * 去重集合，且只在任务被从前端列表移除（删除/页面卸载）时清理，避免重连补帧场景下重复发 GET。
+ */
+const requestCompletedDetailRefresh = (
+  taskId: string,
+  delay: number,
+  epoch: number,
+  source: string,
+): boolean => {
+  if (completedRefreshRequestedTaskIds.has(taskId)) return false
+  completedRefreshRequestedTaskIds.add(taskId)
+  logDiag('completed_detail_refresh_scheduled', {
+    taskId,
+    delay,
+    epoch,
+    source,
+  })
+  scheduleRefreshSingleTask(taskId, delay, epoch)
+  return true
+}
+
 const ensureTaskSockets = (epoch = stateEpoch): void => {
   if (!ENABLE_TASK_WEBSOCKET) {
     logDiag('ws_disabled_cleanup_start', { existingConnections: wsMap.size })
@@ -1502,16 +1566,18 @@ const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promi
     })
 
     const approvalRefreshScheduleStartedAt = Date.now()
+    // 轮询/手动刷新路径：每次 list 拉取最多调度 2 个待补拉详情的任务，阶梯延迟避免并发突刺。
+    // WS 事件路径走 requestApprovalDetailRefresh 共享去重集合；先到先得，本路径会自动跳过已被去重的。
     tasks.value
-      .filter((task) =>
-        task.status === 'awaiting_approval'
-        && !hasApprovalItems(task)
-        && !approvalDetailRequestedTaskIds.has(task.task_id)
-      )
+      .filter((task) => task.status === 'awaiting_approval' && !hasApprovalItems(task))
       .slice(0, 2)
       .forEach((task, index) => {
-        approvalDetailRequestedTaskIds.add(task.task_id)
-        scheduleRefreshSingleTask(task.task_id, 800 + index * 500, requestEpoch)
+        requestApprovalDetailRefresh(
+          task,
+          800 + index * 500,
+          requestEpoch,
+          'load_tasks_awaiting',
+        )
       })
     const approvalRefreshScheduleMs = Date.now() - approvalRefreshScheduleStartedAt
 
@@ -1812,6 +1878,7 @@ const handleDelete = async (taskId: string): Promise<void> => {
     await deleteQuotationTask(taskId)
     closeSocket(taskId)
     approvalDetailRequestedTaskIds.delete(taskId)
+    completedRefreshRequestedTaskIds.delete(taskId)
     refreshInFlightTaskIds.delete(taskId)
     refreshQueuedTaskIds.delete(taskId)
 

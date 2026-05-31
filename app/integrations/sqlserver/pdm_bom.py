@@ -30,7 +30,11 @@ def build_pdm_exclude_clauses() -> List[str]:
 
 
 def build_model_filter_clauses(model: Optional[str] = None) -> List[str]:
-    """Build MODEL filter clauses for exact match.
+    """Build MODEL filter clauses with exact match logic.
+
+    - a.MODEL LIKE '%{model}%'                 — 包含 model
+    - a.MODEL NOT LIKE '%{model}[a-zA-Z]%'     — 排除 model 后紧跟字母的情况
+      （SQL Server LIKE 字符类语法，防止 "ADW-A-0314S" 误匹配到 "ADW-A-0314SX"）
 
     Args:
         model: 机型型号，如 "ADW-A-0314S"
@@ -44,6 +48,7 @@ def build_model_filter_clauses(model: Optional[str] = None) -> List[str]:
     safe_model = model.replace("'", "''")
     clauses: List[str] = []
     clauses.append(f"a.MODEL LIKE '%{safe_model}%'")
+    clauses.append(f"a.MODEL NOT LIKE '%{safe_model}[a-zA-Z]%'")
     return clauses
 
 
@@ -178,10 +183,14 @@ def query_pdm_bom_merged(
 ) -> List[Dict[str, Any]]:
     """Query BOM_027 with keywords and optional model filter.
 
-    MODEL 查询策略（一次 SQL）：
-    - 优先匹配 MODEL，有结果则返回
-    - 无 MODEL 匹配时自动回退到不带 MODEL 的结果
-    - 使用 CTE + UNION ALL 实现，一次数据库交互
+    MODEL 查询策略（Python 两步，仅 miss 路径才发第二次 SQL）：
+    - 有 MODEL：先用带 MODEL 的 WHERE 查询；命中即返回
+    - 命中 0 行时回退到不带 MODEL 的查询（静默回退，业务侧故意行为）
+    - 无 MODEL：直接单查询
+
+    旧版用 CTE + UNION ALL 在一次 SQL 内表达"优先 + 回退"，但 SQL Server 不保证对
+    sibling CTE 短路求值，常见命中路径会强制双扫描 BOM_027。改成 Python 两步后，
+    命中路径只 1 次 SQL，仅 miss 路径才追加 1 次。
 
     Args:
         alternatives_per_keyword: 关键词列表
@@ -194,43 +203,7 @@ def query_pdm_bom_merged(
     if client is None:
         client = get_sql_client(_pdm_client_config())
 
-    # 不带 MODEL 的条件（基础条件）
-    base_conditions = build_pdm_and_where_clause(alternatives_per_keyword, model=None)
-    if not base_conditions:
-        return []
-
-    if model:
-        # 有 MODEL：使用 CTE 一次查询实现优先匹配 + 回退
-        safe_model = model.replace("'", "''")
-        model_condition = f"a.MODEL LIKE '%{safe_model}%'"
-
-        query_sql = f"""
-            WITH model_matched AS (
-                SELECT DISTINCT a.PARTID AS PARTID, a.CHINANAME AS CHINANAME
-                FROM BOM_027 a
-                WHERE a.PARTVAR = (
-                    SELECT MAX(b.PARTVAR) FROM BOM_027 b WHERE b.PARTID = a.PARTID
-                )
-                AND {base_conditions}
-                AND {model_condition}
-            ),
-            no_model AS (
-                SELECT DISTINCT a.PARTID AS PARTID, a.CHINANAME AS CHINANAME
-                FROM BOM_027 a
-                WHERE a.PARTVAR = (
-                    SELECT MAX(b.PARTVAR) FROM BOM_027 b WHERE b.PARTID = a.PARTID
-                )
-                AND {base_conditions}
-            )
-            SELECT PARTID, CHINANAME FROM model_matched
-            UNION ALL
-            SELECT PARTID, CHINANAME FROM no_model
-            WHERE NOT EXISTS (SELECT 1 FROM model_matched)
-            ORDER BY PARTID
-        """
-        logger.debug("PDM BOM_027 查询 (带 MODEL，优先匹配):\n%s", query_sql)
-    else:
-        # 无 MODEL：直接查询
+    def _run(where_clause: str, tag: str) -> List[Dict[str, Any]]:
         query_sql = f"""
             SELECT DISTINCT
                 a.PARTID AS PARTID,
@@ -239,13 +212,28 @@ def query_pdm_bom_merged(
             WHERE a.PARTVAR = (
                 SELECT MAX(b.PARTVAR) FROM BOM_027 b WHERE b.PARTID = a.PARTID
             )
-            AND {base_conditions}
+            AND {where_clause}
             ORDER BY a.PARTID
         """
-        logger.debug("PDM BOM_027 查询 (无 MODEL):\n%s", query_sql)
+        logger.debug("PDM BOM_027 查询 (%s):\n%s", tag, query_sql)
+        rows = client.query(query_sql)
+        logger.debug("PDM BOM_027 查询 (%s) 命中 %d 条", tag, len(rows))
+        return rows
 
-    rows = client.query(query_sql)
-    logger.debug("PDM BOM_027 查询命中 %d 条", len(rows))
+    # 优先尝试带 MODEL（如有）的查询
+    where_with_model = build_pdm_and_where_clause(alternatives_per_keyword, model=model)
+    if not where_with_model:
+        return []
+
+    rows = _run(where_with_model, "带 MODEL" if model else "无 MODEL")
+
+    # 命中 0 行且存在 MODEL 时，静默回退到无 MODEL 查询（业务侧故意行为）
+    if not rows and model:
+        where_no_model = build_pdm_and_where_clause(alternatives_per_keyword, model=None)
+        if where_no_model:
+            logger.debug("PDM BOM_027 MODEL 命中 0 行，回退到无 MODEL 查询")
+            rows = _run(where_no_model, "MODEL 回退")
+
     return deduplicate_rows(rows)
 
 
