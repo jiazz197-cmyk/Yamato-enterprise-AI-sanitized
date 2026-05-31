@@ -30,10 +30,7 @@ def build_pdm_exclude_clauses() -> List[str]:
 
 
 def build_model_filter_clauses(model: Optional[str] = None) -> List[str]:
-    """Build MODEL filter clauses with exact match logic.
-
-    - a.MODEL LIKE '%{model}%' - 包含 model
-    - a.MODEL NOT LIKE '%{model}[a-zA-Z]%' - 排除 model 后面紧跟字母的情况
+    """Build MODEL filter clauses for exact match.
 
     Args:
         model: 机型型号，如 "ADW-A-0314S"
@@ -47,7 +44,6 @@ def build_model_filter_clauses(model: Optional[str] = None) -> List[str]:
     safe_model = model.replace("'", "''")
     clauses: List[str] = []
     clauses.append(f"a.MODEL LIKE '%{safe_model}%'")
-    clauses.append(f"a.MODEL NOT LIKE '%{safe_model}[a-zA-Z]%'")
     return clauses
 
 
@@ -182,6 +178,11 @@ def query_pdm_bom_merged(
 ) -> List[Dict[str, Any]]:
     """Query BOM_027 with keywords and optional model filter.
 
+    MODEL 查询策略（一次 SQL）：
+    - 优先匹配 MODEL，有结果则返回
+    - 无 MODEL 匹配时自动回退到不带 MODEL 的结果
+    - 使用 CTE + UNION ALL 实现，一次数据库交互
+
     Args:
         alternatives_per_keyword: 关键词列表
         model: 机型型号，如 "ADW-A-0314S"
@@ -190,27 +191,61 @@ def query_pdm_bom_merged(
     Returns:
         Deduplicated list of rows with PARTID and CHINANAME
     """
-    and_conditions = build_pdm_and_where_clause(alternatives_per_keyword, model=model)
-    if not and_conditions:
-        return []
-
     if client is None:
         client = get_sql_client(_pdm_client_config())
 
-    query_sql = f"""
-        SELECT DISTINCT
-            a.PARTID AS PARTID,
-            a.CHINANAME AS CHINANAME
-        FROM BOM_027 a
-        WHERE a.PARTVAR = (
-            SELECT MAX(b.PARTVAR) FROM BOM_027 b WHERE b.PARTID = a.PARTID
-        )
-        AND {and_conditions}
-        ORDER BY a.PARTID
-    """
+    # 不带 MODEL 的条件（基础条件）
+    base_conditions = build_pdm_and_where_clause(alternatives_per_keyword, model=None)
+    if not base_conditions:
+        return []
 
-    logger.debug("PDM BOM_027 merged SQL:\n%s", query_sql)
+    if model:
+        # 有 MODEL：使用 CTE 一次查询实现优先匹配 + 回退
+        safe_model = model.replace("'", "''")
+        model_condition = f"a.MODEL LIKE '%{safe_model}%'"
+
+        query_sql = f"""
+            WITH model_matched AS (
+                SELECT DISTINCT a.PARTID AS PARTID, a.CHINANAME AS CHINANAME
+                FROM BOM_027 a
+                WHERE a.PARTVAR = (
+                    SELECT MAX(b.PARTVAR) FROM BOM_027 b WHERE b.PARTID = a.PARTID
+                )
+                AND {base_conditions}
+                AND {model_condition}
+            ),
+            no_model AS (
+                SELECT DISTINCT a.PARTID AS PARTID, a.CHINANAME AS CHINANAME
+                FROM BOM_027 a
+                WHERE a.PARTVAR = (
+                    SELECT MAX(b.PARTVAR) FROM BOM_027 b WHERE b.PARTID = a.PARTID
+                )
+                AND {base_conditions}
+            )
+            SELECT PARTID, CHINANAME FROM model_matched
+            UNION ALL
+            SELECT PARTID, CHINANAME FROM no_model
+            WHERE NOT EXISTS (SELECT 1 FROM model_matched)
+            ORDER BY PARTID
+        """
+        logger.debug("PDM BOM_027 查询 (带 MODEL，优先匹配):\n%s", query_sql)
+    else:
+        # 无 MODEL：直接查询
+        query_sql = f"""
+            SELECT DISTINCT
+                a.PARTID AS PARTID,
+                a.CHINANAME AS CHINANAME
+            FROM BOM_027 a
+            WHERE a.PARTVAR = (
+                SELECT MAX(b.PARTVAR) FROM BOM_027 b WHERE b.PARTID = a.PARTID
+            )
+            AND {base_conditions}
+            ORDER BY a.PARTID
+        """
+        logger.debug("PDM BOM_027 查询 (无 MODEL):\n%s", query_sql)
+
     rows = client.query(query_sql)
+    logger.debug("PDM BOM_027 查询命中 %d 条", len(rows))
     return deduplicate_rows(rows)
 
 
