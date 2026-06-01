@@ -112,11 +112,43 @@
         </div>
       </div>
     </div>
+
+    <ConfirmDialog
+      v-model="showDeleteDialog"
+      title="删除任务"
+      :message="`确定删除任务「${pendingDeleteTaskName}」吗？此操作不可恢复。`"
+      type="danger"
+      confirm-text="删除"
+      cancel-text="取消"
+      @confirm="confirmDeleteTask"
+    />
+
+    <ConfirmDialog
+      v-model="showTaskNameDialog"
+      title="任务名称"
+      type="primary"
+      confirm-text="上传"
+      cancel-text="取消"
+      @confirm="confirmUploadWithTaskName"
+      @cancel="cancelTaskNameDialog"
+    >
+      <label class="task-name-field">
+        <span class="task-name-field__label">请输入任务名称（仅用于展示）</span>
+        <input
+          v-model="pendingTaskName"
+          class="task-name-field__input"
+          type="text"
+          maxlength="120"
+          @keydown.enter.prevent="confirmUploadWithTaskName"
+        />
+      </label>
+    </ConfirmDialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ConfirmDialog } from '@yamato/components'
 import { config } from '../config'
 import type { QuotationPdmItem, QuotationPdmResult, QuotationTaskItem } from '../types/quotation'
 import {
@@ -139,6 +171,13 @@ const errorMessage = ref('')
 const wsConnections = ref(0)
 const selectedTask = ref<QuotationTaskItem | null>(null)
 const resultModalVisible = ref(false)
+const showDeleteDialog = ref(false)
+const pendingDeleteTaskId = ref('')
+const pendingDeleteTaskName = ref('')
+const showTaskNameDialog = ref(false)
+const pendingUploadFile = ref<File | null>(null)
+const pendingTaskName = ref('')
+const pendingUploadId = ref(0)
 
 const wsMap = new Map<string, WebSocket>()
 const wsTaskEpochMap = new Map<string, number>()
@@ -1637,7 +1676,8 @@ const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promi
       }
     }
   } finally {
-    if (loadTasksAbortController === controller) {
+    const controllerMatched = loadTasksAbortController === controller
+    if (controllerMatched) {
       clearLoadTasksTimeout()
       loadTasksAbortController = null
       loading.value = false
@@ -1740,16 +1780,37 @@ const handleFileSelected = async (event: Event): Promise<void> => {
   }
 
   const defaultTaskName = selectedFile.name.replace(/\.pdf$/i, '') || selectedFile.name
-  const customTaskNameInput = window.prompt('请输入任务名称（仅用于展示）', defaultTaskName)
-  if (customTaskNameInput === null) {
-    logDiag('upload_cancelled_by_prompt', {
-      uploadId,
-      defaultTaskName,
-    })
-    return
-  }
-  const customTaskName = customTaskNameInput.trim() || defaultTaskName
+  pendingUploadFile.value = selectedFile
+  pendingTaskName.value = defaultTaskName
+  pendingUploadId.value = uploadId
+  showTaskNameDialog.value = true
+}
 
+const cancelTaskNameDialog = (): void => {
+  logDiag('upload_cancelled_by_dialog', {
+    uploadId: pendingUploadId.value,
+    defaultTaskName: pendingTaskName.value,
+  })
+  pendingUploadFile.value = null
+  pendingTaskName.value = ''
+}
+
+const confirmUploadWithTaskName = async (): Promise<void> => {
+  const selectedFile = pendingUploadFile.value
+  if (!selectedFile) return
+
+  const defaultTaskName = selectedFile.name.replace(/\.pdf$/i, '') || selectedFile.name
+  const customTaskName = pendingTaskName.value.trim() || defaultTaskName
+  const uploadId = pendingUploadId.value || ++uploadAttemptSeq
+
+  pendingUploadFile.value = null
+  pendingTaskName.value = ''
+  showTaskNameDialog.value = false
+
+  await performUpload(selectedFile, customTaskName, uploadId)
+}
+
+const performUpload = async (selectedFile: File, customTaskName: string, uploadId: number): Promise<void> => {
   const uploadStartedAt = Date.now()
   let createTaskStartedAt = 0
   let createTaskPendingWarnTimer: number | null = null
@@ -1868,11 +1929,17 @@ const handleCancel = async (taskId: string): Promise<void> => {
   }
 }
 
-const handleDelete = async (taskId: string): Promise<void> => {
+const handleDelete = (taskId: string): void => {
   const task = tasks.value.find((item) => item.task_id === taskId)
   const taskName = task?.display_name || task?.uploaded_file_name || taskId
-  const confirmed = window.confirm(`确定删除任务「${taskName}」吗？此操作不可恢复。`)
-  if (!confirmed) return
+  pendingDeleteTaskId.value = taskId
+  pendingDeleteTaskName.value = taskName
+  showDeleteDialog.value = true
+}
+
+const confirmDeleteTask = async (): Promise<void> => {
+  const taskId = pendingDeleteTaskId.value
+  if (!taskId) return
 
   try {
     await deleteQuotationTask(taskId)
@@ -3498,6 +3565,34 @@ const TaskItemCard = defineComponent({
   font-size: 12px;
   line-height: 1.5;
   overflow: auto;
+}
+
+.task-name-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-name-field__label {
+  font-size: 14px;
+  color: var(--yamato-color-text-secondary);
+}
+
+.task-name-field__input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--yamato-color-border-subtle);
+  border-radius: var(--yamato-radius-sm);
+  font-size: 14px;
+  color: var(--yamato-color-text-primary);
+  background: var(--yamato-color-surface);
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: var(--yamato-focus-ring);
+  }
 }
 
 @media (max-width: 1200px) {

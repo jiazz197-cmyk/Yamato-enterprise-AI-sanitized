@@ -669,8 +669,10 @@ const approveRecord = async (formId: string) => {
   approvingId.value = formId
   try {
     await approveClosingForm(formId)
-    const idx = records.value.findIndex((r) => r.id === formId)
-    if (idx !== -1) records.value[idx] = { ...records.value[idx], status: 'approved' }
+    if (expandedId.value === formId) {
+      expandedId.value = null
+    }
+    await loadRecords()
     showSuccess('已审批通过')
   } catch (err: any) {
     showError(err?.message || '审批失败')
