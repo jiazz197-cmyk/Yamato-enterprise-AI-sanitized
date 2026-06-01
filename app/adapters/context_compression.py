@@ -9,9 +9,10 @@ from app.integrations.context_compression import (
     LlmEndpointMisconfiguredError,
     compress_context,
 )
+from app.ports.domains.context_compression import ContextCompressorPort
 
 
-class IntegrationContextCompressorAdapter:
+class IntegrationContextCompressorAdapter(ContextCompressorPort):
     def compress(self, context_data: dict) -> Any:
         try:
             return compress_context(context_data)

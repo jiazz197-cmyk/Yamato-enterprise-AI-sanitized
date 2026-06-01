@@ -1,36 +1,69 @@
-"""Closing form integration outbound port."""
+"""Closing form ports — fine-grained interfaces."""
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
 
 
-class ClosingFormServicePort(Protocol):
-    def submit_closing_form(self, uploader: str, form_data: Any) -> Any:
+class ClosingFormPersistencePort(Protocol):
+    """Atomic persistence operations for closing forms (no business logic)."""
+
+    def submit_pending(self, form_text_raw: str, uploader: str, image_url_1: Optional[str], image_url_2: Optional[str]) -> dict:
         ...
 
-    def list_merged_forms(self, *, uploader: str, is_privileged: bool) -> Any:
+    def get_pending_form(self, form_id: int) -> Optional[dict]:
         ...
 
-    def approve_pending_form(self, form_id: int, approved_by_username: str) -> Any:
+    def list_pending_forms(self, *, uploader: Optional[str] = None) -> list[dict]:
         ...
 
-    def reject_pending_form(self, form_id: int, rejected_by_username: str) -> Any:
+    def list_approved_forms(self, *, uploader: Optional[str] = None) -> list[dict]:
         ...
 
-    def list_collection2(self) -> Any:
+    def delete_pending_form(self, form_id: int) -> None:
         ...
 
-    def delete_collection2_record(self, record_id: int, deleted_by_username: str) -> Any:
+    def reject_pending_form(self, form_id: int) -> None:
         ...
 
-    def delete_approved_closing_form(self, record_id: int, deleted_by_username: str) -> Any:
+    def get_rejected_form_status(self, form_id: int) -> Optional[str]:
         ...
 
-    def delete_rejected_closing_form(self, form_id: int, deleted_by_username: str) -> Any:
+    def get_approved_form(self, record_id: int) -> Optional[dict]:
         ...
 
-    def upload_closing_form_image(
-        self, file_stream: Any, original_filename: str, content_type: str, uploader: str
-    ) -> str:
+    def delete_approved_form(self, record_id: int) -> int:
+        ...
+
+    def list_collection2_records(self) -> list[dict]:
+        ...
+
+    def check_collection2_exists(self, record_id: int) -> bool:
+        ...
+
+    def delete_collection2_record(self, record_id: int) -> int:
+        ...
+
+
+class ClosingFormEmbeddingPort(Protocol):
+    """Vector embedding operations for approved closing forms."""
+
+    def upsert_approved_form(
+        self,
+        text: str,
+        uploader: str,
+        upload_time: str,
+        image_url_1: Optional[str],
+        image_url_2: Optional[str],
+    ) -> None:
+        ...
+
+
+class ClosingFormImageStoragePort(Protocol):
+    """Image upload / deletion for closing form attachments."""
+
+    def upload_image(self, file_stream: Any, original_filename: str, content_type: str, uploader: str) -> str:
+        ...
+
+    def delete_form_images(self, image_url_1: Optional[str], image_url_2: Optional[str]) -> None:
         ...

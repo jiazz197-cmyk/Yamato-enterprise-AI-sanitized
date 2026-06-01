@@ -11,7 +11,7 @@ from uuid import uuid4
 from app.core.exceptions import APIException
 from app.core.logging import get_logger
 from app.ports.contracts.tasking import TaskDispatchPort, TaskExecutionPort, TaskStatePort
-from app.ports.domains.quotation import FileStoragePort, QuotationTaskRepoPort
+from app.ports.domains.quotation import FileStoragePort, QuotationTaskRepoPort, QuotationTaskRetentionPort
 
 logger = get_logger("quotation.create_task")
 
@@ -47,12 +47,14 @@ class CreateQuotationTaskUseCase:
         file_storage: FileStoragePort,
         task_execution: TaskExecutionPort,
         task_dispatch: TaskDispatchPort,
+        retention: QuotationTaskRetentionPort,
     ):
         self._task_state = task_state
         self._task_repo = task_repo
         self._file_storage = file_storage
         self._task_execution = task_execution
         self._task_dispatch = task_dispatch
+        self._retention = retention
 
     async def execute(self, cmd: CreateQuotationTaskCommand) -> CreateQuotationTaskResult:
         content_type = (cmd.content_type or "application/pdf").strip()
@@ -122,12 +124,8 @@ class CreateQuotationTaskUseCase:
 
         try:
             from app.core.config import settings
-            from app.adapters.quotation.purge import QuotationTaskPurgeAdapter
-            from app.adapters.quotation.retention import QuotationTaskRetentionAdapter
 
-            purge_adapter = QuotationTaskPurgeAdapter()
-            retention_adapter = QuotationTaskRetentionAdapter(purge_adapter)
-            await retention_adapter.purge_old_terminal_tasks_global(
+            await self._retention.purge_old_terminal_tasks_global(
                 max_total=settings.QUOTATION_RETENTION_MAX_TOTAL,
                 target=settings.QUOTATION_RETENTION_TARGET,
             )

@@ -8,7 +8,11 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from minio.error import S3Error
 
-from app.adapters.closing_form import IntegrationClosingFormAdapter
+from app.adapters.closing_form import (
+    ClosingFormEmbeddingAdapterPort,
+    ClosingFormImageStorageAdapterPort,
+    ClosingFormPersistenceAdapter,
+)
 from app.core.config import settings
 from app.core.exceptions import APIException, NotFoundError, ValidationError
 from app.core.logging import get_logger
@@ -47,7 +51,9 @@ router = APIRouter()
 logger = get_logger("closing_form")
 
 try:
-    _svc = IntegrationClosingFormAdapter()
+    _persistence = ClosingFormPersistenceAdapter()
+    _embedding = ClosingFormEmbeddingAdapterPort()
+    _image_storage = ClosingFormImageStorageAdapterPort()
 except Exception as e:
     logger.critical("ClosingFormAdapter 初始化失败: %s", e, exc_info=True)
     raise
@@ -56,10 +62,10 @@ except Exception as e:
 @router.get("/_diag", summary="内部诊断", include_in_schema=False)
 def diag():
     try:
-        pending = _svc._persistence.list_pending_forms()
-        approved = _svc._persistence.list_approved_forms()
+        pending = _persistence.list_pending_forms()
+        approved = _persistence.list_approved_forms()
         return {
-            "adapter": type(_svc).__name__,
+            "adapter": type(_persistence).__name__,
             "pending_count": len(pending),
             "approved_count": len(approved),
             "sample_approved": approved[0] if approved else None,
@@ -141,7 +147,7 @@ def upload_closing_form_image(
         raise HTTPException(status_code=400, detail="只允许上传图片文件")
 
     try:
-        object_name = UploadClosingFormImageUseCase(_svc).execute(
+        object_name = UploadClosingFormImageUseCase(_image_storage).execute(
             file_stream=image.file,
             original_filename=image.filename,
             content_type=image.content_type or "image/jpeg",
@@ -201,7 +207,7 @@ def submit_closing_form(
         image_urls=[url for url in (form_data.image_url_1, form_data.image_url_2) if url],
     )
     try:
-        return SubmitClosingFormUseCase(_svc).execute(current_user, cmd)
+        return SubmitClosingFormUseCase(_persistence).execute(current_user, cmd)
     except Exception:
         logger.exception("填表提交失败")
         raise HTTPException(status_code=500, detail="提交失败，请稍后重试")
@@ -212,7 +218,7 @@ def list_closing_forms(
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
-        result = ListClosingFormsUseCase(_svc).execute(current_user)
+        result = ListClosingFormsUseCase(_persistence).execute(current_user)
         logger.debug("列表查询成功: user=%s records=%d", current_user.username, result.total)
         return result
     except Exception:
@@ -230,7 +236,7 @@ def approve_closing_form(
     current_user: CurrentUserPort = Depends(require_roles(ROLE_ADMIN, ROLE_SUPERUSER)),
 ):
     try:
-        return ApproveClosingFormUseCase(_svc).execute(form_id, current_user)
+        return ApproveClosingFormUseCase(_persistence, _embedding).execute(form_id, current_user)
     except (NotFoundError, ValidationError, APIException):
         raise
     except Exception:
@@ -248,7 +254,7 @@ def reject_closing_form(
     current_user: CurrentUserPort = Depends(require_roles(ROLE_ADMIN, ROLE_SUPERUSER)),
 ):
     try:
-        return RejectClosingFormUseCase(_svc).execute(form_id, current_user)
+        return RejectClosingFormUseCase(_persistence, _image_storage).execute(form_id, current_user)
     except (NotFoundError, ValidationError, APIException):
         raise
     except Exception:
@@ -266,7 +272,7 @@ def list_collection2_records(
 ):
     _ = current_user
     try:
-        return ListCollection2UseCase(_svc).execute()
+        return ListCollection2UseCase(_persistence).execute()
     except Exception:
         logger.exception("查询 data_doc_collection_2 列表失败")
         raise HTTPException(status_code=500, detail="查询失败，请稍后重试")
@@ -282,7 +288,7 @@ def delete_collection2_record(
     current_user: CurrentUserPort = Depends(require_roles(ROLE_ADMIN, ROLE_SUPERUSER)),
 ):
     try:
-        return DeleteCollection2RecordUseCase(_svc).execute(record_id, current_user)
+        return DeleteCollection2RecordUseCase(_persistence).execute(record_id, current_user)
     except (NotFoundError, APIException):
         raise
     except Exception:
@@ -300,7 +306,7 @@ def delete_rejected_closing_form(
     current_user: CurrentUserPort = Depends(require_roles(ROLE_ADMIN, ROLE_SUPERUSER)),
 ):
     try:
-        return DeleteRejectedClosingFormUseCase(_svc).execute(form_id, current_user)
+        return DeleteRejectedClosingFormUseCase(_persistence).execute(form_id, current_user)
     except (NotFoundError, APIException):
         raise
     except Exception:
@@ -318,7 +324,7 @@ def delete_approved_closing_form(
     current_user: CurrentUserPort = Depends(require_roles(ROLE_ADMIN, ROLE_SUPERUSER)),
 ):
     try:
-        return DeleteApprovedClosingFormUseCase(_svc).execute(record_id, current_user)
+        return DeleteApprovedClosingFormUseCase(_persistence, _image_storage).execute(record_id, current_user)
     except (NotFoundError, APIException):
         raise
     except Exception:

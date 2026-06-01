@@ -21,6 +21,8 @@ from app.adapters.quotation import (
     ResultPayloadQuotationApprovalSelectionAdapter,
     SqlAlchemyQuotationTaskRepoAdapter,
 )
+from app.adapters.quotation.purge import QuotationTaskPurgeAdapter
+from app.adapters.quotation.retention import QuotationTaskRetentionAdapter
 from app.adapters.tasking import TaskManagerStateAdapter, ThreadPoolTaskExecutionAdapter
 from app.core.config import settings
 from app.core.dependencies import get_db
@@ -304,6 +306,7 @@ async def create_quotation_task(
         file_storage=MinioFileStorageAdapter(),
         task_execution=ThreadPoolTaskExecutionAdapter(),
         task_dispatch=QuotationDispatchAdapter(),
+        retention=QuotationTaskRetentionAdapter(QuotationTaskPurgeAdapter()),
     )
     result = await usecase.execute(
         CreateQuotationTaskCommand(
