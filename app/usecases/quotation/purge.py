@@ -1,65 +1,30 @@
-"""Shared quotation task purge: files, caches, Redis record, ORM row."""
+"""Shared quotation task purge: delegates to port."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-from sqlalchemy.orm import Session
+from app.ports.domains.quotation import QuotationTaskPurgePort
 
-from app.core.database import SessionLocal
-from app.core.executor import executor_manager
-from app.core.task_manager import task_manager
-from app.core.task_owner_registry import task_owner_registry
-from app.core.quotation_task_cleanup import (
-    safe_cleanup_quotation_task_files,
-)
-from app.models.orm.quotation_task import QuotationTask
 
-_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
-_RETENTION_PURGE_STATUSES = _TERMINAL_STATUSES | {"awaiting_approval"}
+class PurgeQuotationTaskUseCase:
+    """Purge a quotation task and all associated resources."""
+
+    def __init__(self, purge_port: QuotationTaskPurgePort):
+        self._purge = purge_port
+
+    async def execute(self, task_id: str, *, allow_non_terminal: bool = False) -> Dict[str, Any]:
+        return await self._purge.purge_task(task_id, allow_non_terminal=allow_non_terminal)
 
 
 async def purge_quotation_task(
     task_id: str,
     *,
     allow_non_terminal: bool = False,
-    db: Optional[Session] = None,
+    purge_port: QuotationTaskPurgePort | None = None,
 ) -> Dict[str, Any]:
-    own_session = db is None
-    session = db or SessionLocal()
-    try:
-        task = session.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
-        if task is None:
-            return {"purged": False, "reason": "not_found", "task_id": task_id}
-
-        allowed = _RETENTION_PURGE_STATUSES if allow_non_terminal else _TERMINAL_STATUSES
-        if task.status not in allowed:
-            return {
-                "purged": False,
-                "reason": "status_not_allowed",
-                "task_id": task_id,
-                "status": task.status,
-            }
-
-        cleanup_result = safe_cleanup_quotation_task_files(session, task, task_id)
-        task_owner_registry.forget(task_id)
-        executor_manager.forget_task(task_id)
-
-        try:
-            await task_manager.delete_task(task_id)
-        except Exception:
-            pass
-
-        session.delete(task)
-        session.commit()
-        return {
-            "purged": True,
-            "task_id": task_id,
-            "cleanup": cleanup_result,
-        }
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        if own_session:
-            session.close()
+    """Convenience function that accepts an injected port (uses adapter as default)."""
+    if purge_port is None:
+        from app.adapters.quotation.purge import QuotationTaskPurgeAdapter
+        purge_port = QuotationTaskPurgeAdapter()
+    return await purge_port.purge_task(task_id, allow_non_terminal=allow_non_terminal)

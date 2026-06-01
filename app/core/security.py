@@ -13,6 +13,10 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.dependencies import get_db
+from app.ports.contracts.identity import CurrentUserDTO
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
+
 
 def hash_password(password: str) -> str:
     """bcrypt 哈希明文密码。"""
@@ -24,9 +28,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
 
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
-
-
 def create_access_token(subject: str, expires_delta: timedelta | None = None) -> str:
     """签发 JWT，sub 为 UUID 字符串。"""
     expire = datetime.now(timezone.utc) + (
@@ -36,11 +37,21 @@ def create_access_token(subject: str, expires_delta: timedelta | None = None) ->
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
+def _orm_to_dto(user) -> CurrentUserDTO:
+    """Map SQLAlchemy User ORM to CurrentUserDTO."""
+    return CurrentUserDTO(
+        id=str(user.id),
+        username=str(user.username or ""),
+        name=str(user.name or ""),
+        role=str(user.role.value if hasattr(user.role, "value") else user.role),
+    )
+
+
 def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
-):
-    """解析 Bearer，返回 User ORM；无效则 401。"""
+) -> CurrentUserDTO:
+    """解析 Bearer，返回 CurrentUserDTO；无效则 401。"""
     from app.models.orm.platform.user import User
 
     credentials_exception = HTTPException(
@@ -62,10 +73,10 @@ def get_current_user(
     user = db.query(User).filter(User.id == user_uuid).first()
     if user is None or not user.is_active:
         raise credentials_exception
-    return user
+    return _orm_to_dto(user)
 
 
-def get_current_user_detached(token: str = Depends(oauth2_scheme)):
+def get_current_user_detached(token: str = Depends(oauth2_scheme)) -> CurrentUserDTO:
     """解析 Bearer 并立即关闭 DB session；适合慢接口避免长时间占用连接。"""
     from app.models.orm.platform.user import User
 
@@ -91,7 +102,7 @@ def get_current_user_detached(token: str = Depends(oauth2_scheme)):
         if user is None or not user.is_active:
             raise credentials_exception
         db.expunge(user)
-        return user
+        return _orm_to_dto(user)
     finally:
         db.close()
 
@@ -144,9 +155,8 @@ def normalize_self_uploader(raw_uploader: str, current_user: object) -> str:
     return username
 
 
-def require_roles(*roles: "UserRole") -> Callable:
+def require_roles(*roles: str) -> Callable:
     """要求当前用户角色在指定集合内。"""
-    from app.models.orm.platform.user import UserRole
 
     def dependency(current_user=Depends(get_current_user)):
         if current_user.role not in roles:

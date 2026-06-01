@@ -155,3 +155,35 @@ class KeywordPayloadMappingPort(Protocol):
         cancel_checker: CancelChecker = None,
     ) -> Dict[str, Any]:
         ...
+
+
+@dataclass
+class DispatchCandidate:
+    """Task payload required by executor submission."""
+
+    task_id: str
+    owner_id: str
+
+
+class QuotationDispatchPort(Protocol):
+    """Abstraction for dispatching queued quotation tasks to running state."""
+
+    def dequeue_for_owner(self, owner_id: str) -> list[DispatchCandidate]:
+        ...
+
+
+class QuotationTaskPurgePort(Protocol):
+    """Abstraction for purging quotation task records and associated resources."""
+
+    async def purge_task(self, task_id: str, *, allow_non_terminal: bool = False) -> dict:
+        ...
+
+
+class QuotationTaskRetentionPort(Protocol):
+    """Abstraction for quota-driven retention of quotation tasks."""
+
+    async def purge_old_terminal_tasks_global(self, max_total: int = 100, target: int = 50) -> int:
+        ...
+
+    async def expire_awaiting_approval_tasks(self, ttl_hours: int = 24) -> int:
+        ...

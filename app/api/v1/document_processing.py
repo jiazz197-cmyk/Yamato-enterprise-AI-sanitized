@@ -12,7 +12,7 @@ from app.core.dependencies import get_db
 from app.core.exceptions import APIException, NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.core.security import get_current_user, normalize_self_uploader
-from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserPort
 from app.usecases.document_processing.lifecycle import (
     CancelDocumentTaskCommand,
     CancelDocumentTaskUseCase,
@@ -86,7 +86,7 @@ async def submit_document_processing(
     chunk_overlap: int = Query(50, ge=0, le=500, description="文本块重叠大小"),
     uploader: str = Query("anonymous", description="上传者标识（仅允许传本人信息）"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
         normalized_uploader = normalize_self_uploader(uploader, current_user)
@@ -114,7 +114,7 @@ async def submit_document_processing(
 @router.get("/status/{task_id}", response_model=TaskStatusResponse, summary="查询任务状态")
 async def get_task_status(
     task_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
         dto = await GetDocumentTaskStatusUseCase(TaskManagerStateAdapter()).execute(
@@ -136,7 +136,7 @@ async def list_tasks(
         None, description="按状态筛选 (pending/running/completed/failed)"
     ),
     limit: int = Query(10, ge=1, le=100, description="返回数量限制"),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
         out = await ListDocumentTasksUseCase(TaskManagerStateAdapter()).execute(
@@ -156,7 +156,7 @@ async def list_tasks(
 @router.post("/tasks/{task_id}/cancel", summary="取消任务")
 async def cancel_task_endpoint(
     task_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
         return await CancelDocumentTaskUseCase(
@@ -176,7 +176,7 @@ async def cancel_task_endpoint(
 async def delete_task_endpoint(
     task_id: str,
     cancel_if_running: bool = Query(True, description="是否取消正在运行的任务"),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
         return await DeleteDocumentTaskUseCase(

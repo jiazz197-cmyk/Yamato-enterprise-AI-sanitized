@@ -10,8 +10,8 @@ from app.integrations.Chat_message_archive.message_extractor import (
     UserProfileDB,
     update_user_profile_with_new_queries,
 )
-from app.models.orm.platform.user import User, UserRole
-from app.ports.contracts.identity import CurrentUserPort
+from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER, ROLE_ADMIN
 from app.ports.domains.chat_summary import ChatArchivePort, ChatSummaryRepoPort, UserLookupPort
 from app.ports.dto.chat_summary import ChatSummaryResult
 
@@ -34,7 +34,7 @@ class SqlAlchemyUserLookupAdapter(UserLookupPort):
         if candidate in current_aliases:
             return (current_user.username or "").strip() or str(current_user.id)
 
-        if current_user.role not in (UserRole.admin, UserRole.superuser):
+        if not current_user.is_admin_like():
             normalize_self_user_identifier(candidate, current_user)
             return (current_user.username or "").strip() or str(current_user.id)
 

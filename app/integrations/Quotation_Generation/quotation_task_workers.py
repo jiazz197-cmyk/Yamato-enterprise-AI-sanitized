@@ -9,13 +9,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from sqlalchemy.orm import Session
-
 from app.core.task_manager import TaskManager, task_manager
-from app.core.database import SessionLocal
 from app.core.executor import CancellationToken, executor_manager
 from app.core.logging import get_logger
-from app.core.quotation_dispatcher import quotation_dispatcher
+from app.adapters.quotation.dispatcher import quotation_dispatcher
+from app.adapters.quotation.task_persistence import QuotationTaskPersistenceAdapter
 from app.core.storage import download_object_stream
 from app.core.quotation_task_cleanup import (
     cleanup_task_files_by_id,
@@ -26,12 +24,14 @@ from app.adapters.quotation.deps import (
     build_execute_quotation_phase1_use_case,
     build_execute_quotation_phase2_use_case,
 )
+from app.domain.quotation.entities import QuotationTaskStatus
 from app.domain.quotation.exceptions import QuotationPipelineCancelledError, QuotationPipelineError
 from app.domain.quotation.partid_mapping import convert_partids_to_u8_codes
 from app.usecases.quotation.build_workbook import BuildQuotationWorkbookCommand
 from app.usecases.quotation.execute_phase1 import ExecuteQuotationPhase1Command
 from app.usecases.quotation.execute_phase2 import ExecuteQuotationPhase2Command
-from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
+
+_persistence = QuotationTaskPersistenceAdapter()
 
 logger = get_logger("quotation_generation")
 
@@ -98,22 +98,7 @@ def _upload_u8_result_by_type_xlsx_to_minio(
 
 
 def _mark_task_failed_in_db(task_id: str, error_message: str) -> None:
-    db = SessionLocal()
-    try:
-        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
-        if not task:
-            return
-        task.status = QuotationTaskStatus.failed.value
-        task.progress = min(task.progress, 99)
-        task.error = error_message
-        task.message = "任务提交执行器失败"
-        task.completed_at = datetime.utcnow()
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        logger.error(f"标记失败状态异常 {task_id}: {exc}", exc_info=True)
-    finally:
-        db.close()
+    _persistence.mark_task_failed(task_id, error_message)
 
 
 def _run_async_task_manager_call(coro: Any) -> None:
@@ -126,31 +111,28 @@ def _run_async_task_manager_call(coro: Any) -> None:
 
 
 def dispatch_quotation_queue_for_owner(owner_id: str) -> None:
-    db = SessionLocal()
     try:
-        dispatch_items = quotation_dispatcher.dequeue_for_owner(db, owner_id)
-        for item in dispatch_items:
-            try:
-                future = executor_manager.submit_task(
-                    item.task_id,
-                    process_quotation_task_background,
-                    item.task_id,
-                )
-                task_owner_registry.cache(item.task_id, item.owner_id)
-                future.add_done_callback(
-                    lambda _, owner_id=item.owner_id: dispatch_quotation_queue_for_owner(owner_id)
-                )
-            except Exception as exc:
-                logger.error(f"提交报价任务到执行器失败 {item.task_id}: {exc}", exc_info=True)
-                _mark_task_failed_in_db(item.task_id, f"执行器提交失败: {exc}")
-                _run_async_task_manager_call(
-                    task_manager.fail_task(item.task_id, str(exc), "任务提交执行器失败")
-                )
+        dispatch_items = quotation_dispatcher.dequeue_for_owner(owner_id)
     except Exception as exc:
         logger.error(f"调度报价任务失败 owner_id={owner_id}: {exc}", exc_info=True)
-        db.rollback()
-    finally:
-        db.close()
+        return
+    for item in dispatch_items:
+        try:
+            future = executor_manager.submit_task(
+                item.task_id,
+                process_quotation_task_background,
+                item.task_id,
+            )
+            task_owner_registry.cache(item.task_id, item.owner_id)
+            future.add_done_callback(
+                lambda _, owner_id=item.owner_id: dispatch_quotation_queue_for_owner(owner_id)
+            )
+        except Exception as exc:
+            logger.error(f"提交报价任务到执行器失败 {item.task_id}: {exc}", exc_info=True)
+            _mark_task_failed_in_db(item.task_id, f"执行器提交失败: {exc}")
+            _run_async_task_manager_call(
+                task_manager.fail_task(item.task_id, str(exc), "任务提交执行器失败")
+            )
 
 
 # Keep progress messages compact; detailed query parameters belong in logs, not task cards.
@@ -203,19 +185,7 @@ def _u8_by_type_summary(value: Any) -> Dict[str, Any]:
 
 
 def _patch_task_fields(task_id: str, updates: Dict[str, Any]) -> None:
-    db = SessionLocal()
-    try:
-        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
-        if not task:
-            return
-        for key, value in updates.items():
-            setattr(task, key, value)
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+    _persistence.patch_task_fields(task_id, updates)
 
 
 def _close_thread_tm(loop: asyncio.AbstractEventLoop, thread_tm: TaskManager) -> None:
@@ -243,19 +213,17 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     thread_tm = TaskManager.create_thread_safe_instance()
-    db = SessionLocal()
     existing_payload: Dict[str, Any] = {}
     uploaded_file_minio_path = ""
     uploaded_file_name = ""
 
     try:
-        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
-        if not task:
+        task_data = _persistence.get_task_payload(task_id)
+        if not task_data:
             return {"status": "error", "message": f"任务不存在: {task_id}"}
-        existing_payload = dict(task.result_payload or {})
-        uploaded_file_minio_path = task.uploaded_file_minio_path
-        uploaded_file_name = task.uploaded_file_name
-        db.close()
+        existing_payload = dict(task_data.get("result_payload", {}))
+        uploaded_file_minio_path = task_data.get("uploaded_file_minio_path", "")
+        uploaded_file_name = task_data.get("uploaded_file_name", "")
 
         loop.run_until_complete(thread_tm.start_task(task_id))
 
@@ -379,10 +347,6 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
         return {"status": "error", "task_id": task_id, "error": str(exc)}
 
     finally:
-        try:
-            db.close()
-        except Exception:
-            pass
         _close_thread_tm(loop, thread_tm)
 
 
@@ -393,17 +357,15 @@ def process_quotation_task_phase2_background(
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     thread_tm = TaskManager.create_thread_safe_instance()
-    db = SessionLocal()
     existing_payload: Dict[str, Any] = {}
     uploaded_file_name = ""
 
     try:
-        task = db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
-        if not task:
+        task_data = _persistence.get_task_payload(task_id)
+        if not task_data:
             return {"status": "error", "message": f"任务不存在: {task_id}"}
-        existing_payload = dict(task.result_payload or {})
-        uploaded_file_name = task.uploaded_file_name
-        db.close()
+        existing_payload = dict(task_data.get("result_payload", {}))
+        uploaded_file_name = task_data.get("uploaded_file_name", "")
 
         loop.run_until_complete(thread_tm.start_task(task_id))
 
@@ -553,10 +515,6 @@ def process_quotation_task_phase2_background(
         return {"status": "error", "task_id": task_id, "error": str(exc)}
 
     finally:
-        try:
-            db.close()
-        except Exception:
-            pass
         _close_thread_tm(loop, thread_tm)
 
 

@@ -8,7 +8,7 @@ from typing import Optional
 from app.core.config import settings
 from app.core.exceptions import APIException
 from app.core.security import normalize_self_uploader
-from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserPort
 from app.ports.domains.ocr_async import PdfConvertJobPort, PdfPageCountPort
 
 SUPPORTED_PDF_TYPES = frozenset({"application/pdf"})
@@ -16,7 +16,7 @@ SUPPORTED_PDF_TYPES = frozenset({"application/pdf"})
 
 @dataclass
 class SubmitPdfConvertCommand:
-    current_user: User
+    current_user: CurrentUserPort
     file_data: bytes
     content_type: Optional[str]
     original_filename: Optional[str]
@@ -56,7 +56,7 @@ class SubmitPdfConvertUseCase:
             )
         normalized_uploader = normalize_self_uploader(cmd.uploader_query, cmd.current_user)
         task_id = self._jobs.enqueue_pdf_convert(
-            owner_id=str(cmd.current_user.id),
+            owner_id=cmd.current_user.id,
             file_data=cmd.file_data,
             original_filename=cmd.original_filename,
             dpi=cmd.dpi,

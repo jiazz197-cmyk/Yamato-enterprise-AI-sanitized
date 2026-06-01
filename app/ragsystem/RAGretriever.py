@@ -1,6 +1,7 @@
 """PGVector + HTTP 嵌入/重排 API 的 RAG 检索；环境变量 BGE_M3_API_URL、RERANKER_API_URL。"""
 
 import os
+import re
 import logging
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -8,6 +9,7 @@ import requests
 import numpy as np
 
 from sqlalchemy import create_engine, text
+from app.core.config import settings
 from sqlalchemy.pool import QueuePool
 from pydantic import Field
 
@@ -287,12 +289,13 @@ class VectorStoreManager:
 
     def drop_vector_store(self, instance_id: int):
         """DROP TABLE IF EXISTS data_..."""
-        collection_name = f"data_{self.table_prefix}_{instance_id}"
-        logger.info(f"删除向量存储表: {collection_name}")
-        sql = f'DROP TABLE IF EXISTS {collection_name}'
+        name = f"data_{self.table_prefix}_{instance_id}"
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+            raise ValueError(f"Invalid table name: {name}")
+        logger.info(f"删除向量存储表: {name}")
         try:
             with self.engine.begin() as conn:
-                conn.execute(text(sql))
+                conn.execute(text(f'DROP TABLE IF EXISTS {name}'))
         except Exception as e:
             logger.error(f"删除向量表时出错: {e}", exc_info=True)
 
@@ -540,7 +543,7 @@ class RAGRetrieverSystem:
 def create_rag_retriever_system(
         host: str = "localhost",
         user: str = "postgres",
-        password: str = "change_me_pg_password",
+        password: str = "",
         database: str = "postgres",
         port: int = 5432,
         table_prefix: str = "doc_collection",
@@ -554,7 +557,7 @@ def create_rag_retriever_system(
     return RAGRetrieverSystem(
         POSTGRES_SERVER=host,
         POSTGRES_USER=user,
-        POSTGRES_PASSWORD=password,
+        POSTGRES_PASSWORD=password or settings.POSTGRES_PASSWORD,
         POSTGRES_DB=database,
         POSTGRES_PORT=port,
         table_prefix=table_prefix,
@@ -572,7 +575,7 @@ if __name__ == "__main__":
     rag_system = create_rag_retriever_system(
         host="localhost",
         user="postgres",
-        password="change_me_pg_password",
+        password=settings.POSTGRES_PASSWORD,
         database="postgres",
         port=5432,
         table_prefix="doc_collection",

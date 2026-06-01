@@ -6,7 +6,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.database import SessionLocal
 from app.models.orm.quotation_task import QuotationTask
-from app.integrations.keyword import expand_keyword_mapping, normalize_pdm_keywords
+from app.domain.quotation.keyword_mapping import expand_keyword_mapping
+from app.domain.quotation.keyword_normalizer import normalize_pdm_keywords
 from app.integrations.sqlserver.pdm_bom import build_pdm_and_where_clause
 
 

@@ -194,7 +194,7 @@ async def lifespan(app: FastAPI):
     
     try:
         from app.core.task_manager import task_manager
-        from app.integrations.observers import (
+        from app.core.observers import (
             LoggingObserver, 
             MetricsCollector,
         )

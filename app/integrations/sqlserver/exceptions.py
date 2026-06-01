@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from app.ports.domains.sqlserver_queries import QueryCancelledError
+from app.domain.exceptions import QueryCancelledError
 
 __all__ = ["QueryCancelledError", "raise_if_cancelled"]
 

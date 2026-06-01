@@ -7,7 +7,7 @@ from typing import Any, List
 
 from app.core.exceptions import ValidationError
 from app.core.logging import get_logger
-from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserPort
 from app.ports.contracts.tasking import TaskExecutionPort, TaskStatePort
 from app.ports.domains.document_processing import DocumentProcessWorkerPort, DocumentRegistrationPort
 
@@ -21,7 +21,7 @@ class SubmitDocumentProcessingCommand:
     chunk_size: int
     chunk_overlap: int
     normalized_uploader: str
-    current_user: User
+    current_user: CurrentUserPort
 
 
 @dataclass
@@ -60,12 +60,12 @@ class SubmitDocumentProcessingUseCase:
                 "chunk_size": cmd.chunk_size,
                 "chunk_overlap": cmd.chunk_overlap,
                 "uploader": cmd.normalized_uploader,
-                "owner_id": str(cmd.current_user.id),
+                "owner_id": cmd.current_user.id,
                 "files_count": len(file_ids),
             },
         )
         logger.info("创建文档处理任务: %s, 文件数: %s", task_id, len(file_ids))
-        self._task_execution.set_task_owner(task_id, str(cmd.current_user.id))
+        self._task_execution.set_task_owner(task_id, cmd.current_user.id)
         self._worker.submit_process_documents(
             task_id,
             file_ids,

@@ -20,7 +20,7 @@ from app.adapters.chat_summary import (
 from app.core.config import settings
 from app.core.dependencies import get_db
 from app.core.security import get_current_user
-from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserPort
 from app.usecases.chat_summary.create_chat_summary import (
     CreateChatSummaryCommand,
     CreateChatSummaryUseCase,
@@ -37,7 +37,7 @@ router = APIRouter()
 @router.post("/create", response_model=ChatSummaryResponse)
 def create_chat_summary(
     request: ChatSummaryRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
@@ -106,7 +106,7 @@ def create_chat_summary(
 @router.get("/query/{user_id}", response_model=UserSummaryResponse)
 def query_user_summary(
     user_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """

@@ -9,11 +9,11 @@ from app.core.exceptions import ExternalServiceError, ValidationError
 from app.core.logging import get_logger
 from app.schemas.sqlserver import PdmBomRequest, QueryResponse, U8BomInventoryRequest
 
-from app.integrations.keyword import (
+from app.domain.quotation.keyword_mapping import (
     detect_product_type,
     expand_keyword_mapping,
-    normalize_pdm_keywords,
 )
+from app.domain.quotation.keyword_normalizer import normalize_pdm_keywords
 from app.integrations.sqlserver.client import close_sql_client, get_sql_client
 from app.integrations.sqlserver.exceptions import QueryCancelledError, raise_if_cancelled
 from app.integrations.sqlserver.pdm_bom import (

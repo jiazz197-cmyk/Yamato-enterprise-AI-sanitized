@@ -96,3 +96,10 @@ class ProcessingError(APIException):
 
     def __init__(self, message: str = "Data processing failed"):
         super().__init__(message, status_code=422, error_code="PROCESSING_ERROR")
+
+
+class AuthenticationError(APIException):
+    """身份认证失败（用户名、密码错误等）。"""
+
+    def __init__(self, message: str = "Authentication failed"):
+        super().__init__(message, status_code=401, error_code="AUTHENTICATION_ERROR")

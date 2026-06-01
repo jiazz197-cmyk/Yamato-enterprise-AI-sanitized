@@ -21,8 +21,9 @@ from app.ports.domains.quotation import (
     ProgressCallback,
     QuotationTempObjectStoragePort,
 )
-from app.ports.domains.sqlserver_queries import PdmBomQueryPort, QueryCancelledError
-from app.schemas.sqlserver import PdmBomRequest
+from app.domain.exceptions import QueryCancelledError
+from app.ports.domains.sqlserver_queries import PdmBomQueryPort
+from app.ports.dto.sqlserver_queries import PdmBomCommand
 
 
 def _response_to_dict(response: Any) -> Dict[str, Any]:
@@ -111,7 +112,7 @@ class ExecuteQuotationPhase1UseCase:
 
         try:
             response = self._pdm_query.run(
-                PdmBomRequest(keywords=keywords),
+                PdmBomCommand(keywords=keywords),
                 cancel_checker=cancel,
             )
         except QueryCancelledError as exc:

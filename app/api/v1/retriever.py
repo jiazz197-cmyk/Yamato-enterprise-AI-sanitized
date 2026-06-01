@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.core.dependencies import get_rag_instance
 from app.core.config import settings
 from app.core.security import get_current_user
-from app.models.orm.platform.user import User, UserRole
-from app.ragsystem import chart_analyze, retriever_for_yamato
+from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER
+from app.ports.domains.retriever import RetrievalQuery
+from app.adapters.retriever import RAGRetrieverAdapter
+from app.ragsystem import chart_analyze
 from app.schemas.base import ChatRequest, ChartRequest
 
 router = APIRouter()
@@ -17,8 +19,8 @@ def _collection_name_from_instance_id(instance_id: int) -> str:
     return f"doc_collection_{instance_id}"
 
 
-def _ensure_collection_access(collection_name: str, current_user: User) -> str:
-    if current_user.role == UserRole.superuser:
+def _ensure_collection_access(collection_name: str, current_user: CurrentUserPort) -> str:
+    if current_user.role == ROLE_SUPERUSER:
         return collection_name
 
     allowed_collections = {name.strip() for name in settings.RETRIEVER_ALLOWED_COLLECTIONS if name.strip()}
@@ -40,12 +42,14 @@ def db(
     request: ChatRequest,
     instance_id: int = Query(..., ge=1, description="RAG instance id"),
     rag_instance=Depends(get_rag_instance),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     collection_name = _collection_name_from_instance_id(instance_id)
     collection_name = _ensure_collection_access(collection_name, current_user)
-    retriever = retriever_for_yamato.retriever(rag_system=rag_instance, collection_name=collection_name)
-    return retriever.get_response(request.question)
+    adapter = RAGRetrieverAdapter(rag_instance=rag_instance, collection_name=collection_name)
+    q = RetrievalQuery(question=request.question, collection_name=collection_name, instance_id=instance_id)
+    result = adapter.query_db(q)
+    return {"answer": result.answer, "sources": result.sources}
 
 
 @router.post("/excel")
@@ -53,18 +57,20 @@ def excel(
     request: ChatRequest,
     instance_id: int = Query(..., ge=1, description="RAG instance id"),
     rag_instance=Depends(get_rag_instance),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     collection_name = _collection_name_from_instance_id(instance_id)
     collection_name = _ensure_collection_access(collection_name, current_user)
-    retriever = retriever_for_yamato.retriever(rag_system=rag_instance, collection_name=collection_name)
-    return retriever.get_charts(request.question)
+    adapter = RAGRetrieverAdapter(rag_instance=rag_instance, collection_name=collection_name)
+    q = RetrievalQuery(question=request.question, collection_name=collection_name, instance_id=instance_id)
+    result = adapter.query_excel(q)
+    return {"answer": result.answer, "sources": result.sources}
 
 
 @router.post("/charts")
 async def charts(
     request: ChartRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     # Keep expensive chart analysis limited to authenticated users.
     _ = current_user

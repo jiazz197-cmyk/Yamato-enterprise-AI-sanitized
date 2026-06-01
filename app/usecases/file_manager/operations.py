@@ -7,7 +7,7 @@ from typing import Any, List, Optional, Tuple
 
 from app.core.exceptions import PermissionDeniedError, ValidationError
 from app.core.logging import get_logger
-from app.models.orm.platform.user import UserRole
+from app.ports.contracts.identity import ROLE_SUPERUSER
 from app.ports.contracts.identity import CurrentUserPort
 from app.ports.domains.file_manager import FileManagerPort
 from app.ports.dto.files import FileRecordDTO
@@ -16,7 +16,7 @@ logger = get_logger("file_manager_uc")
 
 
 def _ensure_file_access(dto: FileRecordDTO, current_user: CurrentUserPort, *, detail: str) -> None:
-    if current_user.role != UserRole.superuser and dto.uploader != current_user.username:
+    if not current_user.is_superuser() and dto.uploader != current_user.username:
         raise PermissionDeniedError(detail)
 
 
@@ -142,7 +142,7 @@ class BatchDeleteFilesUseCase:
         self._files = files
 
     def execute(self, cmd: BatchDeleteFilesCommand) -> BatchDeleteFilesResult:
-        if cmd.current_user.role != UserRole.superuser:
+        if not cmd.current_user.is_superuser():
             raise PermissionDeniedError("仅超级管理员可批量删除")
         success_count, failed_count, failed_ids = self._files.batch_delete_ids(cmd.file_ids)
         logger.info("批量删除完成: 成功 %s, 失败 %s", success_count, failed_count)

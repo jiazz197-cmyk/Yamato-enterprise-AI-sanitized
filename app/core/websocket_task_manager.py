@@ -15,6 +15,7 @@ from app.core.database import SessionLocal
 from app.core.logging import get_logger
 from app.core.observer import TaskEvent, TaskObserver
 from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserDTO
 
 logger = get_logger("websocket_task_manager")
 
@@ -144,10 +145,18 @@ def decode_ws_bearer_user_id(token: str) -> str:
     return user_id
 
 
-def load_user_for_websocket(user_id: str) -> User | None:
+def load_user_for_websocket(user_id: str) -> CurrentUserDTO | None:
     db = SessionLocal()
     try:
-        return db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+        user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+        if user is None:
+            return None
+        return CurrentUserDTO(
+            id=str(user.id),
+            username=str(user.username or ""),
+            name=str(user.name or ""),
+            role=str(user.role.value if hasattr(user.role, "value") else user.role),
+        )
     except Exception as exc:
         logger.warning("加载 WebSocket 用户失败: %s", exc)
         return None

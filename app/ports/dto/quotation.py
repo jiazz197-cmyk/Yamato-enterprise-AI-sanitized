@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from app.domain.quotation.value_objects import QuotationSummarySelectionItem  # noqa: F401
+
 
 @dataclass
 class StoredFile:
@@ -13,19 +15,6 @@ class StoredFile:
     minio_path: str
     content_type: str
     file_size: int
-
-
-@dataclass
-class QuotationSummarySelectionItem:
-    selection_index: int
-    partid: str
-    u8_parent_inv_code: str
-    type_name: str
-    pdm_name: str
-    query_index: Optional[int]
-    query_keywords: list[str]
-    query_expanded_keywords: list[str]
-    matched_pdm_row: bool
 
 
 @dataclass

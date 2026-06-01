@@ -32,7 +32,7 @@ from app.core.storage import (
     download_object_stream,
     get_minio_client,
 )
-from app.models.orm.platform.user import User, UserRole
+from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER, ROLE_ADMIN
 from app.models.orm.quotation_task import QuotationTask
 from app.usecases.quotation.approve_task import (
     ApproveQuotationTaskCommand,
@@ -112,8 +112,8 @@ class ApproveTaskResponse(BaseModel):
     approved_count: int
 
 
-def _is_admin_like(user: User) -> bool:
-    return user.role in (UserRole.admin, UserRole.superuser)
+def _is_admin_like(user: CurrentUserPort) -> bool:
+    return user.is_admin_like()
 
 
 def _build_trusted_proxy_networks() -> list[Any]:
@@ -282,7 +282,7 @@ def _get_task_or_404(db: Session, task_id: str, *, defer_result: bool = False) -
     return task
 
 
-def _check_task_permission(task: QuotationTask, current_user: User) -> None:
+def _check_task_permission(task: QuotationTask, current_user: CurrentUserPort) -> None:
     if _is_admin_like(current_user):
         return
     if task.owner_id != str(current_user.id):
@@ -295,7 +295,7 @@ async def create_quotation_task(
     file: UploadFile = File(..., description="仅支持 PDF 文件"),
     task_name: Optional[str] = Form(None, description="任务展示名称（可选）"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> QuotationTaskSubmitResponse:
     file_data = await file.read()
     usecase = CreateQuotationTaskUseCase(
@@ -315,10 +315,15 @@ async def create_quotation_task(
             owner_id=str(current_user.id),
             owner_username=current_user.username,
             owner_ip=_extract_request_client_ip(request),
-            role_snapshot=current_user.role.value,
+            role_snapshot=current_user.role,
         )
     )
-    return QuotationTaskSubmitResponse(**result.__dict__)
+    return QuotationTaskSubmitResponse(
+        task_id=result.task_id,
+        status=result.status,
+        message=result.message,
+        queue_position=result.queue_position,
+    )
 
 
 @router.get("/tasks", response_model=QuotationTaskListResponse, summary="查询报价任务列表")
@@ -329,7 +334,7 @@ async def list_quotation_tasks(
     full_result: bool = Query(False, description="是否返回完整任务结果；默认仅返回摘要，避免大 U8 结果卡住前端"),
     active_only: bool = Query(False, description="仅返回活动任务(queued/running/awaiting_approval)，不含大结果"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> QuotationTaskListResponse:
     started_at = time.perf_counter()
     query = db.query(QuotationTask)
@@ -377,7 +382,7 @@ async def list_quotation_tasks(
         status_filter=status_filter,
         owner_username=owner_username,
         current_user=current_user.username,
-        current_role=current_user.role.value,
+        current_role=current_user.role,
         tasks_count=len(tasks),
         awaiting_approval_count=status_counts["awaiting_approval"],
         active_count=status_counts["active"],
@@ -397,7 +402,7 @@ async def get_quotation_task(
     task_id: str,
     full_result: bool = Query(False, description="是否返回完整任务结果；默认仅返回摘要，避免大 U8 结果卡住前端"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> QuotationTaskItemResponse:
     task = _get_task_or_404(db, task_id, defer_result=not full_result)
     _check_task_permission(task, current_user)
@@ -412,7 +417,7 @@ async def get_quotation_task(
 async def cancel_quotation_task(
     task_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> CancelTaskResponse:
     task = _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
@@ -423,14 +428,18 @@ async def cancel_quotation_task(
         task_dispatch=QuotationDispatchAdapter(),
     )
     result = await usecase.execute(CancelQuotationTaskCommand(task_id=task_id))
-    return CancelTaskResponse(**result.__dict__)
+    return CancelTaskResponse(
+        success=result.success,
+        message=result.message,
+        task_id=result.task_id,
+    )
 
 
 @router.delete("/tasks/{task_id}", response_model=DeleteTaskResponse, summary="删除已结束报价任务")
 async def delete_quotation_task(
     task_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> DeleteTaskResponse:
     task = _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
@@ -438,7 +447,13 @@ async def delete_quotation_task(
         task_repo=SqlAlchemyQuotationTaskRepoAdapter(db),
     )
     result = await usecase.execute(DeleteQuotationTaskCommand(task_id=task_id))
-    return DeleteTaskResponse(**result.__dict__)
+    return DeleteTaskResponse(
+        success=result.success,
+        message=result.message,
+        task_id=result.task_id,
+        cleanup=result.cleanup,
+        task_record_removed=result.task_record_removed,
+    )
 
 
 @router.post(
@@ -450,7 +465,7 @@ async def approve_quotation_task(
     task_id: str,
     request: ApproveTaskRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> ApproveTaskResponse:
     task = _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
@@ -467,14 +482,20 @@ async def approve_quotation_task(
             extra_partids=request.extra_partids,
         )
     )
-    return ApproveTaskResponse(**result.__dict__)
+    return ApproveTaskResponse(
+        success=result.success,
+        message=result.message,
+        task_id=result.task_id,
+        status=result.status,
+        approved_count=result.approved_count,
+    )
 
 
 @router.get("/tasks/{task_id}/file", summary="查看或下载任务上传文件")
 async def get_quotation_task_file(
     task_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     task = _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
@@ -505,7 +526,7 @@ async def get_quotation_task_file(
 async def get_quotation_task_u8_by_type_workbook(
     task_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     task = _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)

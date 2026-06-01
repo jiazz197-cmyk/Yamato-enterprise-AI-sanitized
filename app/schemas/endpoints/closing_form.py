@@ -44,36 +44,32 @@ class ClosingFormSubmit(BaseModel):
         return v
 
     def to_formatted_text(self) -> str:
-        """生成符合要求的格式字符串"""
-        date_str = self.date or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        parts = [
-            f"日期：{date_str}",
-            f"成交时间：{self.closing_date or ''}",
-            f"客户名称：{self.customer_name}",
-            f"产品类型：{self.product_type}",
-            f"型号规格：{self.model_spec}",
-            f"数量：{self.quantity}",
-            f"原价不含税：{self.price_excluding_tax}",
-            f"生产制造编号：{self.production_number}",
-            f"物料名称：{self.material_name}",
-            f"称重规格：{self.weighing_spec}",
-            f"速度：{self.speed}",
-            f"精度：{self.precision}",
-            f"顶锥形式：{self.top_cone_type}",
-            f"线振形式：{self.linear_vibration_type}",
-            f"料层调整圈：{self.material_layer_ring}",
-            f"供料斗：{self.feed_hopper}",
-            f"计量斗：{self.metering_hopper}",
-            f"记忆斗：{self.memory_hopper}",
-            f"溜槽角度：{self.chute_angle}",
-            f"集合斗形式：{self.collection_hopper_type}",
-            f"单双秤/混料/外挂/特殊：{self.scale_type}",
-        ]
-        if self.image_url_1:
-            parts.append(f"图片url：{self.image_url_1}")
-        if self.image_url_2:
-            parts.append(f"图片url：{self.image_url_2}")
-        return ", ".join(parts)
+        from app.domain.closing_form.formatting import format_closing_form_text
+
+        return format_closing_form_text(
+            order_date=self.date,
+            deal_time=self.closing_date,
+            customer_name=self.customer_name,
+            product_type=self.product_type,
+            model_spec=self.model_spec,
+            quantity=self.quantity,
+            original_price=self.price_excluding_tax,
+            production_code=self.production_number,
+            material_name=self.material_name,
+            weighing_spec=self.weighing_spec,
+            speed=str(self.speed) if self.speed is not None else None,
+            accuracy=self.precision,
+            top_cone_type=self.top_cone_type,
+            linear_vibrator_type=self.linear_vibration_type,
+            layer_adjustment_ring=self.material_layer_ring,
+            feeding_hopper=self.feed_hopper,
+            weigh_bucket=self.metering_hopper,
+            memory_bucket=self.memory_hopper,
+            chute_angle=self.chute_angle,
+            collecting_cone_type=self.collection_hopper_type,
+            scale_config=self.scale_type,
+            image_urls=[url for url in (self.image_url_1, self.image_url_2) if url] or None,
+        )
 
 
 class ClosingFormSubmitResponse(BaseModel):

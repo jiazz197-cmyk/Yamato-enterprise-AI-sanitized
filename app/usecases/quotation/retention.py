@@ -1,95 +1,48 @@
-"""Quotation task retention: global terminal purge and awaiting_approval expiry."""
+"""Quotation task retention: delegates to port."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from app.ports.domains.quotation import QuotationTaskRetentionPort
 
-from sqlalchemy.orm import Session
 
-from app.core.logging import get_logger
-from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
-from app.usecases.quotation.purge import purge_quotation_task
+class PurgeOldTerminalTasksUseCase:
+    """Drop oldest terminal tasks when global row count exceeds threshold."""
 
-logger = get_logger("quotation.retention")
+    def __init__(self, retention_port: QuotationTaskRetentionPort):
+        self._retention = retention_port
 
-_TERMINAL_STATUSES = (
-    QuotationTaskStatus.completed.value,
-    QuotationTaskStatus.failed.value,
-    QuotationTaskStatus.cancelled.value,
-)
+    async def execute(self, *, max_total: int = 100, target: int = 50) -> int:
+        return await self._retention.purge_old_terminal_tasks_global(
+            max_total=max_total, target=target
+        )
+
+
+class ExpireAwaitingApprovalTasksUseCase:
+    """Hard-delete awaiting_approval tasks that exceeded the TTL."""
+
+    def __init__(self, retention_port: QuotationTaskRetentionPort):
+        self._retention = retention_port
+
+    async def execute(self, *, ttl_hours: int = 24) -> int:
+        return await self._retention.expire_awaiting_approval_tasks(ttl_hours=ttl_hours)
 
 
 async def purge_old_terminal_tasks_global(
-    db: Session,
+    retention_port: QuotationTaskRetentionPort,
     *,
     max_total: int = 100,
     target: int = 50,
 ) -> int:
-    """Drop oldest terminal tasks when global row count exceeds max_total."""
-    total = db.query(QuotationTask).count()
-    if total <= max_total:
-        return 0
-
-    to_delete = total - target
-    candidates = (
-        db.query(QuotationTask.task_id)
-        .filter(QuotationTask.status.in_(_TERMINAL_STATUSES))
-        .order_by(QuotationTask.created_at.asc())
-        .limit(to_delete)
-        .all()
+    """Convenience function for backward compatibility."""
+    return await retention_port.purge_old_terminal_tasks_global(
+        max_total=max_total, target=target
     )
-
-    purged = 0
-    sample_ids: list[str] = []
-    for (task_id,) in candidates:
-        result = await purge_quotation_task(task_id, allow_non_terminal=False, db=db)
-        if result.get("purged"):
-            purged += 1
-            if len(sample_ids) < 5:
-                sample_ids.append(task_id)
-
-    if purged:
-        logger.info(
-            "Global terminal retention: purged=%s total_before=%s target=%s sample=%s",
-            purged,
-            total,
-            target,
-            sample_ids,
-        )
-    return purged
 
 
 async def expire_awaiting_approval_tasks(
-    db: Session,
+    retention_port: QuotationTaskRetentionPort,
     *,
     ttl_hours: int = 24,
 ) -> int:
-    """Hard-delete awaiting_approval tasks that exceeded the TTL."""
-    cutoff = datetime.utcnow() - timedelta(hours=ttl_hours)
-    expired = (
-        db.query(QuotationTask.task_id)
-        .filter(
-            QuotationTask.status == QuotationTaskStatus.awaiting_approval.value,
-            QuotationTask.awaiting_approval_at.isnot(None),
-            QuotationTask.awaiting_approval_at < cutoff,
-        )
-        .all()
-    )
-
-    purged = 0
-    sample_ids: list[str] = []
-    for (task_id,) in expired:
-        result = await purge_quotation_task(task_id, allow_non_terminal=True, db=db)
-        if result.get("purged"):
-            purged += 1
-            if len(sample_ids) < 5:
-                sample_ids.append(task_id)
-
-    if purged:
-        logger.info(
-            "Awaiting approval expiry: purged=%s ttl_hours=%s sample=%s",
-            purged,
-            ttl_hours,
-            sample_ids,
-        )
-    return purged
+    """Convenience function for backward compatibility."""
+    return await retention_port.expire_awaiting_approval_tasks(ttl_hours=ttl_hours)

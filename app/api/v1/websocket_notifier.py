@@ -14,7 +14,7 @@ from app.core.websocket_task_manager import (
     load_user_for_websocket,
     ws_manager,
 )
-from app.models.orm.platform.user import User, UserRole
+from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER, ROLE_ADMIN
 
 logger = get_logger("websocket_notifier")
 ws_diag_logger = get_logger("diag.ws")
@@ -108,7 +108,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
         return
 
     ws_user = load_user_for_websocket(user_id)
-    is_admin_like = bool(ws_user and ws_user.role in (UserRole.admin, UserRole.superuser))
+    is_admin_like = bool(ws_user and ws_user.role in (ROLE_ADMIN, ROLE_SUPERUSER))
     if owner_id != user_id and not is_admin_like:
         ws_diag_logger.warning(
             "[ws_diag] ws_connect_rejected: task_id=%s client_ip=%s user_id=%s owner_id=%s reason=forbidden elapsed_ms=%.2f",
@@ -205,7 +205,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
 
 @router.get("/ws/stats")
 async def get_websocket_stats(
-    _: User = Depends(require_roles(UserRole.superuser)),
+    _: CurrentUserPort = Depends(require_roles(ROLE_SUPERUSER)),
 ):
     return {
         "total_connections": ws_manager.get_connection_count(),

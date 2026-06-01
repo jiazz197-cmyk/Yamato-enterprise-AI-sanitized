@@ -15,8 +15,9 @@ from app.domain.quotation import (
     summarize_partid_list,
 )
 from app.ports.domains.quotation import CancelChecker, ProgressCallback
-from app.ports.domains.sqlserver_queries import QueryCancelledError, U8BomInventoryQueryPort
-from app.schemas.sqlserver import U8BomInventoryRequest
+from app.domain.exceptions import QueryCancelledError
+from app.ports.domains.sqlserver_queries import U8BomInventoryQueryPort
+from app.ports.dto.sqlserver_queries import U8BomInventoryCommand
 
 logger = get_logger("quotation.execute_phase2")
 
@@ -102,7 +103,7 @@ class ExecuteQuotationPhase2UseCase:
 
         try:
             response = self._u8_query.run(
-                U8BomInventoryRequest(parent_inv_codes=parent_inv_codes, max_depth=_U8_MAX_DEPTH),
+                U8BomInventoryCommand(parent_inv_codes=parent_inv_codes, max_depth=_U8_MAX_DEPTH),
                 cancel_checker=cancel,
             )
         except QueryCancelledError as exc:

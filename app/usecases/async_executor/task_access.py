@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from app.core.exceptions import NotFoundError, PermissionDeniedError
-from app.models.orm.platform.user import User, UserRole
+from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER
 
 
 def ensure_executor_task_exists(future: Optional[Any], *, not_found_message: str = "任务不存在") -> None:
@@ -14,10 +14,10 @@ def ensure_executor_task_exists(future: Optional[Any], *, not_found_message: str
 
 
 def ensure_task_owner_or_superuser(
-    current_user: User,
+    current_user: CurrentUserPort,
     owner_id: str,
     *,
     detail: str,
 ) -> None:
-    if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+    if not current_user.is_superuser() and owner_id != current_user.id:
         raise PermissionDeniedError(detail)

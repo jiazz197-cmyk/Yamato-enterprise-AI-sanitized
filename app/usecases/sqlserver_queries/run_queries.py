@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.ports.domains.sqlserver_queries import PdmBomQueryPort, U8BomInventoryQueryPort
-from app.schemas.sqlserver import PdmBomRequest, QueryResponse, U8BomInventoryRequest
+from app.ports.dto.sqlserver_queries import PdmBomCommand, U8BomInventoryCommand
 
 
 class RunU8BomInventoryQueryUseCase:
     def __init__(self, port: U8BomInventoryQueryPort):
         self._port = port
 
-    def execute(self, payload: U8BomInventoryRequest) -> QueryResponse:
+    def execute(self, payload: U8BomInventoryCommand) -> Any:
         return self._port.run(payload)
 
 
@@ -18,5 +20,5 @@ class RunPdmBomQueryUseCase:
     def __init__(self, port: PdmBomQueryPort):
         self._port = port
 
-    def execute(self, payload: PdmBomRequest) -> QueryResponse:
+    def execute(self, payload: PdmBomCommand) -> Any:
         return self._port.run(payload)

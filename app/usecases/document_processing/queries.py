@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from app.core.exceptions import NotFoundError, PermissionDeniedError
-from app.models.orm.platform.user import User, UserRole
+from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER
 from app.ports.contracts.tasking import TaskStatePort
 from app.ports.dto.task_manager import TaskManagerTaskSnapshot
 
@@ -27,12 +27,12 @@ class DocumentTaskStatusDTO:
 @dataclass
 class GetDocumentTaskStatusQuery:
     task_id: str
-    current_user: User
+    current_user: CurrentUserPort
 
 
 @dataclass
 class ListDocumentTasksQuery:
-    current_user: User
+    current_user: CurrentUserPort
     status_filter: Optional[str]
     limit: int
 
@@ -43,9 +43,9 @@ class ListDocumentTasksResult:
     total: int
 
 
-def _assert_owner(snapshot: TaskManagerTaskSnapshot, current_user: User, *, detail: str) -> None:
+def _assert_owner(snapshot: TaskManagerTaskSnapshot, current_user: CurrentUserPort, *, detail: str) -> None:
     owner_id = str(snapshot.metadata.get("owner_id", "")).strip()
-    if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+    if not current_user.is_superuser() and owner_id != current_user.id:
         raise PermissionDeniedError(detail)
 
 
@@ -83,10 +83,10 @@ class ListDocumentTasksUseCase:
         tasks = await self._task_state.list_task_snapshots(task_type="doc_process", limit=query.limit)
         if query.status_filter:
             tasks = [t for t in tasks if t.status == query.status_filter]
-        if query.current_user.role != UserRole.superuser:
+        if not query.current_user.is_superuser():
             tasks = [
                 t
                 for t in tasks
-                if str(t.metadata.get("owner_id", "")).strip() == str(query.current_user.id)
+                if str(t.metadata.get("owner_id", "")).strip() == query.current_user.id
             ]
         return ListDocumentTasksResult(tasks=[_to_dto(t) for t in tasks], total=len(tasks))

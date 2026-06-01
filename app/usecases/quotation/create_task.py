@@ -122,18 +122,15 @@ class CreateQuotationTaskUseCase:
 
         try:
             from app.core.config import settings
-            from app.core.database import SessionLocal
-            from app.usecases.quotation.retention import purge_old_terminal_tasks_global
+            from app.adapters.quotation.purge import QuotationTaskPurgeAdapter
+            from app.adapters.quotation.retention import QuotationTaskRetentionAdapter
 
-            db = SessionLocal()
-            try:
-                await purge_old_terminal_tasks_global(
-                    db,
-                    max_total=settings.QUOTATION_RETENTION_MAX_TOTAL,
-                    target=settings.QUOTATION_RETENTION_TARGET,
-                )
-            finally:
-                db.close()
+            purge_adapter = QuotationTaskPurgeAdapter()
+            retention_adapter = QuotationTaskRetentionAdapter(purge_adapter)
+            await retention_adapter.purge_old_terminal_tasks_global(
+                max_total=settings.QUOTATION_RETENTION_MAX_TOTAL,
+                target=settings.QUOTATION_RETENTION_TARGET,
+            )
         except Exception as exc:
             logger.warning("Retention after create failed: %s", exc)
 
