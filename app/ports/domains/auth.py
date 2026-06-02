@@ -8,22 +8,24 @@ from typing import Optional, Protocol
 class UserRepositoryPort(Protocol):
     """Persistence boundary for user CRUD operations."""
 
-    def get_by_username(self, username: str) -> Optional[object]:
+    async def get_by_username(self, username: str) -> Optional[object]:
         ...
 
-    def get_by_id(self, user_id: str) -> Optional[object]:
+    async def get_by_id(self, user_id: str) -> Optional[object]:
         ...
 
-    def create(self, username: str, email: str, password: str, name: Optional[str]) -> object:
+    async def create(
+        self, username: str, email: str, password: str, name: Optional[str]
+    ) -> object:
         ...
 
-    def list_users(self) -> list[object]:
+    async def list_users(self) -> list[object]:
         ...
 
-    def delete(self, user_id: str) -> None:
+    async def delete(self, user_id: str) -> None:
         ...
 
-    def update_role(self, user_id: str, role: str) -> object:
+    async def update_role(self, user_id: str, role: str) -> object:
         ...
 
 

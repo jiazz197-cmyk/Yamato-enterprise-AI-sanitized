@@ -11,7 +11,9 @@ import jwt
 from fastapi import WebSocket, WebSocketException, status
 
 from app.core.config import settings
-from app.core.database import SessionLocal
+from sqlalchemy import select
+
+from app.core.database import AsyncSessionLocal
 from app.core.logging import get_logger
 from app.core.observer import TaskEvent, TaskObserver
 from app.models.orm.platform.user import User
@@ -145,10 +147,13 @@ def decode_ws_bearer_user_id(token: str) -> str:
     return user_id
 
 
-def load_user_for_websocket(user_id: str) -> CurrentUserDTO | None:
-    db = SessionLocal()
+async def load_user_for_websocket(user_id: str) -> CurrentUserDTO | None:
     try:
-        user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(User).filter(User.id == uuid.UUID(user_id))
+            )
+            user = result.scalars().first()
         if user is None:
             return None
         return CurrentUserDTO(
@@ -160,8 +165,6 @@ def load_user_for_websocket(user_id: str) -> CurrentUserDTO | None:
     except Exception as exc:
         logger.warning("加载 WebSocket 用户失败: %s", exc)
         return None
-    finally:
-        db.close()
 
 
 ws_manager = WebSocketConnectionManager()

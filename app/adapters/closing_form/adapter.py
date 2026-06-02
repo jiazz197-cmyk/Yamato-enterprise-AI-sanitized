@@ -20,41 +20,41 @@ class ClosingFormPersistenceAdapter(ClosingFormPersistencePort):
     def __init__(self):
         self._p = ClosingFormPersistence()
 
-    def submit_pending(self, form_text_raw, uploader, image_url_1, image_url_2):
-        return self._p.submit_pending(form_text_raw, uploader, image_url_1, image_url_2)
+    async def submit_pending(self, form_text_raw, uploader, image_url_1, image_url_2):
+        return await self._p.submit_pending(form_text_raw, uploader, image_url_1, image_url_2)
 
-    def get_pending_form(self, form_id):
-        return self._p.get_pending_form(form_id)
+    async def get_pending_form(self, form_id):
+        return await self._p.get_pending_form(form_id)
 
-    def list_pending_forms(self, *, uploader=None):
-        return self._p.list_pending_forms(uploader=uploader)
+    async def list_pending_forms(self, *, uploader=None):
+        return await self._p.list_pending_forms(uploader=uploader)
 
-    def list_approved_forms(self, *, uploader=None):
-        return self._p.list_approved_forms(uploader=uploader)
+    async def list_approved_forms(self, *, uploader=None):
+        return await self._p.list_approved_forms(uploader=uploader)
 
-    def delete_pending_form(self, form_id):
-        self._p.delete_pending_form(form_id)
+    async def delete_pending_form(self, form_id):
+        await self._p.delete_pending_form(form_id)
 
-    def reject_pending_form(self, form_id):
-        self._p.reject_pending_form(form_id)
+    async def reject_pending_form(self, form_id):
+        await self._p.reject_pending_form(form_id)
 
-    def get_rejected_form_status(self, form_id):
-        return self._p.get_rejected_form_status(form_id)
+    async def get_rejected_form_status(self, form_id):
+        return await self._p.get_rejected_form_status(form_id)
 
-    def get_approved_form(self, record_id):
-        return self._p.get_approved_form(record_id)
+    async def get_approved_form(self, record_id):
+        return await self._p.get_approved_form(record_id)
 
-    def delete_approved_form(self, record_id):
-        return self._p.delete_approved_form(record_id)
+    async def delete_approved_form(self, record_id):
+        return await self._p.delete_approved_form(record_id)
 
-    def list_collection2_records(self):
-        return self._p.list_collection2_records()
+    async def list_collection2_records(self):
+        return await self._p.list_collection2_records()
 
-    def check_collection2_exists(self, record_id):
-        return self._p.check_collection2_exists(record_id)
+    async def check_collection2_exists(self, record_id):
+        return await self._p.check_collection2_exists(record_id)
 
-    def delete_collection2_record(self, record_id):
-        return self._p.delete_collection2_record(record_id)
+    async def delete_collection2_record(self, record_id):
+        return await self._p.delete_collection2_record(record_id)
 
 
 class ClosingFormEmbeddingAdapterPort(ClosingFormEmbeddingPort):

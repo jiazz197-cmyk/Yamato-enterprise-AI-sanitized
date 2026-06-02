@@ -4,7 +4,7 @@ Provides endpoints for managing user chat summaries
 """
 from fastapi import APIRouter, Depends, HTTPException
 import logging
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.base import (
     ChatSummaryRequest,
@@ -18,7 +18,7 @@ from app.adapters.chat_summary import (
     UserProfileSummaryRepoAdapter,
 )
 from app.core.config import settings
-from app.core.dependencies import get_db
+from app.core.dependencies import get_async_db
 from app.core.security import get_current_user
 from app.ports.contracts.identity import CurrentUserPort
 from app.usecases.chat_summary.create_chat_summary import (
@@ -35,10 +35,10 @@ router = APIRouter()
 
 
 @router.post("/create", response_model=ChatSummaryResponse)
-def create_chat_summary(
+async def create_chat_summary(
     request: ChatSummaryRequest,
     current_user: CurrentUserPort = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """
     Create or update user chat summary
@@ -76,7 +76,7 @@ def create_chat_summary(
         )
 
         logger.info(f"Creating chat summary for user {request.user_id}, conversation {request.conversation_id}")
-        result = usecase.execute(cmd)
+        result = await usecase.execute(cmd)
 
         response_data = {
             "user_id": result.user_id,
@@ -104,10 +104,10 @@ def create_chat_summary(
 
 
 @router.get("/query/{user_id}", response_model=UserSummaryResponse)
-def query_user_summary(
+async def query_user_summary(
     user_id: str,
     current_user: CurrentUserPort = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """
     Query user's latest chat summary
@@ -131,7 +131,7 @@ def query_user_summary(
         query = QueryUserSummaryQuery(user_id=user_id, current_user=current_user)
 
         logger.info(f"Querying summary for user {user_id}")
-        result = usecase.execute(query)
+        result = await usecase.execute(query)
 
         response_data = {
             "user_id": result.user_id,

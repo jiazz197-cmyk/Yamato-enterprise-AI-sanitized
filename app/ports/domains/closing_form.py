@@ -8,40 +8,40 @@ from typing import Any, Optional, Protocol
 class ClosingFormPersistencePort(Protocol):
     """Atomic persistence operations for closing forms (no business logic)."""
 
-    def submit_pending(self, form_text_raw: str, uploader: str, image_url_1: Optional[str], image_url_2: Optional[str]) -> dict:
+    async def submit_pending(self, form_text_raw: str, uploader: str, image_url_1: Optional[str], image_url_2: Optional[str]) -> dict:
         ...
 
-    def get_pending_form(self, form_id: int) -> Optional[dict]:
+    async def get_pending_form(self, form_id: int) -> Optional[dict]:
         ...
 
-    def list_pending_forms(self, *, uploader: Optional[str] = None) -> list[dict]:
+    async def list_pending_forms(self, *, uploader: Optional[str] = None) -> list[dict]:
         ...
 
-    def list_approved_forms(self, *, uploader: Optional[str] = None) -> list[dict]:
+    async def list_approved_forms(self, *, uploader: Optional[str] = None) -> list[dict]:
         ...
 
-    def delete_pending_form(self, form_id: int) -> None:
+    async def delete_pending_form(self, form_id: int) -> None:
         ...
 
-    def reject_pending_form(self, form_id: int) -> None:
+    async def reject_pending_form(self, form_id: int) -> None:
         ...
 
-    def get_rejected_form_status(self, form_id: int) -> Optional[str]:
+    async def get_rejected_form_status(self, form_id: int) -> Optional[str]:
         ...
 
-    def get_approved_form(self, record_id: int) -> Optional[dict]:
+    async def get_approved_form(self, record_id: int) -> Optional[dict]:
         ...
 
-    def delete_approved_form(self, record_id: int) -> int:
+    async def delete_approved_form(self, record_id: int) -> int:
         ...
 
-    def list_collection2_records(self) -> list[dict]:
+    async def list_collection2_records(self) -> list[dict]:
         ...
 
-    def check_collection2_exists(self, record_id: int) -> bool:
+    async def check_collection2_exists(self, record_id: int) -> bool:
         ...
 
-    def delete_collection2_record(self, record_id: int) -> int:
+    async def delete_collection2_record(self, record_id: int) -> int:
         ...
 
 

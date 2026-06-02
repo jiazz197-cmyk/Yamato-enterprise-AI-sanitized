@@ -33,7 +33,7 @@ class ContextCompressionRequest(BaseModel):
 
 
 @router.post("/compress")
-def compress_chat_context(
+async def compress_chat_context(
     request: ContextCompressionRequest,
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
@@ -41,7 +41,7 @@ def compress_chat_context(
     Compress chat context based on Dify conversation ID.
     """
     try:
-        result = CompressContextUseCase(IntegrationContextCompressorAdapter()).execute(
+        result = await CompressContextUseCase(IntegrationContextCompressorAdapter()).execute(
             CompressContextCommand(
                 user_id=request.user_id,
                 conversation_id=request.conversation_id,

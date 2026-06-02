@@ -49,7 +49,7 @@ class SubmitDocumentProcessingUseCase:
         if not cmd.files:
             raise ValidationError("至少需要上传一个文件")
         logger.info("收到文档处理请求: %s 个文件, instance_id=%s", len(cmd.files), cmd.instance_id)
-        file_ids = self._registration.register_uploaded_files(cmd.files, cmd.normalized_uploader)
+        file_ids = await self._registration.register_uploaded_files(cmd.files, cmd.normalized_uploader)
         if not file_ids:
             raise ValidationError("没有成功上传任何文件")
         task_id = await self._task_state.create_task(

@@ -4,24 +4,26 @@ import os
 import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.core.database import SessionLocal
+import asyncio
+
+from sqlalchemy import select
+
+from app.core.database import AsyncSessionLocal
 from app.models.orm.quotation_task import QuotationTask
 from app.domain.quotation.keyword_mapping import expand_keyword_mapping
 from app.domain.quotation.keyword_normalizer import normalize_pdm_keywords
 from app.integrations.sqlserver.pdm_bom import build_pdm_and_where_clause
 
 
-def get_keywords_payload(task_id: int):
+async def get_keywords_payload(task_id: int):
     """从数据库获取 keywords_payload"""
-    db = SessionLocal()
-    try:
-        task = db.query(QuotationTask).filter(QuotationTask.id == task_id).first()
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(QuotationTask).where(QuotationTask.id == task_id))
+        task = result.scalars().first()
         if not task:
             print(f"❌ Task id={task_id} not found")
             return None
         return task.result_payload.get("keywords_payload") if task.result_payload else None
-    finally:
-        db.close()
 
 
 def generate_sql(item: dict) -> str:
@@ -75,7 +77,7 @@ if __name__ == "__main__":
     parser.add_argument("--type", type=str, help="指定 type 名称，如 '中心柱天板密封罩'")
     args = parser.parse_args()
 
-    payload = get_keywords_payload(args.task_id)
+    payload = asyncio.run(get_keywords_payload(args.task_id))
     if not payload:
         sys.exit(1)
 

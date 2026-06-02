@@ -36,6 +36,7 @@ class ModelManager:
         self._reranker = None
         self._retrievers_cache = {}
         self._query_engines_cache = {}
+        self._cache_lock = threading.Lock()
         self._reranker_api_url = os.environ.get("RERANKER_API_URL", "http://localhost:8001/v1/rerank")
         self._initialized = True
         print(f"模型管理器初始化完成，使用 HTTP API 模式")
@@ -49,8 +50,12 @@ class ModelManager:
             print("RAG系统已存在，跳过重复设置")
     
     def get_reranker(self):
-        """Lazy-init HTTPReranker."""
-        if self._reranker is None:
+        """Lazy-init HTTPReranker（线程安全）。"""
+        if self._reranker is not None:
+            return self._reranker
+        with self._cache_lock:
+            if self._reranker is not None:
+                return self._reranker
             try:
                 self._reranker = HTTPReranker(
                     api_url=self._reranker_api_url,
@@ -61,50 +66,53 @@ class ModelManager:
             except Exception as e:
                 print(f"创建重排序器失败: {e}")
                 self._reranker = None
-        return self._reranker
+            return self._reranker
     
     def get_retriever(self, collection_name: str, top_k: int = 5):
-        """Cached retriever per (collection, top_k)."""
+        """Cached retriever per (collection, top_k)（线程安全）。"""
         cache_key = f"{collection_name}_{top_k}"
         
-        if cache_key not in self._retrievers_cache:
-            if self._rag_system is None:
-                raise ValueError("RAG系统未设置")
-            
-            try:
-                retriever = self._rag_system.get_retriever_for_collection(collection_name, top_k=top_k)
-                self._retrievers_cache[cache_key] = retriever
-                print(f"检索器缓存: {collection_name}")
-            except Exception as e:
-                print(f"创建检索器失败 {collection_name}: {e}")
-                return None
+        existing = self._retrievers_cache.get(cache_key)
+        if existing is not None:
+            return existing
         
-        return self._retrievers_cache.get(cache_key)
+        if self._rag_system is None:
+            raise ValueError("RAG系统未设置")
+        
+        retriever = self._rag_system.get_retriever_for_collection(collection_name, top_k=top_k)
+        
+        with self._cache_lock:
+            if cache_key in self._retrievers_cache:
+                return self._retrievers_cache[cache_key]
+            self._retrievers_cache[cache_key] = retriever
+            print(f"检索器缓存: {collection_name}")
+            return retriever
     
     def get_query_engine(self, collection_name: str, top_k: int = 5):
-        """RetrieverQueryEngine with optional reranker; cached."""
+        """RetrieverQueryEngine with optional reranker; cached（线程安全）。"""
         cache_key = f"{collection_name}_{top_k}"
         
-        if cache_key not in self._query_engines_cache:
-            retriever = self.get_retriever(collection_name, top_k)
-            if retriever is None:
-                return None
-            
-            reranker = self.get_reranker()
-            
-            try:
-                query_engine = RetrieverQueryEngine.from_args(
-                    retriever=retriever,
-                    node_postprocessors=[reranker] if reranker else [],
-                    streaming=False,
-                )
-                self._query_engines_cache[cache_key] = query_engine
-                print(f"查询引擎缓存: {collection_name}")
-            except Exception as e:
-                print(f"创建查询引擎失败 {collection_name}: {e}")
-                return None
+        existing = self._query_engines_cache.get(cache_key)
+        if existing is not None:
+            return existing
         
-        return self._query_engines_cache.get(cache_key)
+        retriever = self.get_retriever(collection_name, top_k)
+        if retriever is None:
+            return None
+        
+        reranker = self.get_reranker()
+        query_engine = RetrieverQueryEngine.from_args(
+            retriever=retriever,
+            node_postprocessors=[reranker] if reranker else [],
+            streaming=False,
+        )
+        
+        with self._cache_lock:
+            if cache_key in self._query_engines_cache:
+                return self._query_engines_cache[cache_key]
+            self._query_engines_cache[cache_key] = query_engine
+            print(f"查询引擎缓存: {collection_name}")
+            return query_engine
     
     def get_available_collections(self) -> List[str]:
         """DB table names without data_ prefix."""
@@ -112,18 +120,20 @@ class ModelManager:
             return []
         
         try:
-            collections = self._rag_system.vector_store_manager.list_available_collections()
+            collections = (
+                self._rag_system.vector_store_manager.list_available_collections_sync()
+            )
             return [col.replace("data_", "") for col in collections]
         except Exception as e:
             print(f"获取collection列表失败: {e}")
             return []
     
     def clear_cache(self):
-        """Drop retriever/query-engine caches and run gc."""
+        """Drop retriever/query-engine caches and run gc（线程安全）。"""
         print("开始清理模型管理器缓存...")
-        self._retrievers_cache.clear()
-        self._query_engines_cache.clear()
-        
+        with self._cache_lock:
+            self._retrievers_cache.clear()
+            self._query_engines_cache.clear()
         gc.collect()
         print("缓存清理完成")
     
@@ -250,7 +260,8 @@ class OptimizedRetriever:
             if not filename or filename == ["error"]:
                 return {"error": "未找到相关文件"}
             
-            file_path = save_file_from_minio(filename[0] if isinstance(filename, list) else filename)
+            object_name = filename[0] if isinstance(filename, list) else filename
+            file_path = save_file_from_minio(object_name)
             data_source = excel_to_json(file_path)
             return data_source
         except Exception as e:

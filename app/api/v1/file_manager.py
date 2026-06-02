@@ -14,7 +14,7 @@ from app.adapters.file_manager import SqlAlchemyFileManagerAdapter
 from app.core.exceptions import APIException, NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.core.security import get_current_user
-from app.core.storage import STREAM_CHUNK_SIZE, download_object_stream
+from app.core.async_storage import STREAM_CHUNK_SIZE, async_download_object_stream
 from app.ports.contracts.identity import CurrentUserPort
 from app.usecases.file_manager.operations import (
     BatchDeleteFilesCommand,
@@ -99,7 +99,7 @@ async def upload_file(
     try:
         file_size = getattr(file, "size", None) or -1
         content_type = file.content_type or "application/octet-stream"
-        rec = UploadFileUseCase(_fm_port()).execute(
+        rec = await UploadFileUseCase(_fm_port()).execute(
             UploadFileCommand(
                 file_stream=file.file,
                 original_filename=file.filename,
@@ -138,7 +138,7 @@ async def download_file(
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
-        file_record = GetFileForAccessUseCase(_fm_port()).execute(
+        file_record = await GetFileForAccessUseCase(_fm_port()).execute(
             GetFileByIdQuery(
                 file_id=file_id,
                 current_user=current_user,
@@ -146,10 +146,16 @@ async def download_file(
             )
         )
 
-        def file_stream_generator():
-            with download_object_stream(file_record.minio_object_path) as response:
-                for chunk in response.stream(STREAM_CHUNK_SIZE):
+        async def file_stream_generator():
+            response = await async_download_object_stream(file_record.minio_object_path)
+            try:
+                async for chunk in response.content.iter_chunked(STREAM_CHUNK_SIZE):
                     yield chunk
+            finally:
+                try:
+                    response.close()
+                except Exception:
+                    pass
 
         logger.info("文件下载: %s (ID: %s)", file_record.file_name, file_id)
         return StreamingResponse(
@@ -173,7 +179,7 @@ async def get_file_info(
     file_id: int,
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
-    file_record = GetFileForAccessUseCase(_fm_port()).execute(
+    file_record = await GetFileForAccessUseCase(_fm_port()).execute(
         GetFileByIdQuery(
             file_id=file_id,
             current_user=current_user,
@@ -200,7 +206,7 @@ async def list_files(
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
-        total, items = ListFilesUseCase(_fm_port()).execute(
+        total, items = await ListFilesUseCase(_fm_port()).execute(
             ListFilesQuery(
                 current_user=current_user,
                 page=page,
@@ -242,7 +248,7 @@ async def delete_file(
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
-        DeleteFileUseCase(_fm_port()).execute(
+        await DeleteFileUseCase(_fm_port()).execute(
             DeleteFileCommand(file_id=file_id, current_user=current_user)
         )
         return DeleteResponse(success=True, message="文件删除成功", deleted_id=file_id)
@@ -262,7 +268,7 @@ async def batch_delete_files(
     file_ids: List[int] = Query(..., description="要删除的文件 ID 列表"),
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
-    result = BatchDeleteFilesUseCase(_fm_port()).execute(
+    result = await BatchDeleteFilesUseCase(_fm_port()).execute(
         BatchDeleteFilesCommand(file_ids=file_ids, current_user=current_user)
     )
     return BatchDeleteResponse(
@@ -281,7 +287,7 @@ async def search_files(
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
-        total, items = SearchFilesUseCase(_fm_port()).execute(
+        total, items = await SearchFilesUseCase(_fm_port()).execute(
             SearchFilesQuery(
                 current_user=current_user,
                 keyword=keyword,

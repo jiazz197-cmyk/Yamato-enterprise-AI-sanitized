@@ -60,10 +60,10 @@ except Exception as e:
 
 # 诊断端点：验证 adapter 和 persistence 是否正常
 @router.get("/_diag", summary="内部诊断", include_in_schema=False)
-def diag():
+async def diag():
     try:
-        pending = _persistence.list_pending_forms()
-        approved = _persistence.list_approved_forms()
+        pending = await _persistence.list_pending_forms()
+        approved = await _persistence.list_approved_forms()
         return {
             "adapter": type(_persistence).__name__,
             "pending_count": len(pending),
@@ -136,7 +136,7 @@ def get_closing_form_image(object_name: str):
 
 
 @router.post("/image/upload", response_model=ImageUploadResponse)
-def upload_closing_form_image(
+async def upload_closing_form_image(
     image: UploadFile = File(...),
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
@@ -147,7 +147,7 @@ def upload_closing_form_image(
         raise HTTPException(status_code=400, detail="只允许上传图片文件")
 
     try:
-        object_name = UploadClosingFormImageUseCase(_image_storage).execute(
+        object_name = await UploadClosingFormImageUseCase(_image_storage).execute(
             file_stream=image.file,
             original_filename=image.filename,
             content_type=image.content_type or "image/jpeg",
@@ -178,7 +178,7 @@ def delete_closing_form_image(
 
 
 @router.post("/submit", response_model=ClosingFormSubmitResponse)
-def submit_closing_form(
+async def submit_closing_form(
     form_data: ClosingFormSubmit,
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
@@ -207,18 +207,18 @@ def submit_closing_form(
         image_urls=[url for url in (form_data.image_url_1, form_data.image_url_2) if url],
     )
     try:
-        return SubmitClosingFormUseCase(_persistence).execute(current_user, cmd)
+        return await SubmitClosingFormUseCase(_persistence).execute(current_user, cmd)
     except Exception:
         logger.exception("填表提交失败")
         raise HTTPException(status_code=500, detail="提交失败，请稍后重试")
 
 
 @router.get("/list", response_model=ClosingFormListResponse)
-def list_closing_forms(
+async def list_closing_forms(
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
-        result = ListClosingFormsUseCase(_persistence).execute(current_user)
+        result = await ListClosingFormsUseCase(_persistence).execute(current_user)
         logger.debug("列表查询成功: user=%s records=%d", current_user.username, result.total)
         return result
     except Exception:
@@ -231,12 +231,12 @@ def list_closing_forms(
     response_model=ClosingFormApproveResponse,
     summary="审批通过表单（admin / superuser 专属）",
 )
-def approve_closing_form(
+async def approve_closing_form(
     form_id: int,
     current_user: CurrentUserPort = Depends(require_roles(ROLE_ADMIN, ROLE_SUPERUSER)),
 ):
     try:
-        return ApproveClosingFormUseCase(_persistence, _embedding).execute(form_id, current_user)
+        return await ApproveClosingFormUseCase(_persistence, _embedding).execute(form_id, current_user)
     except (NotFoundError, ValidationError, APIException):
         raise
     except Exception:
@@ -249,12 +249,12 @@ def approve_closing_form(
     response_model=ClosingFormRejectResponse,
     summary="审批不通过表单（admin / superuser 专属）",
 )
-def reject_closing_form(
+async def reject_closing_form(
     form_id: int,
     current_user: CurrentUserPort = Depends(require_roles(ROLE_ADMIN, ROLE_SUPERUSER)),
 ):
     try:
-        return RejectClosingFormUseCase(_persistence, _image_storage).execute(form_id, current_user)
+        return await RejectClosingFormUseCase(_persistence, _image_storage).execute(form_id, current_user)
     except (NotFoundError, ValidationError, APIException):
         raise
     except Exception:
@@ -267,12 +267,12 @@ def reject_closing_form(
     response_model=Collection2ListResponse,
     summary="获取 data_doc_collection_2 列表（admin / superuser）",
 )
-def list_collection2_records(
+async def list_collection2_records(
     current_user: CurrentUserPort = Depends(require_roles(ROLE_ADMIN, ROLE_SUPERUSER)),
 ):
     _ = current_user
     try:
-        return ListCollection2UseCase(_persistence).execute()
+        return await ListCollection2UseCase(_persistence).execute()
     except Exception:
         logger.exception("查询 data_doc_collection_2 列表失败")
         raise HTTPException(status_code=500, detail="查询失败，请稍后重试")
@@ -283,12 +283,12 @@ def list_collection2_records(
     response_model=ClosingFormDeleteResponse,
     summary="删除 data_doc_collection_2 记录（admin / superuser）",
 )
-def delete_collection2_record(
+async def delete_collection2_record(
     record_id: int,
     current_user: CurrentUserPort = Depends(require_roles(ROLE_ADMIN, ROLE_SUPERUSER)),
 ):
     try:
-        return DeleteCollection2RecordUseCase(_persistence).execute(record_id, current_user)
+        return await DeleteCollection2RecordUseCase(_persistence).execute(record_id, current_user)
     except (NotFoundError, APIException):
         raise
     except Exception:
@@ -301,12 +301,12 @@ def delete_collection2_record(
     response_model=ClosingFormDeleteResponse,
     summary="删除不通过表单（admin / superuser 专属）",
 )
-def delete_rejected_closing_form(
+async def delete_rejected_closing_form(
     form_id: int,
     current_user: CurrentUserPort = Depends(require_roles(ROLE_ADMIN, ROLE_SUPERUSER)),
 ):
     try:
-        return DeleteRejectedClosingFormUseCase(_persistence).execute(form_id, current_user)
+        return await DeleteRejectedClosingFormUseCase(_persistence).execute(form_id, current_user)
     except (NotFoundError, APIException):
         raise
     except Exception:
@@ -319,12 +319,12 @@ def delete_rejected_closing_form(
     response_model=ClosingFormDeleteResponse,
     summary="删除已通过表单（admin / superuser 专属）",
 )
-def delete_approved_closing_form(
+async def delete_approved_closing_form(
     record_id: int,
     current_user: CurrentUserPort = Depends(require_roles(ROLE_ADMIN, ROLE_SUPERUSER)),
 ):
     try:
-        return DeleteApprovedClosingFormUseCase(_persistence, _image_storage).execute(record_id, current_user)
+        return await DeleteApprovedClosingFormUseCase(_persistence, _image_storage).execute(record_id, current_user)
     except (NotFoundError, APIException):
         raise
     except Exception:

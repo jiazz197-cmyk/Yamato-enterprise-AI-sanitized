@@ -70,13 +70,13 @@ class CreateQuotationTaskUseCase:
         minio_path = f"quotation/uploads/{unique_name}"
         display_name = str(cmd.task_name or "").strip() or (cmd.file_name or unique_name)
 
-        self._file_storage.upload_pdf(
+        await self._file_storage.upload_pdf(
             object_path=minio_path,
             file_bytes=cmd.file_bytes,
             content_type=content_type,
         )
 
-        stored_file_id = self._task_repo.create_file_record(
+        stored_file_id = await self._task_repo.create_file_record(
             file_name=cmd.file_name or unique_name,
             unique_name=unique_name,
             minio_path=minio_path,
@@ -100,7 +100,7 @@ class CreateQuotationTaskUseCase:
             },
         )
 
-        task = self._task_repo.create_task(
+        task = await self._task_repo.create_task(
             task_id=task_id,
             owner_id=cmd.owner_id,
             owner_username=cmd.owner_username,
@@ -116,11 +116,11 @@ class CreateQuotationTaskUseCase:
 
         self._task_execution.set_task_owner(task_id, cmd.owner_id)
         self._task_dispatch.dispatch_owner_queue(cmd.owner_id)
-        task = self._task_repo.get_task(task_id) or task
+        task = await self._task_repo.get_task(task_id) or task
 
         queue_position = 0
         if task.status == "queued":
-            queue_position = self._task_repo.count_owner_queued_before(cmd.owner_id, task.created_at)
+            queue_position = await self._task_repo.count_owner_queued_before(cmd.owner_id, task.created_at)
 
         try:
             from app.core.config import settings

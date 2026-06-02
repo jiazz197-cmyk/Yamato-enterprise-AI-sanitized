@@ -13,8 +13,8 @@ from app.ports.domains.context_compression import ContextCompressorPort
 
 
 class IntegrationContextCompressorAdapter(ContextCompressorPort):
-    def compress(self, context_data: dict) -> Any:
+    async def compress(self, context_data: dict) -> Any:
         try:
-            return compress_context(context_data)
+            return await compress_context(context_data)
         except LlmEndpointMisconfiguredError as e:
             raise ExternalServiceError("context_compression", str(e)) from e

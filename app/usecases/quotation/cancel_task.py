@@ -36,7 +36,7 @@ class CancelQuotationTaskUseCase:
         self._task_dispatch = task_dispatch
 
     async def execute(self, cmd: CancelQuotationTaskCommand) -> CancelQuotationTaskResult:
-        task = self._task_repo.get_task(cmd.task_id)
+        task = await self._task_repo.get_task(cmd.task_id)
         if task is None:
             raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
 
@@ -48,7 +48,7 @@ class CancelQuotationTaskUseCase:
             )
 
         if task.status == "queued":
-            self._task_repo.patch_task(
+            await self._task_repo.patch_task(
                 cmd.task_id,
                 {
                     "status": "cancelled",
@@ -62,10 +62,10 @@ class CancelQuotationTaskUseCase:
             return CancelQuotationTaskResult(True, "排队任务已取消", cmd.task_id)
 
         if task.status == "awaiting_approval":
-            cleanup_result = self._task_repo.cleanup_task_files(cmd.task_id)
+            cleanup_result = await self._task_repo.cleanup_task_files(cmd.task_id)
             payload = dict(task.result_payload or {})
             payload["cleanup"] = cleanup_result
-            self._task_repo.patch_task(
+            await self._task_repo.patch_task(
                 cmd.task_id,
                 {
                     "status": "cancelled",
@@ -82,7 +82,7 @@ class CancelQuotationTaskUseCase:
 
         cancelled = self._task_execution.cancel_task(cmd.task_id)
         if not cancelled:
-            self._task_repo.patch_task(
+            await self._task_repo.patch_task(
                 cmd.task_id,
                 {
                     "status": "cancelled",
@@ -95,5 +95,5 @@ class CancelQuotationTaskUseCase:
             self._task_dispatch.dispatch_owner_queue(task.owner_id)
             return CancelQuotationTaskResult(True, "任务已标记取消", cmd.task_id)
 
-        self._task_repo.patch_task(cmd.task_id, {"message": "任务正在取消"})
+        await self._task_repo.patch_task(cmd.task_id, {"message": "任务正在取消"})
         return CancelQuotationTaskResult(True, "取消请求已发送", cmd.task_id)

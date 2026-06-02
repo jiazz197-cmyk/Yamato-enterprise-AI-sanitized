@@ -7,12 +7,13 @@ from dataclasses import asdict
 from io import BytesIO
 from typing import Any, Dict, Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import APIException
-from app.core.storage import upload_stream_to_minio
+from app.core.async_storage import async_upload_stream_to_minio
 from app.core.quotation_task_cleanup import (
-    safe_cleanup_quotation_task_files,
+    safe_cleanup_quotation_task_files_async,
 )
 from app.integrations.Quotation_Generation.quotation_task_workers import (
     dispatch_quotation_phase2,
@@ -30,8 +31,8 @@ from app.ports.dto.quotation import QuotationSummarySelectionItem, QuotationTask
 
 
 class MinioFileStorageAdapter(FileStoragePort):
-    def upload_pdf(self, *, object_path: str, file_bytes: bytes, content_type: str) -> None:
-        upload_result = upload_stream_to_minio(
+    async def upload_pdf(self, *, object_path: str, file_bytes: bytes, content_type: str) -> None:
+        upload_result = await async_upload_stream_to_minio(
             file_stream=BytesIO(file_bytes),
             file_name=object_path,
             file_size=len(file_bytes),
@@ -46,7 +47,7 @@ class MinioFileStorageAdapter(FileStoragePort):
 
 
 class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self._db = db
 
     @staticmethod
@@ -73,10 +74,13 @@ class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):
             error=task.error,
         )
 
-    def _get_task_entity(self, task_id: str) -> Optional[QuotationTask]:
-        return self._db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
+    async def _get_task_entity(self, task_id: str) -> Optional[QuotationTask]:
+        result = await self._db.execute(
+            select(QuotationTask).where(QuotationTask.task_id == task_id)
+        )
+        return result.scalars().first()
 
-    def create_file_record(
+    async def create_file_record(
         self,
         *,
         file_name: str,
@@ -95,10 +99,10 @@ class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):
             uploader=uploader,
         )
         self._db.add(file_record)
-        self._db.flush()
+        await self._db.flush()
         return int(file_record.id)
 
-    def create_task(
+    async def create_task(
         self,
         *,
         task_id: str,
@@ -130,68 +134,72 @@ class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):
             uploaded_file_size=uploaded_file_size,
         )
         self._db.add(quotation_task)
-        self._db.commit()
-        self._db.refresh(quotation_task)
+        await self._db.commit()
+        await self._db.refresh(quotation_task)
         return self._to_snapshot(quotation_task)
 
-    def get_task(self, task_id: str) -> Optional[QuotationTaskSnapshot]:
-        task = self._get_task_entity(task_id)
+    async def get_task(self, task_id: str) -> Optional[QuotationTaskSnapshot]:
+        task = await self._get_task_entity(task_id)
         if task is None:
             return None
         return self._to_snapshot(task)
 
-    def patch_task(self, task_id: str, updates: Dict[str, Any]) -> QuotationTaskSnapshot:
-        task = self._get_task_entity(task_id)
+    async def patch_task(self, task_id: str, updates: Dict[str, Any]) -> QuotationTaskSnapshot:
+        task = await self._get_task_entity(task_id)
         if task is None:
             raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
 
         for key, value in updates.items():
             setattr(task, key, value)
 
-        self._db.commit()
-        self._db.refresh(task)
+        await self._db.commit()
+        await self._db.refresh(task)
         return self._to_snapshot(task)
 
-    def count_owner_queued_before(self, owner_id: str, created_at: datetime) -> int:
-        return (
-            self._db.query(QuotationTask)
-            .filter(
+    async def count_owner_queued_before(self, owner_id: str, created_at: datetime) -> int:
+        result = await self._db.execute(
+            select(func.count())
+            .select_from(QuotationTask)
+            .where(
                 QuotationTask.owner_id == owner_id,
                 QuotationTask.status == QuotationTaskStatus.queued.value,
                 QuotationTask.created_at <= created_at,
             )
-            .count()
         )
+        return int(result.scalar_one())
 
-    def cleanup_task_files(self, task_id: str) -> Dict[str, Any]:
-        task = self._get_task_entity(task_id)
+    async def cleanup_task_files(self, task_id: str) -> Dict[str, Any]:
+        task = await self._get_task_entity(task_id)
         if task is None:
             raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
-        return safe_cleanup_quotation_task_files(self._db, task, task_id)
+        return await safe_cleanup_quotation_task_files_async(self._db, task, task_id)
 
-    def delete_task(self, task_id: str) -> None:
-        task = self._get_task_entity(task_id)
+    async def delete_task(self, task_id: str) -> None:
+        task = await self._get_task_entity(task_id)
         if task is None:
             raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
-        self._db.delete(task)
-        self._db.commit()
+        await self._db.delete(task)
+        await self._db.commit()
 
 
 class ResultPayloadQuotationApprovalSelectionAdapter(QuotationApprovalSelectionPort):
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self._db = db
 
-    def _get_task_entity(self, task_id: str) -> Optional[QuotationTask]:
-        return self._db.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
+    async def _get_task_entity(self, task_id: str) -> Optional[QuotationTask]:
+        result = await self._db.execute(
+            select(QuotationTask).where(QuotationTask.task_id == task_id)
+        )
+        return result.scalars().first()
 
-    def save_approved_selection(
+    async def save_approved_selection(
         self,
         *,
         task_id: str,
         approved_partids: list[str],
         summary_selection_items: list[QuotationSummarySelectionItem],
     ) -> None:
-        task = self._get_task_entity(task_id)
+        task = await self._get_task_entity(task_id)
         if task is None:
             raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
 
@@ -199,10 +207,10 @@ class ResultPayloadQuotationApprovalSelectionAdapter(QuotationApprovalSelectionP
         payload["approved_partids"] = approved_partids
         payload["summary_selection_items"] = [asdict(item) for item in summary_selection_items]
         task.result_payload = payload
-        self._db.commit()
+        await self._db.commit()
 
-    def load_summary_selection_items(self, task_id: str) -> list[QuotationSummarySelectionItem]:
-        task = self._get_task_entity(task_id)
+    async def load_summary_selection_items(self, task_id: str) -> list[QuotationSummarySelectionItem]:
+        task = await self._get_task_entity(task_id)
         if task is None:
             raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from app.core.database import SessionLocal
+from sqlalchemy import select
+
+from app.core.database import AsyncSessionLocal
 from app.ports.domains.auth import UserRepositoryPort
 from app.ports.dto.auth import UserDTO
 
@@ -27,35 +29,31 @@ def _orm_user_to_dto(user) -> UserDTO:
 
 
 class SqlAlchemyUserRepositoryAdapter(UserRepositoryPort):
-    """SQLAlchemy-backed user repository.
+    """SQLAlchemy-backed user repository (async session per method)."""
 
-    Each method opens and closes its own session.
-    """
-
-    def get_by_username(self, username: str) -> Optional[object]:
+    async def get_by_username(self, username: str) -> Optional[object]:
         from app.models.orm.platform.user import User
 
-        db = SessionLocal()
-        try:
-            return db.query(User).filter(User.username == username).first()
-        finally:
-            db.close()
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(User).filter(User.username == username))
+            return result.scalars().first()
 
-    def get_by_id(self, user_id: str) -> Optional[UserDTO]:
+    async def get_by_id(self, user_id: str) -> Optional[UserDTO]:
         from app.models.orm.platform.user import User
 
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(User).filter(User.id == uuid.UUID(user_id))
+            )
+            user = result.scalars().first()
             return _orm_user_to_dto(user) if user else None
-        finally:
-            db.close()
 
-    def create(self, username: str, email: str, password: str, name: Optional[str]) -> UserDTO:
+    async def create(
+        self, username: str, email: str, password: str, name: Optional[str]
+    ) -> UserDTO:
         from app.models.orm.platform.user import User, UserRole
 
-        db = SessionLocal()
-        try:
+        async with AsyncSessionLocal() as db:
             user = User(
                 username=username,
                 email=email,
@@ -65,47 +63,42 @@ class SqlAlchemyUserRepositoryAdapter(UserRepositoryPort):
                 is_active=True,
             )
             db.add(user)
-            db.commit()
-            db.refresh(user)
+            await db.commit()
+            await db.refresh(user)
             return _orm_user_to_dto(user)
-        finally:
-            db.close()
 
-    def list_users(self) -> list[UserDTO]:
+    async def list_users(self) -> list[UserDTO]:
         from app.models.orm.platform.user import User
 
-        db = SessionLocal()
-        try:
-            users = db.query(User).order_by(User.created_at).all()
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(User).order_by(User.created_at))
+            users = result.scalars().all()
             return [_orm_user_to_dto(u) for u in users]
-        finally:
-            db.close()
 
-    def delete(self, user_id: str) -> None:
+    async def delete(self, user_id: str) -> None:
         from app.models.orm.platform.user import User
 
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(User).filter(User.id == uuid.UUID(user_id))
+            )
+            user = result.scalars().first()
             if user:
-                db.delete(user)
-                db.commit()
-        finally:
-            db.close()
+                await db.delete(user)
+                await db.commit()
 
-    def update_role(self, user_id: str, role: str) -> UserDTO:
+    async def update_role(self, user_id: str, role: str) -> UserDTO:
         from app.models.orm.platform.user import User, UserRole
 
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(User).filter(User.id == uuid.UUID(user_id))
+            )
+            user = result.scalars().first()
             if not user:
                 raise ValueError(f"User not found: {user_id}")
-            # Map string role to UserRole enum
             role_map = {r.value: r for r in UserRole}
             user.role = role_map.get(role, UserRole.user)
-            db.commit()
-            db.refresh(user)
+            await db.commit()
+            await db.refresh(user)
             return _orm_user_to_dto(user)
-        finally:
-            db.close()

@@ -107,7 +107,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="任务缺少归属信息，禁止订阅")
         return
 
-    ws_user = load_user_for_websocket(user_id)
+    ws_user = await load_user_for_websocket(user_id)
     is_admin_like = bool(ws_user and ws_user.role in (ROLE_ADMIN, ROLE_SUPERUSER))
     if owner_id != user_id and not is_admin_like:
         ws_diag_logger.warning(

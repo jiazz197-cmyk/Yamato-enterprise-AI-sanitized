@@ -4,9 +4,9 @@
 """
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import forbid_in_production, get_db
+from app.core.dependencies import forbid_in_production, get_async_db
 from app.core.logging import get_logger
 
 router = APIRouter(dependencies=[Depends(forbid_in_production)])
@@ -51,7 +51,7 @@ async def hello_name(name: str):
 
 
 @router.get("/db-example", response_model=HelloResponse, summary="数据库连接示例")
-async def db_example(db: Session = Depends(get_db)):
+async def db_example(db: AsyncSession = Depends(get_async_db)):
     """
     演示如何注入数据库会话。
     

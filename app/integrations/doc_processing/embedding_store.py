@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import threading
 
-import requests
+import httpx
 import torch
 from llama_index.core import Settings, StorageContext, VectorStoreIndex
 from llama_index.core.embeddings import BaseEmbedding
@@ -13,6 +13,7 @@ from llama_index.vector_stores.postgres import PGVectorStore
 from pydantic import Field
 
 from app.core.config import settings
+from app.core.http_client import get_http_client
 from .exceptions import EmbeddingError, VectorStoreError
 
 logger = logging.getLogger(__name__)
@@ -52,41 +53,53 @@ class BGEM3EmbeddingWrapper(BaseEmbedding):
         except Exception as exc:
             raise EmbeddingError(f"初始化 BGE-M3 远程接口失败: {exc}") from exc
 
-    def _get_text_embedding(self, text: str) -> List[float]:
+    def _parse_embedding(self, data: dict) -> List[float]:
+        embedding = None
+        if isinstance(data, dict):
+            if "data" in data and data["data"]:
+                first_item = data["data"][0]
+                embedding = first_item.get("embedding") or first_item.get("vector")
+            else:
+                embedding = data.get("embedding") or data.get("vector")
+
+        if not isinstance(embedding, list):
+            raise ValueError(f"远程接口返回格式不符合预期: {data}")
+
+        if any(math.isnan(x) or math.isinf(x) for x in embedding):
+            logger.warning("检测到 NaN/Inf 嵌入，返回零向量")
+            return [0.0] * len(embedding)
+
+        return embedding
+
+    async def _fetch_embedding(self, text: str) -> List[float]:
         if not text or not text.strip():
-            # 维度需与你 PGVector 的 embed_dim 一致，这里仍用 1024
             return [0.0] * 1024
 
-        try:
-            payload = {
-                # 按你提供的 BGE-M3 接口格式：
-                # { "input": ["文本1", "文本2"], "model": "BAAI/bge-m3" }
-                "model": self.model_name,
-                "input": [text],
-            }
-            response = requests.post(self.api_url, json=payload, timeout=30)
+        payload = {
+            "model": self.model_name,
+            "input": [text],
+        }
+        client = await get_http_client()
+        response = await client.post(self.api_url, json=payload, timeout=30)
+        response.raise_for_status()
+        return self._parse_embedding(response.json())
+
+    def _fetch_embedding_sync(self, text: str) -> List[float]:
+        if not text or not text.strip():
+            return [0.0] * 1024
+
+        payload = {
+            "model": self.model_name,
+            "input": [text],
+        }
+        with httpx.Client(timeout=30) as client:
+            response = client.post(self.api_url, json=payload)
             response.raise_for_status()
-            data = response.json()
+            return self._parse_embedding(response.json())
 
-            # 兼容多种常见返回格式，根据实际接口可适当调整
-            embedding = None
-            if isinstance(data, dict):
-                if "data" in data and data["data"]:
-                    # OpenAI 风格: { "data": [ { "embedding": [...] }, ... ] }
-                    first_item = data["data"][0]
-                    embedding = first_item.get("embedding") or first_item.get("vector")
-                else:
-                    # 简单风格: { "embedding": [...] } 或 { "vector": [...] }
-                    embedding = data.get("embedding") or data.get("vector")
-
-            if not isinstance(embedding, list):
-                raise ValueError(f"远程接口返回格式不符合预期: {data}")
-
-            if any(math.isnan(x) or math.isinf(x) for x in embedding):
-                logger.warning("检测到 NaN/Inf 嵌入，返回零向量")
-                return [0.0] * len(embedding)
-
-            return embedding
+    def _get_text_embedding(self, text: str) -> List[float]:
+        try:
+            return self._fetch_embedding_sync(text)
         except Exception as exc:
             logger.exception("调用远程 BGE-M3 接口生成嵌入失败")
             raise EmbeddingError(f"调用远程 BGE-M3 接口失败: {exc}") from exc
@@ -95,7 +108,10 @@ class BGEM3EmbeddingWrapper(BaseEmbedding):
         return self._get_text_embedding(query)
 
     async def _aget_query_embedding(self, query: str) -> List[float]:
-        return self._get_query_embedding(query)
+        return await self._fetch_embedding(query)
+
+    async def _aget_text_embedding(self, text: str) -> List[float]:
+        return await self._fetch_embedding(text)
 
     def embed_text(self, text: str) -> List[float]:
         """对外暴露的文本向量化接口"""

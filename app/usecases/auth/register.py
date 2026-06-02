@@ -17,13 +17,13 @@ class RegisterUseCase:
         self._user_repo = user_repo
         self._password_hasher = password_hasher
 
-    def execute(self, cmd: RegisterCommand) -> UserDTO:
-        existing = self._user_repo.get_by_username(cmd.username)
+    async def execute(self, cmd: RegisterCommand) -> UserDTO:
+        existing = await self._user_repo.get_by_username(cmd.username)
         if existing:
             raise APIException("用户名已存在", status_code=409, error_code="USERNAME_EXISTS")
 
         hashed = self._password_hasher.hash_password(cmd.password)
-        user = self._user_repo.create(
+        user = await self._user_repo.create(
             username=cmd.username,
             email=cmd.email,
             password=hashed,

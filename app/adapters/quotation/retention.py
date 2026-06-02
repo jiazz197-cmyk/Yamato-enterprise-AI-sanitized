@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
 
-from app.core.database import SessionLocal
+from app.core.database import AsyncSessionLocal
 from app.core.logging import get_logger
 from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
 from app.ports.domains.quotation import QuotationTaskPurgePort, QuotationTaskRetentionPort
@@ -27,20 +27,20 @@ class QuotationTaskRetentionAdapter(QuotationTaskRetentionPort):
         self._purge = purge_port
 
     async def purge_old_terminal_tasks_global(self, max_total: int = 100, target: int = 50) -> int:
-        db: Session = SessionLocal()
-        try:
-            total = db.query(QuotationTask).count()
+        async with AsyncSessionLocal() as db:
+            total_result = await db.execute(select(func.count()).select_from(QuotationTask))
+            total = int(total_result.scalar_one())
             if total <= max_total:
                 return 0
 
             to_delete = total - target
-            candidates = (
-                db.query(QuotationTask.task_id)
-                .filter(QuotationTask.status.in_(_TERMINAL_STATUSES))
+            candidates_result = await db.execute(
+                select(QuotationTask.task_id)
+                .where(QuotationTask.status.in_(_TERMINAL_STATUSES))
                 .order_by(QuotationTask.created_at.asc())
                 .limit(to_delete)
-                .all()
             )
+            candidates = candidates_result.all()
 
             purged = 0
             sample_ids: list[str] = []
@@ -57,22 +57,19 @@ class QuotationTaskRetentionAdapter(QuotationTaskRetentionPort):
                     purged, total, target, sample_ids,
                 )
             return purged
-        finally:
-            db.close()
 
     async def expire_awaiting_approval_tasks(self, ttl_hours: int = 24) -> int:
-        db: Session = SessionLocal()
-        try:
+        async with AsyncSessionLocal() as db:
             cutoff = datetime.utcnow() - timedelta(hours=ttl_hours)
-            expired = (
-                db.query(QuotationTask.task_id)
-                .filter(
+            expired_result = await db.execute(
+                select(QuotationTask.task_id)
+                .where(
                     QuotationTask.status == QuotationTaskStatus.awaiting_approval.value,
                     QuotationTask.awaiting_approval_at.isnot(None),
                     QuotationTask.awaiting_approval_at < cutoff,
                 )
-                .all()
             )
+            expired = expired_result.all()
 
             purged = 0
             sample_ids: list[str] = []
@@ -89,5 +86,3 @@ class QuotationTaskRetentionAdapter(QuotationTaskRetentionPort):
                     purged, ttl_hours, sample_ids,
                 )
             return purged
-        finally:
-            db.close()

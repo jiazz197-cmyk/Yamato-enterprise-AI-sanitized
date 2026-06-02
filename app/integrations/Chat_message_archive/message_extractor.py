@@ -15,7 +15,7 @@ if __name__ == "__main__" or __package__ is None:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-import requests
+import httpx
 from typing import Optional, List, Dict, Any
 import logging
 import psycopg2
@@ -27,6 +27,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from app.core.config import settings
+from app.core.async_bridge import run_async
+from app.core.http_client import get_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -194,8 +196,28 @@ class MessageExtractor:
         self.headers = {
             'Authorization': f'Bearer {api_key}'
         }
+
+    async def fetch_conversation_variables(
+        self, url: str, *, params: Optional[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            client = await get_http_client()
+            response = await client.get(
+                url,
+                headers=self.headers,
+                params=params,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.TimeoutException:
+            logger.error("Request timeout after %s seconds", self.timeout)
+            return None
+        except httpx.HTTPError as e:
+            logger.error("Failed to fetch conversation variables: %s", e)
+            return None
     
-    def get_messages(
+    async def get_messages(
         self, 
         user_id: str, 
         conversation_id: str, 
@@ -221,23 +243,29 @@ class MessageExtractor:
         
         try:
             logger.info(f"Fetching messages from {url} with params: {params}")
-            response = requests.get(
-                url, 
-                headers=self.headers, 
-                params=params, 
-                timeout=self.timeout
+            client = await get_http_client()
+            response = await client.get(
+                url,
+                headers=self.headers,
+                params=params,
+                timeout=self.timeout,
             )
             response.raise_for_status()
             return response.json()
-        except requests.exceptions.Timeout:
+        except httpx.TimeoutException:
             logger.error(f"Request timeout after {self.timeout} seconds")
             return None
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Connection error: {str(e)}")
-            return None
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Failed to fetch messages: {str(e)}")
             return None
+
+    def get_messages_sync(
+        self,
+        user_id: str,
+        conversation_id: str,
+        limit: int = 20,
+    ) -> Optional[Dict[str, Any]]:
+        return run_async(self.get_messages(user_id, conversation_id, limit))
     
     def extract_queries(
         self, 
@@ -256,7 +284,7 @@ class MessageExtractor:
         Returns:
             List of query strings
         """
-        messages_data = self.get_messages(user_id, conversation_id, limit)
+        messages_data = self.get_messages_sync(user_id, conversation_id, limit)
         
         if not messages_data:
             logger.warning("No messages data retrieved")
@@ -273,7 +301,7 @@ class MessageExtractor:
         logger.info(f"Extracted {len(queries)} queries from conversation {conversation_id}")
         return queries
     
-    def summarize_queries_with_llm(
+    async def summarize_queries_with_llm(
         self, 
         queries: List[str],
         previous_summary: Optional[str] = None,
@@ -334,7 +362,7 @@ class MessageExtractor:
                 queries_text = "\n".join([f"{i+1}. {q}" for i, q in enumerate(queries)])
                 
                 logger.info(f"Updating summary with {len(queries)} new queries and previous summary")
-                summary = (prompt | llm | StrOutputParser()).invoke({
+                summary = await (prompt | llm | StrOutputParser()).ainvoke({
                     "previous_summary": previous_summary,
                     "count": len(queries),
                     "queries": queries_text
@@ -360,7 +388,7 @@ class MessageExtractor:
                 queries_text = "\n".join([f"{i+1}. {q}" for i, q in enumerate(queries)])
                 
                 logger.info(f"Creating new summary from {len(queries)} queries")
-                summary = (prompt | llm | StrOutputParser()).invoke({
+                summary = await (prompt | llm | StrOutputParser()).ainvoke({
                     "count": len(queries),
                     "queries": queries_text
                 })
@@ -373,7 +401,7 @@ class MessageExtractor:
             return f"Error generating summary: {str(e)}"
 
 
-def summarize_user_queries(
+async def async_summarize_user_queries(
     api_key: str,
     user_id: str,
     conversation_id: str,
@@ -407,13 +435,14 @@ def summarize_user_queries(
         >>> print(f"Based on {len(result['queries'])} queries")
     """
     extractor = MessageExtractor(api_key, base_url, timeout)
-    
-    # Extract queries
-    queries = extractor.extract_queries(user_id, conversation_id, limit)
-    
-    # Summarize with LLM
-    summary = extractor.summarize_queries_with_llm(queries, llm_base_url)
-    
+    messages_data = await extractor.get_messages(user_id, conversation_id, limit)
+    queries = []
+    if messages_data:
+        for message in messages_data.get('data', []):
+            query = message.get('query')
+            if query:
+                queries.append(query)
+    summary = await extractor.summarize_queries_with_llm(queries, llm_base_url)
     return {
         'queries': queries,
         'summary': summary,
@@ -421,7 +450,23 @@ def summarize_user_queries(
     }
 
 
-def update_user_profile_with_new_queries(
+def summarize_user_queries(
+    api_key: str,
+    user_id: str,
+    conversation_id: str,
+    limit: int = 20,
+    base_url: Optional[str] = None,
+    llm_base_url: str = "http://localhost:80/llm/qwen8b/v1",
+    timeout: int = 30,
+) -> Dict[str, Any]:
+    return run_async(
+        async_summarize_user_queries(
+            api_key, user_id, conversation_id, limit, base_url, llm_base_url, timeout
+        )
+    )
+
+
+async def update_user_profile_with_new_queries(
     api_key: str,
     user_id: str,
     conversation_id: str,
@@ -502,7 +547,13 @@ def update_user_profile_with_new_queries(
     
     # Step 2: Extract queries from conversation
     logger.info(f"Step 2: Extracting queries from conversation {conversation_id}")
-    queries = extractor.extract_queries(user_id, conversation_id, limit)
+    messages_data = await extractor.get_messages(user_id, conversation_id, limit)
+    queries = []
+    if messages_data:
+        for message in messages_data.get('data', []):
+            query = message.get('query')
+            if query:
+                queries.append(query)
     result['queries'] = queries
     result['query_count'] = len(queries)
     
@@ -512,7 +563,7 @@ def update_user_profile_with_new_queries(
     
     # Step 3: Generate new summary with LLM (incorporating previous summary if exists)
     logger.info(f"Step 3: Generating new summary (with previous: {previous_summary is not None})")
-    new_summary = extractor.summarize_queries_with_llm(
+    new_summary = await extractor.summarize_queries_with_llm(
         queries=queries,
         previous_summary=previous_summary,
         llm_base_url=llm_base_url

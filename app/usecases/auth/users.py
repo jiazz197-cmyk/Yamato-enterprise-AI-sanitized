@@ -33,11 +33,11 @@ class GetUserUseCase:
     def __init__(self, user_repo: UserRepositoryPort):
         self._user_repo = user_repo
 
-    def execute(self, user_id: str) -> UserDTO:
-        user = self._user_repo.get_by_id(user_id)
+    async def execute(self, user_id: str) -> UserDTO:
+        user = await self._user_repo.get_by_id(user_id)
         if not user:
             raise NotFoundError("用户不存在")
-        return _orm_to_dto(user)
+        return _orm_to_dto(user) if isinstance(user, UserDTO) else user
 
 
 class ListUsersUseCase:
@@ -46,9 +46,9 @@ class ListUsersUseCase:
     def __init__(self, user_repo: UserRepositoryPort):
         self._user_repo = user_repo
 
-    def execute(self) -> list[UserDTO]:
-        users = self._user_repo.list_users()
-        return [_orm_to_dto(u) for u in users]
+    async def execute(self) -> list[UserDTO]:
+        users = await self._user_repo.list_users()
+        return [_orm_to_dto(u) if not isinstance(u, UserDTO) else u for u in users]
 
 
 class DeleteUserUseCase:
@@ -58,15 +58,15 @@ class DeleteUserUseCase:
         self._user_repo = user_repo
         self._current_user = current_user
 
-    def execute(self, user_id: str) -> None:
+    async def execute(self, user_id: str) -> None:
         if not self._current_user.is_admin_like():
             raise PermissionDeniedError("需要管理员权限")
 
-        target = self._user_repo.get_by_id(user_id)
+        target = await self._user_repo.get_by_id(user_id)
         if not target:
             raise NotFoundError("用户不存在")
 
-        self._user_repo.delete(user_id)
+        await self._user_repo.delete(user_id)
         logger.info(
             "User deleted: %s by %s (id=%s)",
             user_id,
@@ -81,8 +81,8 @@ class UpdateUserRoleUseCase:
     def __init__(self, user_repo: UserRepositoryPort):
         self._user_repo = user_repo
 
-    def execute(self, cmd: UpdateUserRoleCommand) -> UserDTO:
-        user = self._user_repo.update_role(cmd.target_user_id, cmd.new_role)
+    async def execute(self, cmd: UpdateUserRoleCommand) -> UserDTO:
+        user = await self._user_repo.update_role(cmd.target_user_id, cmd.new_role)
         if not user:
             raise NotFoundError("用户不存在")
 
@@ -93,4 +93,4 @@ class UpdateUserRoleUseCase:
             cmd.current_user_name,
             cmd.current_user_id,
         )
-        return _orm_to_dto(user)
+        return _orm_to_dto(user) if not isinstance(user, UserDTO) else user

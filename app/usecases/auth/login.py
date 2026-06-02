@@ -18,8 +18,8 @@ class LoginUseCase:
         self._user_repo = user_repo
         self._password_hasher = password_hasher
 
-    def execute(self, cmd: LoginCommand) -> TokenPair:
-        user = self._user_repo.get_by_username(cmd.username)
+    async def execute(self, cmd: LoginCommand) -> TokenPair:
+        user = await self._user_repo.get_by_username(cmd.username)
         if not user:
             raise AuthenticationError("用户名或密码错误")
 

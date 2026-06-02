@@ -8,11 +8,12 @@ import jwt
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.security.api_key import APIKeyHeader
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.database import SessionLocal
-from app.core.dependencies import get_db
+from app.core.database import AsyncSessionLocal
+from app.core.dependencies import get_async_db
 from app.ports.contracts.identity import CurrentUserDTO
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
@@ -47,9 +48,9 @@ def _orm_to_dto(user) -> CurrentUserDTO:
     )
 
 
-def get_current_user(
+async def get_current_user(
     token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> CurrentUserDTO:
     """解析 Bearer，返回 CurrentUserDTO；无效则 401。"""
     from app.models.orm.platform.user import User
@@ -70,13 +71,14 @@ def get_current_user(
     except (jwt.PyJWTError, ValueError):
         raise credentials_exception
 
-    user = db.query(User).filter(User.id == user_uuid).first()
+    result = await db.execute(select(User).filter(User.id == user_uuid))
+    user = result.scalars().first()
     if user is None or not user.is_active:
         raise credentials_exception
     return _orm_to_dto(user)
 
 
-def get_current_user_detached(token: str = Depends(oauth2_scheme)) -> CurrentUserDTO:
+async def get_current_user_detached(token: str = Depends(oauth2_scheme)) -> CurrentUserDTO:
     """解析 Bearer 并立即关闭 DB session；适合慢接口避免长时间占用连接。"""
     from app.models.orm.platform.user import User
 
@@ -96,15 +98,13 @@ def get_current_user_detached(token: str = Depends(oauth2_scheme)) -> CurrentUse
     except (jwt.PyJWTError, ValueError):
         raise credentials_exception
 
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.id == user_uuid).first()
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).filter(User.id == user_uuid))
+        user = result.scalars().first()
         if user is None or not user.is_active:
             raise credentials_exception
         db.expunge(user)
         return _orm_to_dto(user)
-    finally:
-        db.close()
 
 
 def _normalize_identifier(value: object) -> str:

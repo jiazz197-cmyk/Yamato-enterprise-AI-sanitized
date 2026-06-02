@@ -44,7 +44,7 @@ class ApproveQuotationTaskUseCase:
         self._task_dispatch = task_dispatch
 
     async def execute(self, cmd: ApproveQuotationTaskCommand) -> ApproveQuotationTaskResult:
-        task = self._task_repo.get_task(cmd.task_id)
+        task = await self._task_repo.get_task(cmd.task_id)
         if task is None:
             raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
 
@@ -116,7 +116,7 @@ class ApproveQuotationTaskUseCase:
                 payload.get("keywords_payload") if isinstance(payload.get("keywords_payload"), dict) else {}
             ),
         )
-        self._approval_selection.save_approved_selection(
+        await self._approval_selection.save_approved_selection(
             task_id=cmd.task_id,
             approved_partids=final_partids,
             summary_selection_items=summary_selection_items,
@@ -128,7 +128,7 @@ class ApproveQuotationTaskUseCase:
         else:
             message = f"已同意 {len(approved_partids)}/{len(available_partids)} 项，开始 U8 查询"
 
-        updated = self._task_repo.patch_task(
+        updated = await self._task_repo.patch_task(
             cmd.task_id,
             {
                 "status": "running",

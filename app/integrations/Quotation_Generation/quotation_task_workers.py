@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -14,10 +15,8 @@ from app.core.executor import CancellationToken, executor_manager
 from app.core.logging import get_logger
 from app.adapters.quotation.dispatcher import quotation_dispatcher
 from app.adapters.quotation.task_persistence import QuotationTaskPersistenceAdapter
-from app.core.storage import download_object_stream
-from app.core.quotation_task_cleanup import (
-    cleanup_task_files_by_id,
-)
+from app.core.storage import save_file_from_minio, upload_stream_to_minio
+from app.core.quotation_task_cleanup import cleanup_task_files_by_id_sync
 from app.core.task_owner_registry import task_owner_registry
 from app.adapters.quotation.deps import (
     build_quotation_workbook_use_case,
@@ -47,14 +46,10 @@ def _upload_u8_result_by_type_xlsx_to_minio(
     raw_extracted_info: Any = None,
     keywords_payload: Any = None,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Build multi-sheet xlsx from ``u8_result_by_type`` and upload via ``MinioFileStorageAdapter``.
+    """Build multi-sheet xlsx from ``u8_result_by_type`` and upload via sync MinIO.
 
     Returns ``(minio_object_path, download_filename)`` or ``(None, None)`` if skipped or upload fails.
     """
-    # Lazy imports: ``persistence`` imports this module at load time.
-    from app.adapters.quotation.persistence import MinioFileStorageAdapter
-    from app.core.exceptions import APIException
-
     try:
         workbook_uc = build_quotation_workbook_use_case()
         xlsx_export = workbook_uc.execute(
@@ -77,14 +72,15 @@ def _upload_u8_result_by_type_xlsx_to_minio(
     download_name = f"{safe_stem}_u8_by_type.xlsx"
 
     try:
-        MinioFileStorageAdapter().upload_pdf(
-            object_path=object_path,
-            file_bytes=xlsx_export.content,
+        result = upload_stream_to_minio(
+            file_stream=BytesIO(xlsx_export.content),
+            file_name=object_path,
+            file_size=len(xlsx_export.content),
             content_type=_XLSX_CONTENT_TYPE,
         )
-    except APIException as exc:
-        logger.warning("Phase2 u8_by_type xlsx MinIO upload failed task_id=%s: %s", task_id, exc)
-        return None, None
+        if isinstance(result, str) and result.startswith("Error"):
+            logger.warning("Phase2 u8_by_type xlsx MinIO upload failed task_id=%s: %s", task_id, result)
+            return None, None
     except Exception as exc:
         logger.warning(
             "Phase2 u8_by_type xlsx upload error task_id=%s: %s",
@@ -97,22 +93,10 @@ def _upload_u8_result_by_type_xlsx_to_minio(
     return object_path, download_name
 
 
-def _mark_task_failed_in_db(task_id: str, error_message: str) -> None:
-    _persistence.mark_task_failed(task_id, error_message)
-
-
-def _run_async_task_manager_call(coro: Any) -> None:
+async def _dispatch_quotation_queue_for_owner_async(owner_id: str) -> None:
+    """Async implementation: dequeue queued tasks and submit them to the executor."""
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        asyncio.run(coro)
-        return
-    loop.create_task(coro)
-
-
-def dispatch_quotation_queue_for_owner(owner_id: str) -> None:
-    try:
-        dispatch_items = quotation_dispatcher.dequeue_for_owner(owner_id)
+        dispatch_items = await quotation_dispatcher.dequeue_for_owner(owner_id)
     except Exception as exc:
         logger.error(f"调度报价任务失败 owner_id={owner_id}: {exc}", exc_info=True)
         return
@@ -129,10 +113,38 @@ def dispatch_quotation_queue_for_owner(owner_id: str) -> None:
             )
         except Exception as exc:
             logger.error(f"提交报价任务到执行器失败 {item.task_id}: {exc}", exc_info=True)
-            _mark_task_failed_in_db(item.task_id, f"执行器提交失败: {exc}")
-            _run_async_task_manager_call(
-                task_manager.fail_task(item.task_id, str(exc), "任务提交执行器失败")
-            )
+            # Directly await – we are already in an async context.
+            try:
+                await _persistence.mark_task_failed(item.task_id, f"执行器提交失败: {exc}")
+            except Exception as db_exc:
+                logger.error(f"标记任务失败状态异常 {item.task_id}: {db_exc}")
+            try:
+                await task_manager.fail_task(item.task_id, str(exc), "任务提交执行器失败")
+            except Exception as tm_exc:
+                logger.error(f"TaskManager 标记失败异常 {item.task_id}: {tm_exc}")
+
+
+def dispatch_quotation_queue_for_owner(owner_id: str) -> None:
+    """Schedule queued tasks for the given owner.
+
+    Event-loop-safe: when called from within a running event loop (e.g. FastAPI
+    handler or lifespan), the async dispatch is scheduled via ``create_task()``
+    to avoid the ``RuntimeError: run_async() cannot be used inside a running
+    event loop`` that ``run_async()`` would raise.  When no loop is running
+    (e.g. worker-thread done_callback), ``asyncio.run()`` is used directly.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None:
+        # Called from within a running event loop – schedule without blocking.
+        loop.create_task(_dispatch_quotation_queue_for_owner_async(owner_id))
+        return
+
+    # No event loop running – safe to use asyncio.run().
+    asyncio.run(_dispatch_quotation_queue_for_owner_async(owner_id))
 
 
 # Keep progress messages compact; detailed query parameters belong in logs, not task cards.
@@ -184,10 +196,6 @@ def _u8_by_type_summary(value: Any) -> Dict[str, Any]:
     }
 
 
-def _patch_task_fields(task_id: str, updates: Dict[str, Any]) -> None:
-    _persistence.patch_task_fields(task_id, updates)
-
-
 def _close_thread_tm(loop: asyncio.AbstractEventLoop, thread_tm: TaskManager) -> None:
     try:
         if hasattr(thread_tm, "storage") and hasattr(thread_tm.storage, "redis_client"):
@@ -218,7 +226,7 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
     uploaded_file_name = ""
 
     try:
-        task_data = _persistence.get_task_payload(task_id)
+        task_data = _persistence.get_task_payload_sync(task_id)
         if not task_data:
             return {"status": "error", "message": f"任务不存在: {task_id}"}
         existing_payload = dict(task_data.get("result_payload", {}))
@@ -230,7 +238,7 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
         def update_progress(progress: int, message: str) -> None:
             safe_message = _clamp_message(message)
             safe_progress = max(0, min(100, progress))
-            _patch_task_fields(
+            _persistence.patch_task_fields_sync(
                 task_id,
                 {
                     "progress": safe_progress,
@@ -246,8 +254,11 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
             raise QuotationPipelineCancelledError("任务在启动前被取消")
 
         update_progress(5, "正在下载上传PDF")
-        with download_object_stream(uploaded_file_minio_path) as response:
-            pdf_bytes = response.read()
+        temp_pdf = save_file_from_minio(uploaded_file_minio_path)
+        try:
+            pdf_bytes = temp_pdf.read_bytes()
+        finally:
+            temp_pdf.unlink(missing_ok=True)
 
         phase1_uc = build_execute_quotation_phase1_use_case()
         phase1_result = phase1_uc.execute(
@@ -264,7 +275,7 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
 
         if not phase1_result.pdm_partids:
             error_message = "PDM 结果为空，无法继续 U8 查询"
-            _patch_task_fields(
+            _persistence.patch_task_fields_sync(
                 task_id,
                 {
                     "status": QuotationTaskStatus.failed.value,
@@ -292,7 +303,7 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
             pdm_to_u8_mappings[:8],
         )
 
-        _patch_task_fields(
+        _persistence.patch_task_fields_sync(
             task_id,
             {
                 "status": QuotationTaskStatus.awaiting_approval.value,
@@ -314,9 +325,9 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
         return {"status": "awaiting_approval", "task_id": task_id}
 
     except QuotationPipelineCancelledError as exc:
-        cleanup_result = cleanup_task_files_by_id(task_id)
+        cleanup_result = cleanup_task_files_by_id_sync(task_id)
         existing_payload["cleanup"] = cleanup_result
-        _patch_task_fields(
+        _persistence.patch_task_fields_sync(
             task_id,
             {
                 "status": QuotationTaskStatus.cancelled.value,
@@ -331,9 +342,9 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
 
     except Exception as exc:
         logger.error(f"报价任务 Phase1 执行失败 {task_id}: {exc}", exc_info=True)
-        cleanup_result = cleanup_task_files_by_id(task_id)
+        cleanup_result = cleanup_task_files_by_id_sync(task_id)
         existing_payload["cleanup"] = cleanup_result
-        _patch_task_fields(
+        _persistence.patch_task_fields_sync(
             task_id,
             {
                 "status": QuotationTaskStatus.failed.value,
@@ -361,7 +372,7 @@ def process_quotation_task_phase2_background(
     uploaded_file_name = ""
 
     try:
-        task_data = _persistence.get_task_payload(task_id)
+        task_data = _persistence.get_task_payload_sync(task_id)
         if not task_data:
             return {"status": "error", "message": f"任务不存在: {task_id}"}
         existing_payload = dict(task_data.get("result_payload", {}))
@@ -372,7 +383,7 @@ def process_quotation_task_phase2_background(
         def update_progress(progress: int, message: str) -> None:
             safe_message = _clamp_message(message)
             safe_progress = max(0, min(100, progress))
-            _patch_task_fields(
+            _persistence.patch_task_fields_sync(
                 task_id,
                 {
                     "progress": safe_progress,
@@ -426,7 +437,7 @@ def process_quotation_task_phase2_background(
             )
         )
 
-        cleanup_result = cleanup_task_files_by_id(task_id)
+        cleanup_result = cleanup_task_files_by_id_sync(task_id)
 
         u8_total = None
         u8_items = None
@@ -468,7 +479,7 @@ def process_quotation_task_phase2_background(
             final_payload["u8_result_by_type_xlsx_filename"] = xlsx_name
 
         completed_message = "任务完成（U8 BOM Inventory 已返回）"
-        _patch_task_fields(
+        _persistence.patch_task_fields_sync(
             task_id,
             {
                 "status": QuotationTaskStatus.completed.value,
@@ -484,9 +495,9 @@ def process_quotation_task_phase2_background(
         return {"status": "success", "task_id": task_id}
 
     except QuotationPipelineCancelledError as exc:
-        cleanup_result = cleanup_task_files_by_id(task_id)
+        cleanup_result = cleanup_task_files_by_id_sync(task_id)
         existing_payload["cleanup"] = cleanup_result
-        _patch_task_fields(
+        _persistence.patch_task_fields_sync(
             task_id,
             {
                 "status": QuotationTaskStatus.cancelled.value,
@@ -501,7 +512,7 @@ def process_quotation_task_phase2_background(
 
     except Exception as exc:
         logger.error(f"报价任务 Phase2 执行失败 {task_id}: {exc}", exc_info=True)
-        _patch_task_fields(
+        _persistence.patch_task_fields_sync(
             task_id,
             {
                 "status": QuotationTaskStatus.failed.value,
@@ -518,12 +529,8 @@ def process_quotation_task_phase2_background(
         _close_thread_tm(loop, thread_tm)
 
 
-def dispatch_quotation_phase2(task_id: str, owner_id: str) -> None:
-    """Submit the Phase 2 worker. Must be called after the DB status flip.
-
-    The executor retains Phase 1's Future under the same task_id for history,
-    so we evict it first to allow resubmitting with the same business id.
-    """
+async def _dispatch_quotation_phase2_async(task_id: str, owner_id: str) -> None:
+    """Async implementation: submit Phase 2 worker to executor."""
     try:
         executor_manager.forget_task(task_id)
         future = executor_manager.submit_task(
@@ -535,8 +542,36 @@ def dispatch_quotation_phase2(task_id: str, owner_id: str) -> None:
         future.add_done_callback(lambda _, oid=owner_id: dispatch_quotation_queue_for_owner(oid))
     except Exception as exc:
         logger.error(f"Phase2 提交执行器失败 {task_id}: {exc}", exc_info=True)
-        _mark_task_failed_in_db(task_id, f"执行器提交失败: {exc}")
-        _run_async_task_manager_call(
-            task_manager.fail_task(task_id, str(exc), "Phase2 提交执行器失败")
-        )
+        # Directly await – we are in an async context.  The sync bridge
+        # helpers would deadlock if called from the event loop thread.
+        try:
+            await _persistence.mark_task_failed(task_id, f"执行器提交失败: {exc}")
+        except Exception as db_exc:
+            logger.error(f"Phase2 标记任务失败状态异常 {task_id}: {db_exc}")
+        try:
+            await task_manager.fail_task(task_id, str(exc), "Phase2 提交执行器失败")
+        except Exception as tm_exc:
+            logger.error(f"Phase2 TaskManager 标记失败异常 {task_id}: {tm_exc}")
+
+
+def dispatch_quotation_phase2(task_id: str, owner_id: str) -> None:
+    """Submit the Phase 2 worker. Must be called after the DB status flip.
+
+    The executor retains Phase 1's Future under the same task_id for history,
+    so we evict it first to allow resubmitting with the same business id.
+
+    Event-loop-safe: when called from within a running event loop (e.g. FastAPI
+    handler), the async dispatch is scheduled via ``create_task()``; otherwise
+    ``asyncio.run()`` is used directly.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None:
+        loop.create_task(_dispatch_quotation_phase2_async(task_id, owner_id))
+        return
+
+    asyncio.run(_dispatch_quotation_phase2_async(task_id, owner_id))
 

@@ -31,7 +31,7 @@ class TempObjectUploadResult:
 class FileStoragePort(Protocol):
     """Object storage abstraction for quotation files."""
 
-    def upload_pdf(
+    async def upload_pdf(
         self,
         *,
         object_path: str,
@@ -44,7 +44,7 @@ class FileStoragePort(Protocol):
 class QuotationTaskRepoPort(Protocol):
     """Persistence boundary for quotation task + file metadata."""
 
-    def create_file_record(
+    async def create_file_record(
         self,
         *,
         file_name: str,
@@ -56,7 +56,7 @@ class QuotationTaskRepoPort(Protocol):
     ) -> int:
         ...
 
-    def create_task(
+    async def create_task(
         self,
         *,
         task_id: str,
@@ -73,26 +73,26 @@ class QuotationTaskRepoPort(Protocol):
     ) -> QuotationTaskSnapshot:
         ...
 
-    def get_task(self, task_id: str) -> Optional[QuotationTaskSnapshot]:
+    async def get_task(self, task_id: str) -> Optional[QuotationTaskSnapshot]:
         ...
 
-    def patch_task(self, task_id: str, updates: Dict[str, Any]) -> QuotationTaskSnapshot:
+    async def patch_task(self, task_id: str, updates: Dict[str, Any]) -> QuotationTaskSnapshot:
         ...
 
-    def count_owner_queued_before(self, owner_id: str, created_at: datetime) -> int:
+    async def count_owner_queued_before(self, owner_id: str, created_at: datetime) -> int:
         ...
 
-    def cleanup_task_files(self, task_id: str) -> Dict[str, Any]:
+    async def cleanup_task_files(self, task_id: str) -> Dict[str, Any]:
         ...
 
-    def delete_task(self, task_id: str) -> None:
+    async def delete_task(self, task_id: str) -> None:
         ...
 
 
 class QuotationApprovalSelectionPort(Protocol):
     """Persistence boundary for approval-driven summary selection snapshots."""
 
-    def save_approved_selection(
+    async def save_approved_selection(
         self,
         *,
         task_id: str,
@@ -101,7 +101,7 @@ class QuotationApprovalSelectionPort(Protocol):
     ) -> None:
         ...
 
-    def load_summary_selection_items(self, task_id: str) -> list[QuotationSummarySelectionItem]:
+    async def load_summary_selection_items(self, task_id: str) -> list[QuotationSummarySelectionItem]:
         ...
 
 
@@ -168,7 +168,7 @@ class DispatchCandidate:
 class QuotationDispatchPort(Protocol):
     """Abstraction for dispatching queued quotation tasks to running state."""
 
-    def dequeue_for_owner(self, owner_id: str) -> list[DispatchCandidate]:
+    async def dequeue_for_owner(self, owner_id: str) -> list[DispatchCandidate]:
         ...
 
 

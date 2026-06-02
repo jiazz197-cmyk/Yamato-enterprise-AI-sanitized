@@ -31,7 +31,7 @@ logs/
 # Local test exports (e.g. U8 CSV adapter)
 tests/output/
 
-.kilo
-.github
-.cursor
-.claude
+.kilo/
+.github/
+.cursor/
+.claude/

@@ -10,25 +10,24 @@ from io import BytesIO
 from pathlib import Path
 from typing import List
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.executor import CancellationToken
 from app.core.logging import get_logger
-from app.core.storage import (
-    MINIO_BUCKET_NAME,
-    download_object_stream,
-    get_minio_client,
-    upload_stream_to_minio,
+from app.core.async_storage import (
+    async_stat_object,
+    async_upload_stream_to_minio,
 )
 from app.models.orm.file_resource import FileResource
 
 logger = get_logger("document_processing")
 
 
-def upload_and_register_documents(
-    db: Session, files, normalized_uploader: str
+async def upload_and_register_documents(
+    db: AsyncSession, files, normalized_uploader: str
 ) -> List[int]:
     """
     Stream uploads to MinIO under documents/ and persist FileResource rows.
@@ -47,14 +46,13 @@ def upload_and_register_documents(
             minio_path = f"documents/{unique_name}"
             file_size = getattr(file, "size", None) or -1
             content_type = file.content_type or "application/octet-stream"
-            result = upload_stream_to_minio(file.file, minio_path, file_size, content_type)
+            result = await async_upload_stream_to_minio(file.file, minio_path, file_size, content_type)
             if result.startswith("Error"):
                 logger.error("上传文件失败: %s - %s", file.filename, result)
                 continue
             if file_size == -1:
                 try:
-                    client = get_minio_client()
-                    stat = client.stat_object(MINIO_BUCKET_NAME, minio_path)
+                    stat = await async_stat_object(minio_path)
                     file_size = stat.size
                 except Exception:
                     file_size = 0
@@ -67,13 +65,13 @@ def upload_and_register_documents(
                 uploader=normalized_uploader,
             )
             db.add(file_record)
-            db.commit()
-            db.refresh(file_record)
+            await db.commit()
+            await db.refresh(file_record)
             file_ids.append(file_record.id)
             logger.info("文件上传成功: %s (ID: %s)", file.filename, file_record.id)
         except Exception as e:
             logger.error("上传文件失败 %s: %s", getattr(file, "filename", ""), e, exc_info=True)
-            db.rollback()
+            await db.rollback()
     return file_ids
 
 
@@ -179,9 +177,12 @@ def process_documents_background(
                     )
                 )
                 try:
-                    with download_object_stream(file_record.minio_object_path) as response:
-                        stream = BytesIO(response.read())
-                        stream.name = file_record.file_name
+                    from app.core.storage import save_file_from_minio
+
+                    temp_path = save_file_from_minio(file_record.minio_object_path)
+                    stream = BytesIO(temp_path.read_bytes())
+                    stream.name = file_record.file_name
+                    temp_path.unlink(missing_ok=True)
                     downloaded_count += 1
                 except Exception as e:
                     logger.error(

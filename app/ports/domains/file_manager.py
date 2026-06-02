@@ -9,7 +9,7 @@ from app.ports.dto.files import FileRecordDTO
 
 
 class FileManagerPort(Protocol):
-    def upload_stream_persist(
+    async def upload_stream_persist(
         self,
         *,
         file_stream: Any,
@@ -21,10 +21,10 @@ class FileManagerPort(Protocol):
     ) -> FileRecordDTO:
         ...
 
-    def get_file_or_not_found(self, file_id: int) -> FileRecordDTO:
+    async def get_file_or_not_found(self, file_id: int) -> FileRecordDTO:
         ...
 
-    def list_files_page(
+    async def list_files_page(
         self,
         *,
         current_user: CurrentUserPort,
@@ -34,7 +34,7 @@ class FileManagerPort(Protocol):
     ) -> Tuple[int, List[FileRecordDTO]]:
         ...
 
-    def search_files_page(
+    async def search_files_page(
         self,
         *,
         current_user: CurrentUserPort,
@@ -44,8 +44,8 @@ class FileManagerPort(Protocol):
     ) -> Tuple[int, List[FileRecordDTO]]:
         ...
 
-    def delete_file_and_object(self, file_record: FileRecordDTO) -> None:
+    async def delete_file_and_object(self, file_record: FileRecordDTO) -> None:
         ...
 
-    def batch_delete_ids(self, file_ids: List[int]) -> Tuple[int, int, List[int]]:
+    async def batch_delete_ids(self, file_ids: List[int]) -> Tuple[int, int, List[int]]:
         ...

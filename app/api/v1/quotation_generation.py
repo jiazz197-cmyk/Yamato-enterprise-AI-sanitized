@@ -12,7 +12,8 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
 from app.adapters.quotation import (
@@ -25,14 +26,13 @@ from app.adapters.quotation.purge import QuotationTaskPurgeAdapter
 from app.adapters.quotation.retention import QuotationTaskRetentionAdapter
 from app.adapters.tasking import TaskManagerStateAdapter, ThreadPoolTaskExecutionAdapter
 from app.core.config import settings
-from app.core.dependencies import get_db
+from app.core.dependencies import get_async_db
 from app.core.logging import get_logger
 from app.core.security import get_current_user
-from app.core.storage import (
-    MINIO_BUCKET_NAME,
+from app.core.async_storage import (
     STREAM_CHUNK_SIZE,
-    download_object_stream,
-    get_minio_client,
+    async_download_object_stream,
+    async_stat_object,
 )
 from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER, ROLE_ADMIN
 from app.models.orm.quotation_task import QuotationTask
@@ -274,11 +274,12 @@ def _serialize_task(
     )
 
 
-def _get_task_or_404(db: Session, task_id: str, *, defer_result: bool = False) -> QuotationTask:
-    query = db.query(QuotationTask)
+async def _get_task_or_404(db: AsyncSession, task_id: str, *, defer_result: bool = False) -> QuotationTask:
+    stmt = select(QuotationTask)
     if defer_result:
-        query = query.options(defer(QuotationTask.result_payload))
-    task = query.filter(QuotationTask.task_id == task_id).first()
+        stmt = stmt.options(defer(QuotationTask.result_payload))
+    result = await db.execute(stmt.where(QuotationTask.task_id == task_id))
+    task = result.scalars().first()
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     return task
@@ -296,7 +297,7 @@ async def create_quotation_task(
     request: Request,
     file: UploadFile = File(..., description="仅支持 PDF 文件"),
     task_name: Optional[str] = Form(None, description="任务展示名称（可选）"),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(get_current_user),
 ) -> QuotationTaskSubmitResponse:
     file_data = await file.read()
@@ -336,27 +337,29 @@ async def list_quotation_tasks(
     limit: int = Query(100, ge=1, le=500),
     full_result: bool = Query(False, description="是否返回完整任务结果；默认仅返回摘要，避免大 U8 结果卡住前端"),
     active_only: bool = Query(False, description="仅返回活动任务(queued/running/awaiting_approval)，不含大结果"),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(get_current_user),
 ) -> QuotationTaskListResponse:
     started_at = time.perf_counter()
-    query = db.query(QuotationTask)
+    stmt = select(QuotationTask)
     if not full_result and not active_only:
-        query = query.options(defer(QuotationTask.result_payload))
+        stmt = stmt.options(defer(QuotationTask.result_payload))
     elif active_only:
-        query = query.options(defer(QuotationTask.result_payload))
+        stmt = stmt.options(defer(QuotationTask.result_payload))
     if not _is_admin_like(current_user):
-        query = query.filter(QuotationTask.owner_id == str(current_user.id))
+        stmt = stmt.where(QuotationTask.owner_id == str(current_user.id))
     elif owner_username:
-        query = query.filter(QuotationTask.owner_username == owner_username)
+        stmt = stmt.where(QuotationTask.owner_username == owner_username)
     if active_only:
-        query = query.filter(
+        stmt = stmt.where(
             QuotationTask.status.in_(["queued", "running", "awaiting_approval"])
         )
     elif status_filter:
-        query = query.filter(QuotationTask.status == status_filter)
+        stmt = stmt.where(QuotationTask.status == status_filter)
+    stmt = stmt.order_by(QuotationTask.created_at.desc()).limit(limit)
     query_started_at = time.perf_counter()
-    tasks = query.order_by(QuotationTask.created_at.desc()).limit(limit).all()
+    result = await db.execute(stmt)
+    tasks = list(result.scalars().all())
     query_done_at = time.perf_counter()
     status_counts = _count_statuses(tasks)
     included_result_payload_count = sum(
@@ -404,10 +407,10 @@ async def list_quotation_tasks(
 async def get_quotation_task(
     task_id: str,
     full_result: bool = Query(False, description="是否返回完整任务结果；默认仅返回摘要，避免大 U8 结果卡住前端"),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(get_current_user),
 ) -> QuotationTaskItemResponse:
-    task = _get_task_or_404(db, task_id, defer_result=not full_result)
+    task = await _get_task_or_404(db, task_id, defer_result=not full_result)
     _check_task_permission(task, current_user)
     return _serialize_task(
         task,
@@ -419,10 +422,10 @@ async def get_quotation_task(
 @router.post("/tasks/{task_id}/cancel", response_model=CancelTaskResponse, summary="取消报价任务")
 async def cancel_quotation_task(
     task_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(get_current_user),
 ) -> CancelTaskResponse:
-    task = _get_task_or_404(db, task_id)
+    task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
     usecase = CancelQuotationTaskUseCase(
         task_repo=SqlAlchemyQuotationTaskRepoAdapter(db),
@@ -441,10 +444,10 @@ async def cancel_quotation_task(
 @router.delete("/tasks/{task_id}", response_model=DeleteTaskResponse, summary="删除已结束报价任务")
 async def delete_quotation_task(
     task_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(get_current_user),
 ) -> DeleteTaskResponse:
-    task = _get_task_or_404(db, task_id)
+    task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
     usecase = DeleteQuotationTaskUseCase(
         task_repo=SqlAlchemyQuotationTaskRepoAdapter(db),
@@ -467,10 +470,10 @@ async def delete_quotation_task(
 async def approve_quotation_task(
     task_id: str,
     request: ApproveTaskRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(get_current_user),
 ) -> ApproveTaskResponse:
-    task = _get_task_or_404(db, task_id)
+    task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
     usecase = ApproveQuotationTaskUseCase(
         task_repo=SqlAlchemyQuotationTaskRepoAdapter(db),
@@ -497,23 +500,28 @@ async def approve_quotation_task(
 @router.get("/tasks/{task_id}/file", summary="查看或下载任务上传文件")
 async def get_quotation_task_file(
     task_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
-    task = _get_task_or_404(db, task_id)
+    task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
     try:
-        client = get_minio_client()
-        client.stat_object(MINIO_BUCKET_NAME, task.uploaded_file_minio_path)
+        await async_stat_object(task.uploaded_file_minio_path)
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_410_GONE, detail="文件已清理，当前不可查看"
         ) from None
 
-    def stream_file():
-        with download_object_stream(task.uploaded_file_minio_path) as response:
-            for chunk in response.stream(STREAM_CHUNK_SIZE):
+    async def stream_file():
+        response = await async_download_object_stream(task.uploaded_file_minio_path)
+        try:
+            async for chunk in response.content.iter_chunked(STREAM_CHUNK_SIZE):
                 yield chunk
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
 
     return StreamingResponse(
         stream_file(),
@@ -528,10 +536,10 @@ async def get_quotation_task_file(
 )
 async def get_quotation_task_u8_by_type_workbook(
     task_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(get_current_user),
 ):
-    task = _get_task_or_404(db, task_id)
+    task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
     payload = task.result_payload if isinstance(task.result_payload, dict) else {}
     minio_path = payload.get("u8_result_by_type_xlsx_minio_path")
@@ -542,18 +550,23 @@ async def get_quotation_task_u8_by_type_workbook(
             detail="U8 分组 Excel 未生成或不可用",
         )
     try:
-        client = get_minio_client()
-        client.stat_object(MINIO_BUCKET_NAME, minio_path)
+        await async_stat_object(minio_path)
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail="Excel 已不可用",
         ) from None
 
-    def stream_xlsx():
-        with download_object_stream(minio_path) as response:
-            for chunk in response.stream(STREAM_CHUNK_SIZE):
+    async def stream_xlsx():
+        response = await async_download_object_stream(minio_path)
+        try:
+            async for chunk in response.content.iter_chunked(STREAM_CHUNK_SIZE):
                 yield chunk
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
 
     safe_name = str(filename).replace('"', "")
     return StreamingResponse(

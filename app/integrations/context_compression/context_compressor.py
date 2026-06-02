@@ -114,11 +114,10 @@ class ContextCompressor:
         
         self.extractor = MessageExtractor(api_key=self.dify_api_key)
         
-    def _fetch_and_split_dialogues(
+    async def _fetch_and_split_dialogues(
         self, user_id: str, conversation_id: str, _n_recent: int = 5
     ) -> Dict[str, List[str]]:
         """GET /conversations/{id}/variables，解析 long_memory、recent_dialogs 两个变量。"""
-        import requests
         import ast
 
         cid = validate_conversation_id(str(conversation_id))
@@ -128,14 +127,11 @@ class ContextCompressor:
         
         try:
             logger.info(f"Fetching conversation variables from {url} with params: {params}")
-            response = requests.get(
-                url,
-                headers=self.extractor.headers,
-                params=params,
-                timeout=self.extractor.timeout
+            vars_data = await self.extractor.fetch_conversation_variables(
+                url, params=params
             )
-            response.raise_for_status()
-            vars_data = response.json()
+            if vars_data is None:
+                return {"recent": [], "older": []}
         except Exception as e:
             logger.error(f"Failed to fetch conversation variables: {str(e)}")
             return {"recent": [], "older": []}
@@ -171,14 +167,14 @@ class ContextCompressor:
             "older": older
         }
 
-    def compress(self, context_data: Dict[str, Any]) -> str:
+    async def compress(self, context_data: Dict[str, Any]) -> str:
         """有 user_id+conversation_id 则拉 Dify；否则用入参里的 recent/older 列表。返回去掉 think 标签后的文本。"""
         user_id = context_data.get("user_id")
         conversation_id = context_data.get("conversation_id")
         n_recent = _clamp_n_recent(context_data.get("n_recent", 5))
 
         if user_id and conversation_id:
-            dialogues = self._fetch_and_split_dialogues(
+            dialogues = await self._fetch_and_split_dialogues(
                 str(user_id), str(conversation_id), n_recent
             )
             recent_dialogues = dialogues["recent"][-n_recent:]
@@ -245,7 +241,7 @@ class ContextCompressor:
 
         try:
             logger.info(f"Starting context compression for user {user_id}...")
-            raw_result = chain.invoke(payload)
+            raw_result = await chain.ainvoke(payload)
         except Exception as e:
             import re
 
@@ -289,7 +285,7 @@ class ContextCompressor:
                 max_tokens=retry_max_tokens
             )
             retry_chain = prompt | retry_llm | StrOutputParser()
-            raw_result = retry_chain.invoke(payload)
+            raw_result = await retry_chain.ainvoke(payload)
 
         import re
         processed_result = re.sub(r'<think>.*?</think>', '', raw_result, flags=re.DOTALL | re.IGNORECASE).strip()
@@ -302,7 +298,7 @@ class ContextCompressor:
         logger.info("Context compression completed successfully.")
         return processed_result
 
-def compress_context(context_data: Dict[str, Any]) -> str:
+async def compress_context(context_data: Dict[str, Any]) -> str:
     """默认参数 new ContextCompressor().compress。"""
     compressor = ContextCompressor()
-    return compressor.compress(context_data)
+    return await compressor.compress(context_data)

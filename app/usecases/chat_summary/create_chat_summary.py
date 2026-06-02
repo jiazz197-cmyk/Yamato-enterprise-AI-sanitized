@@ -22,12 +22,12 @@ class CreateChatSummaryUseCase:
         self._user_lookup = user_lookup
         self._chat_archive = chat_archive
 
-    def execute(self, cmd: CreateChatSummaryCommand) -> ChatSummaryResult:
-        effective_user_id = self._user_lookup.resolve_effective_user_id(
+    async def execute(self, cmd: CreateChatSummaryCommand) -> ChatSummaryResult:
+        effective_user_id = await self._user_lookup.resolve_effective_user_id(
             requested_user_id=cmd.user_id,
             current_user=cmd.current_user,
         )
-        return self._chat_archive.update_user_profile(
+        return await self._chat_archive.update_user_profile(
             user_id=effective_user_id,
             conversation_id=cmd.conversation_id,
             limit=cmd.limit,

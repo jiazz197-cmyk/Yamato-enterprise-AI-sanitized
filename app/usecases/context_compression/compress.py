@@ -31,7 +31,7 @@ class CompressContextUseCase:
     def __init__(self, compressor: ContextCompressorPort):
         self._compressor = compressor
 
-    def execute(self, cmd: CompressContextCommand) -> CompressContextResult:
+    async def execute(self, cmd: CompressContextCommand) -> CompressContextResult:
         decoded_user_id = unquote(cmd.user_id).strip()
         logger.info(
             "Received context compression request for conversation %s from user %s",
@@ -49,5 +49,5 @@ class CompressContextUseCase:
             "conversation_id": cmd.conversation_id,
             "n_recent": cmd.n_recent,
         }
-        compressed = self._compressor.compress(context_data)
+        compressed = await self._compressor.compress(context_data)
         return CompressContextResult(compressed=compressed)

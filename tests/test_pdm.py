@@ -1,4 +1,5 @@
 """Debug script: 查询 quotation_tasks 表中的 keywords_payload"""
+import asyncio
 import sys
 import os
 
@@ -6,22 +7,25 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
-from app.core.database import SessionLocal
+from sqlalchemy import select
+
+from app.core.database import AsyncSessionLocal
 from app.models.orm.quotation_task import QuotationTask
 
 
-def main():
-    db = SessionLocal()
-    try:
-        # 查询 id=214 的任务
-        task = db.query(QuotationTask).filter(QuotationTask.id == 214).first()
+async def main():
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(QuotationTask).where(QuotationTask.id == 214))
+        task = result.scalars().first()
 
         if not task:
             print("❌ Task id=214 not found")
 
-            # 尝试查找最近的任务
             print("\n最近的 5 个任务:")
-            recent = db.query(QuotationTask).order_by(QuotationTask.id.desc()).limit(5).all()
+            recent_result = await db.execute(
+                select(QuotationTask).order_by(QuotationTask.id.desc()).limit(5)
+            )
+            recent = recent_result.scalars().all()
             for t in recent:
                 print(f"  id={t.id}, task_id={t.task_id}, status={t.status}")
             return
@@ -41,7 +45,6 @@ def main():
         print("\n📋 result_payload keys:")
         print(list(task.result_payload.keys()))
 
-        # 提取 keywords_payload
         keywords_payload = task.result_payload.get("keywords_payload")
 
         if not keywords_payload:
@@ -51,13 +54,11 @@ def main():
         print("\n✅ keywords_payload:")
         print(json.dumps(keywords_payload, ensure_ascii=False, indent=2))
 
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
-    finally:
-        db.close()
-
-
-if __name__ == "__main__":
-    main()

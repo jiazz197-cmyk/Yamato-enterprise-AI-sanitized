@@ -6,14 +6,14 @@ as part of Clean Architecture Phase 1 refactoring.
 
 from __future__ import annotations
 
-import threading
+import asyncio
 from datetime import datetime
 
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.database import SessionLocal
+from app.core.database import AsyncSessionLocal
 from app.core.logging import get_logger
 from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
 from app.ports.domains.quotation import DispatchCandidate, QuotationDispatchPort
@@ -31,39 +31,34 @@ class QuotationDispatcherAdapter(QuotationDispatchPort):
     def __init__(self, max_running_per_owner: int = 2, max_running_per_ip: int = 2):
         self._max_running_per_owner = max_running_per_owner
         self._max_running_per_ip = max_running_per_ip
-        self._lock = threading.Lock()
+        self._lock: asyncio.Lock | None = None
 
-    def dequeue_for_owner(self, owner_id: str) -> list[DispatchCandidate]:
-        """Move queued tasks to running state when owner/IP has free slots."""
-        db: Session = SessionLocal()
-        try:
-            return self._dequeue_for_owner(db, owner_id)
-        finally:
-            db.close()
-
-    def _dequeue_for_owner(self, db: Session, owner_id: str) -> list[DispatchCandidate]:
-        with self._lock:
-            running_count = (
-                db.query(QuotationTask)
-                .filter(
+    async def _dequeue_for_owner(self, db: AsyncSession, owner_id: str) -> list[DispatchCandidate]:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            running_result = await db.execute(
+                select(func.count())
+                .select_from(QuotationTask)
+                .where(
                     QuotationTask.owner_id == owner_id,
                     QuotationTask.status == QuotationTaskStatus.running.value,
                 )
-                .count()
             )
+            running_count = int(running_result.scalar_one())
             owner_available = max(self._max_running_per_owner - running_count, 0)
             if owner_available <= 0:
                 return []
 
-            queued_tasks = (
-                db.query(QuotationTask)
-                .filter(
+            queued_result = await db.execute(
+                select(QuotationTask)
+                .where(
                     QuotationTask.owner_id == owner_id,
                     QuotationTask.status == QuotationTaskStatus.queued.value,
                 )
                 .order_by(QuotationTask.created_at.asc())
-                .all()
             )
+            queued_tasks = list(queued_result.scalars().all())
             if not queued_tasks:
                 return []
 
@@ -75,15 +70,15 @@ class QuotationDispatcherAdapter(QuotationDispatchPort):
 
             running_by_ip: dict[str, int] = {}
             if candidate_ips:
-                ip_rows = (
-                    db.query(QuotationTask.owner_ip, func.count(QuotationTask.id))
-                    .filter(
+                ip_result = await db.execute(
+                    select(QuotationTask.owner_ip, func.count(QuotationTask.id))
+                    .where(
                         QuotationTask.status == QuotationTaskStatus.running.value,
                         QuotationTask.owner_ip.in_(candidate_ips),
                     )
                     .group_by(QuotationTask.owner_ip)
-                    .all()
                 )
+                ip_rows = ip_result.all()
                 running_by_ip = {
                     str(owner_ip).strip(): int(count)
                     for owner_ip, count in ip_rows
@@ -122,9 +117,14 @@ class QuotationDispatcherAdapter(QuotationDispatchPort):
                 task.progress = max(task.progress, 1)
                 task.message = "任务已开始处理"
 
-            db.commit()
+            await db.commit()
 
             return [DispatchCandidate(task_id=task.task_id, owner_id=task.owner_id) for task in selected_tasks]
+
+    async def dequeue_for_owner(self, owner_id: str) -> list[DispatchCandidate]:
+        """Move queued tasks to running state when owner/IP has free slots."""
+        async with AsyncSessionLocal() as db:
+            return await self._dequeue_for_owner(db, owner_id)
 
 
 quotation_dispatcher = QuotationDispatcherAdapter(

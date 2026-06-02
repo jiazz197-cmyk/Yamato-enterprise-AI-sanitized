@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import SessionLocal
+from app.core.database import AsyncSessionLocal
 from app.core.executor import executor_manager
 from app.core.task_manager import task_manager
 from app.core.task_owner_registry import task_owner_registry
-from app.core.quotation_task_cleanup import safe_cleanup_quotation_task_files
+from app.core.quotation_task_cleanup import safe_cleanup_quotation_task_files_async
 from app.models.orm.quotation_task import QuotationTask
 from app.ports.domains.quotation import QuotationTaskPurgePort
 
@@ -21,8 +22,13 @@ _RETENTION_PURGE_STATUSES = _TERMINAL_STATUSES | {"awaiting_approval"}
 class QuotationTaskPurgeAdapter(QuotationTaskPurgePort):
     """Encapsulates SQLAlchemy queries for quotation task purging."""
 
-    def _purge_with_session(self, session: Session, task_id: str, *, allow_non_terminal: bool) -> Dict[str, Any]:
-        task = session.query(QuotationTask).filter(QuotationTask.task_id == task_id).first()
+    async def _purge_with_session(
+        self, session: AsyncSession, task_id: str, *, allow_non_terminal: bool
+    ) -> Dict[str, Any]:
+        result = await session.execute(
+            select(QuotationTask).where(QuotationTask.task_id == task_id)
+        )
+        task = result.scalars().first()
         if task is None:
             return {"purged": False, "reason": "not_found", "task_id": task_id}
 
@@ -35,7 +41,7 @@ class QuotationTaskPurgeAdapter(QuotationTaskPurgePort):
                 "status": task.status,
             }
 
-        cleanup_result = safe_cleanup_quotation_task_files(session, task, task_id)
+        cleanup_result = await safe_cleanup_quotation_task_files_async(session, task, task_id)
         task_owner_registry.forget(task_id)
         executor_manager.forget_task(task_id)
 
@@ -45,8 +51,8 @@ class QuotationTaskPurgeAdapter(QuotationTaskPurgePort):
         except Exception:
             pass
 
-        session.delete(task)
-        session.commit()
+        await session.delete(task)
+        await session.commit()
         return {
             "purged": True,
             "task_id": task_id,
@@ -54,11 +60,11 @@ class QuotationTaskPurgeAdapter(QuotationTaskPurgePort):
         }
 
     async def purge_task(self, task_id: str, *, allow_non_terminal: bool = False) -> Dict[str, Any]:
-        db: Session = SessionLocal()
-        try:
-            return self._purge_with_session(db, task_id, allow_non_terminal=allow_non_terminal)
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+        async with AsyncSessionLocal() as db:
+            try:
+                return await self._purge_with_session(
+                    db, task_id, allow_non_terminal=allow_non_terminal
+                )
+            except Exception:
+                await db.rollback()
+                raise

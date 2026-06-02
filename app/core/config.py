@@ -186,6 +186,17 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
             f"{self.POSTGRES_DB}"
         )
 
+    @property
+    def ASYNC_SQLALCHEMY_DATABASE_URI(self) -> str:
+        """asyncpg 异步数据库连接串。"""
+        return (
+            f"postgresql+asyncpg://{self.POSTGRES_USER}:"
+            f"{self.POSTGRES_PASSWORD}@"
+            f"{self.POSTGRES_SERVER}:"
+            f"{self.POSTGRES_PORT}/"
+            f"{self.POSTGRES_DB}"
+        )
+
     REDIS_HOST: str = Field("127.0.0.1", env="REDIS_HOST")
     REDIS_PORT: int = Field(6379, env="REDIS_PORT")
     REDIS_DB: int = Field(0, env="REDIS_DB")
@@ -222,6 +233,10 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
 
     OCR_HTTP_CONNECT_TIMEOUT: float = Field(10.0, ge=1.0, le=300.0, env="OCR_HTTP_CONNECT_TIMEOUT")
     OCR_HTTP_READ_TIMEOUT: float = Field(300.0, ge=5.0, le=3600.0, env="OCR_HTTP_READ_TIMEOUT")
+
+    HTTP_CLIENT_TIMEOUT: float = Field(30.0, env="HTTP_CLIENT_TIMEOUT")
+    HTTP_CLIENT_MAX_CONNECTIONS: int = Field(100, env="HTTP_CLIENT_MAX_CONNECTIONS")
+    HTTP_CLIENT_MAX_KEEPALIVE: int = Field(20, env="HTTP_CLIENT_MAX_KEEPALIVE")
 
     SECRET_KEY: str = Field(default_factory=lambda: secrets.token_urlsafe(32), env="SECRET_KEY")
     ALGORITHM: str = Field("HS256", env="ALGORITHM")
