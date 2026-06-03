@@ -21,81 +21,17 @@ export interface QuotationPdmResult {
   [key: string]: unknown
 }
 
-export interface QuotationU8Item {
-  __root_inv_code?: string
-  [key: string]: unknown
-}
-
-export interface QuotationU8Result {
-  total?: number
-  items?: QuotationU8Item[]
-  [key: string]: unknown
-}
-
-export interface QuotationU8ResultByTypeItem {
-  type?: string
-  u8_parent_inv_codes?: string[]
-  total?: number
-  items?: QuotationU8Item[]
-  [key: string]: unknown
-}
-
-export interface QuotationU8ResultByType {
-  total?: number
-  items?: QuotationU8ResultByTypeItem[]
-  [key: string]: unknown
-}
-
-export interface QuotationU8TypeSummaryItem {
-  type?: string
-  u8_parent_inv_codes?: string[]
-  total?: number
-  [key: string]: unknown
-}
-
-export interface QuotationU8TypeMappingItem {
-  query_index?: number
-  type?: string
-  u8_parent_inv_code?: string
-  matched?: boolean
-  [key: string]: unknown
-}
-
-export interface QuotationU8ResultTypeSummary {
-  total_types?: number
-  total_items?: number
-  matched_root_codes?: number
-  unmatched_root_codes?: string[]
-  types?: QuotationU8TypeSummaryItem[]
-  mapping?: QuotationU8TypeMappingItem[]
-  [key: string]: unknown
-}
-
-export interface QuotationTaskResult {
-  __result_compact?: boolean
-  __result_omitted?: boolean
-  keywords_payload?: Record<string, unknown>
+export interface QuotationApprovalData {
   pdm_result?: QuotationPdmResult
+  keywords_payload?: Record<string, unknown>
   pdm_partids?: string[]
-  approved_partids?: string[]
-  u8_parent_inv_codes?: string[]
-  pdm_to_u8_code_mappings?: Array<{
-    pdm_partid?: string
-    u8_parent_inv_code?: string
-    [key: string]: unknown
-  }>
-  u8_result?: QuotationU8Result
-  u8_result_by_type?: QuotationU8ResultByType
-  u8_result_type_summary?: QuotationU8ResultTypeSummary
-  /** MinIO object path for Phase2 multi-sheet workbook (server-side). */
-  u8_result_by_type_xlsx_minio_path?: string
-  /** Suggested download filename for ``GET .../u8-by-type-workbook``. */
-  u8_result_by_type_xlsx_filename?: string
-  temp_image_minio_path?: string
+  pdm_to_u8_code_mappings?: Array<{ pdm_partid?: string; u8_parent_inv_code?: string; [key: string]: unknown }>
   temp_image_url?: string
-  raw_extracted_info?: Record<string, unknown>
-  cleanup?: Record<string, unknown>
-  [key: string]: unknown
+}
+
+export interface ExtraPartidEntry {
+  partid: string
+  type: string
 }
 
 export interface ApproveQuotationTaskResponse {
@@ -120,7 +56,7 @@ export interface QuotationTaskItem {
   created_at: string
   started_at?: string | null
   completed_at?: string | null
-  result?: QuotationTaskResult | null
+  approval_data?: QuotationApprovalData | null
   error?: string | null
 }
 
@@ -133,7 +69,6 @@ export interface ListQuotationTasksParams {
   status?: string
   ownerUsername?: string
   limit?: number
-  fullResult?: boolean
   activeOnly?: boolean
   signal?: AbortSignal
 }

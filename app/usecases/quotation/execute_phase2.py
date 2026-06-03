@@ -20,6 +20,7 @@ from app.ports.domains.sqlserver_queries import U8BomInventoryQueryPort
 from app.ports.dto.sqlserver_queries import U8BomInventoryCommand
 
 logger = get_logger("quotation.execute_phase2")
+diag_logger = get_logger("diag.phase2")
 
 _U8_MAX_DEPTH = 3
 
@@ -37,6 +38,7 @@ class ExecuteQuotationPhase2Command:
     keywords_payload: Optional[Dict[str, Any]] = None
     pdm_result: Optional[Dict[str, Any]] = None
     approved_partids: Optional[List[str]] = None
+    manual_partid_types: Optional[Dict[str, str]] = None
     progress_callback: ProgressCallback = None
     cancel_checker: CancelChecker = None
 
@@ -76,6 +78,13 @@ class ExecuteQuotationPhase2UseCase:
         converted_u8_codes, pdm_to_u8_mappings = convert_partids_to_u8_codes(selected_partids)
         if not converted_u8_codes:
             raise QuotationPipelineError("PDM PARTID 转换 U8 编码后为空，无法继续 U8 查询")
+
+        diag_logger.info(
+            "[diag_phase2_usecase] task_id=N/A selected_partids=%s converted_codes=%s mappings=%s",
+            selected_partids,
+            converted_u8_codes,
+            pdm_to_u8_mappings,
+        )
 
         logger.info(
             "Phase2 PARTID->U8 编码转换: input_count=%s, output_count=%s, sample=%s",
@@ -139,6 +148,7 @@ class ExecuteQuotationPhase2UseCase:
                 approved_partids=cmd.approved_partids or selected_partids,
                 u8_result=u8_result,
                 pdm_to_u8_mappings=pdm_to_u8_mappings,
+                manual_partid_types=cmd.manual_partid_types,
             )
             logger.info(
                 "Phase2 U8 按 type 分组完成: total_types=%s, total_items=%s",

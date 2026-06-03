@@ -42,7 +42,6 @@
           :can-cancel="canCancel(task)"
           :can-delete="false"
           @cancel="handleCancel(task.task_id)"
-          @view-result="openResultModal(task)"
           @view-file="handleViewFile(task.task_id)"
           @download-u8-xlsx="handleDownloadU8Xlsx(task.task_id)"
         />
@@ -63,8 +62,7 @@
           :can-delete="false"
           :is-approving="approvingTasks.has(task.task_id)"
           @cancel="handleCancel(task.task_id)"
-          @approve="(partids: string[], extra: string[]) => handleApprove(task.task_id, partids, extra)"
-          @view-result="openResultModal(task)"
+          @approve="(partids: string[], extra: string[], extraEntries: any[]) => handleApprove(task.task_id, partids, extra, extraEntries)"
           @view-file="handleViewFile(task.task_id)"
           @download-u8-xlsx="handleDownloadU8Xlsx(task.task_id)"
         />
@@ -87,31 +85,12 @@
             :can-delete="canDelete(task)"
             @cancel="handleCancel(task.task_id)"
             @delete="handleDelete(task.task_id)"
-            @view-result="openResultModal(task)"
             @view-file="handleViewFile(task.task_id)"
             @download-u8-xlsx="handleDownloadU8Xlsx(task.task_id)"
           />
         </div>
       </article>
     </section>
-
-    <div v-if="resultModalVisible" class="result-modal-mask" @click.self="closeResultModal">
-      <div class="result-modal">
-        <div class="result-modal__header">
-          <h3>任务结果：{{ selectedTask?.display_name || selectedTask?.uploaded_file_name }}</h3>
-          <button class="icon-btn" @click="closeResultModal">关闭</button>
-        </div>
-        <div class="result-modal__content">
-          <p><strong>任务ID：</strong>{{ selectedTask?.task_id }}</p>
-          <p><strong>状态：</strong>{{ selectedTask?.status }}</p>
-          <p><strong>消息：</strong>{{ selectedTask?.message }}</p>
-          <p v-if="isCompactResult" class="result-compact-tip">
-            当前显示的是轻量摘要，完整 U8 明细请下载 Excel 查看。
-          </p>
-          <pre class="result-json">{{ formattedResult }}</pre>
-        </div>
-      </div>
-    </div>
 
     <ConfirmDialog
       v-model="showDeleteDialog"
@@ -150,7 +129,7 @@
 import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ConfirmDialog } from '@yamato/components'
 import { config } from '../config'
-import type { QuotationPdmItem, QuotationPdmResult, QuotationTaskItem } from '../types/quotation'
+import type { QuotationPdmItem, QuotationTaskItem } from '../types/quotation'
 import {
   approveQuotationTask,
   cancelQuotationTask,
@@ -169,8 +148,6 @@ const loading = ref(false)
 const uploading = ref(false)
 const errorMessage = ref('')
 const wsConnections = ref(0)
-const selectedTask = ref<QuotationTaskItem | null>(null)
-const resultModalVisible = ref(false)
 const showDeleteDialog = ref(false)
 const pendingDeleteTaskId = ref('')
 const pendingDeleteTaskName = ref('')
@@ -188,7 +165,6 @@ const refreshTimers = new Map<string, number>()
 const refreshInFlightTaskIds = new Set<string>()
 const refreshQueuedTaskIds = new Set<string>()
 const approvalDetailRequestedTaskIds = new Set<string>()
-const completedRefreshRequestedTaskIds = new Set<string>()
 let loadTasksAbortController: AbortController | null = null
 let loadTasksTimeoutId: number | null = null
 let isPageUnmounted = false
@@ -296,13 +272,6 @@ const logDiagCritical = (event: string, details?: Record<string, unknown>): void
   }
 }
 
-const getArrayLength = (value: unknown): number => (Array.isArray(value) ? value.length : 0)
-
-const getObjectKeyCount = (value: unknown): number => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return 0
-  return Object.keys(value as Record<string, unknown>).length
-}
-
 const computeApproxJsonSize = (value: unknown): number | null => {
   try {
     return JSON.stringify(value).length
@@ -311,48 +280,7 @@ const computeApproxJsonSize = (value: unknown): number | null => {
   }
 }
 
-const logPhase2ResultSnapshot = (task: QuotationTaskItem, source: string): void => {
-  const result = task.result
-  if (!result || typeof result !== 'object') return
 
-  const keywordsPayload = (result as { keywords_payload?: unknown }).keywords_payload
-  const keywords =
-    keywordsPayload && typeof keywordsPayload === 'object'
-      ? (keywordsPayload as { keywords?: unknown }).keywords
-      : undefined
-  const pdmItems = result.pdm_result?.items
-  const queryIndexSet = new Set<number>()
-
-  if (Array.isArray(pdmItems)) {
-    pdmItems.forEach((item) => {
-      const value: unknown = item?.QUERY_INDEX
-      if (typeof value === 'number' && Number.isFinite(value)) queryIndexSet.add(Math.trunc(value))
-      if (typeof value === 'string') {
-        const parsed = Number.parseInt(value.trim(), 10)
-        if (Number.isFinite(parsed)) queryIndexSet.add(parsed)
-      }
-    })
-  }
-
-  logDiag('phase2_result_snapshot', {
-    source,
-    taskId: task.task_id,
-    status: task.status,
-    isCompact: Boolean(result.__result_compact),
-    isOmitted: Boolean(result.__result_omitted),
-    keywordCount: getArrayLength(keywords),
-    pdmItemCount: getArrayLength(pdmItems),
-    pdmDistinctQueryIndexCount: queryIndexSet.size,
-    pdmDeclaredTotal: typeof result.pdm_result?.total === 'number' ? result.pdm_result.total : null,
-    approvedPartidsCount: getArrayLength(result.approved_partids),
-    pdmPartidsCount: getArrayLength(result.pdm_partids),
-    u8ByTypeCount: getArrayLength(result.u8_result_by_type?.items),
-    u8ByTypeSummaryTypeCount: getArrayLength(result.u8_result_type_summary?.types),
-    u8ByTypeSummaryMappingCount: getArrayLength(result.u8_result_type_summary?.mapping),
-    rawExtractedInfoKeyCount: getObjectKeyCount(result.raw_extracted_info),
-    resultApproxJsonChars: computeApproxJsonSize(result),
-  })
-}
 
 const pruneWsFailureTimestamps = (nowMs: number): void => {
   while (wsFailureTimestamps.length > 0 && nowMs - wsFailureTimestamps[0] > WS_FAILURE_WINDOW_MS) {
@@ -730,37 +658,6 @@ const doneTasks = computed(() => {
     .sort(byDateDesc)
 })
 
-const compactJsonValue = (value: unknown, depth = 0): unknown => {
-  if (depth >= 4) return '[Object]'
-  if (!value || typeof value !== 'object') return value
-
-  if (Array.isArray(value)) {
-    const preview = value.slice(0, 20).map((item) => compactJsonValue(item, depth + 1))
-    if (value.length > preview.length) {
-      preview.push(`... ${value.length - preview.length} more items`)
-    }
-    return preview
-  }
-
-  const source = value as Record<string, unknown>
-  const result: Record<string, unknown> = {}
-  Object.entries(source).forEach(([key, item]) => {
-    result[key] = compactJsonValue(item, depth + 1)
-  })
-  return result
-}
-
-const isCompactResult = computed(() => {
-  return Boolean(selectedTask.value?.result?.__result_compact)
-})
-
-const formattedResult = computed(() => {
-  if (!selectedTask.value?.result) {
-    return '暂无结果数据'
-  }
-  return JSON.stringify(compactJsonValue(selectedTask.value.result), null, 2)
-})
-
 const syncWsConnections = (): void => {
   wsConnections.value = wsMap.size
 }
@@ -785,44 +682,14 @@ const sortTasksByStatus = (items: QuotationTaskItem[]): QuotationTaskItem[] => {
   return [...items].sort((a, b) => statusOrder(a.status) - statusOrder(b.status))
 }
 
-const mergeTaskListItem = (
-  incoming: QuotationTaskItem,
-  existing?: QuotationTaskItem
-): QuotationTaskItem => {
-  if (incoming.result?.__result_omitted && existing?.result && !existing.result.__result_omitted) {
-    return {
-      ...incoming,
-      result: existing.result,
-    }
-  }
-  return incoming
-}
 
-const syncSelectedTaskRef = (): void => {
-  const selectedTaskId = selectedTask.value?.task_id
-  if (!selectedTaskId) return
-  const next = tasks.value.find((task) => task.task_id === selectedTaskId) ?? null
-  selectedTask.value = next
-}
 
 const applyTaskListSnapshot = (incomingTasks: QuotationTaskItem[], options?: { epoch?: number; source?: string }): boolean => {
   if (!guardEpoch(options?.epoch, options?.source ?? 'apply_task_list_snapshot')) {
     return false
   }
 
-  const existingById = new Map(tasks.value.map((task) => [task.task_id, task]))
-  const nextTasks = incomingTasks.map((incoming) =>
-    mergeTaskListItem(incoming, existingById.get(incoming.task_id))
-  )
-  tasks.value = sortTasksByStatus(nextTasks)
-  syncSelectedTaskRef()
-
-  nextTasks
-    .filter((task) => Boolean(task.result) && (task.status === 'awaiting_approval' || task.status === 'completed'))
-    .slice(0, 20)
-    .forEach((task) => {
-      logPhase2ResultSnapshot(task, options?.source ?? 'apply_task_list_snapshot')
-    })
+  tasks.value = sortTasksByStatus(incomingTasks)
 
   return true
 }
@@ -845,10 +712,6 @@ const applyTaskPatchById = (
   nextTasks[index] = next
   tasks.value = sortTasksByStatus(nextTasks)
 
-  if (selectedTask.value?.task_id === taskId) {
-    selectedTask.value = next
-  }
-
   return next
 }
 
@@ -863,31 +726,21 @@ const applyTaskUpsertById = (
   }
 
   const index = tasks.value.findIndex((task) => task.task_id === incoming.task_id)
-  const existing = index >= 0 ? tasks.value[index] : undefined
-  const merged = mergeTaskListItem(incoming, existing)
   const nextTasks = [...tasks.value]
 
   if (index < 0) {
-    nextTasks.unshift(merged)
+    nextTasks.unshift(incoming)
   } else {
-    nextTasks[index] = merged
+    nextTasks[index] = incoming
   }
 
   tasks.value = sortTasksByStatus(nextTasks)
 
-  if (selectedTask.value?.task_id === incoming.task_id) {
-    selectedTask.value = merged
-  }
-
-  if (merged.result && (merged.status === 'awaiting_approval' || merged.status === 'completed')) {
-    logPhase2ResultSnapshot(merged, options?.source ?? 'apply_task_upsert')
-  }
-
-  return merged
+  return incoming
 }
 
 const hasApprovalItems = (task: QuotationTaskItem): boolean => {
-  const items = task.result?.pdm_result?.items
+  const items = task.approval_data?.pdm_result?.items
   return Array.isArray(items) && items.length > 0
 }
 
@@ -1033,12 +886,6 @@ const patchTaskFromEvent = (
   // 当任务进入 awaiting_approval 但本地 result 还没有 PDM items 时（phase1→phase2 的时序漏洞），
   // 必须立即拉一次完整任务详情，否则 UI 会显示 "PDM 未返回任何数据"，直到用户手动刷新。
   requestApprovalDetailRefresh(next, 200, stateEpoch, 'patch_task_from_event_awaiting')
-
-  // 完成态时也补一次详情拉取，确保最终 result 完整（U8 数据、统计等）。
-  // 用专属去重集合：终态附近后端常推多帧 task_event，无去重会反复重置 200ms timer 反而延迟首次 GET。
-  if (next.status === 'completed') {
-    requestCompletedDetailRefresh(taskId, 200, stateEpoch, 'patch_task_from_event_completed')
-  }
 
   if (TERMINAL_STATUSES.includes(next.status)) {
     approvalDetailRequestedTaskIds.delete(taskId)
@@ -1357,31 +1204,6 @@ const requestApprovalDetailRefresh = (
     source,
   })
   scheduleRefreshSingleTask(task.task_id, delay, epoch)
-  return true
-}
-
-/**
- * 完成态详情补拉：WS task_event 只携带 status/progress/message/error，不带 result。任务进入
- * completed 时本地 result 可能仍是中间态，需要拉一次完整详情确保 U8 数据 / 最终统计可见。
- *
- * 与 awaiting_approval 不同，completed 是真正的终态，正常生命周期内不会重复进入；这里用专属
- * 去重集合，且只在任务被从前端列表移除（删除/页面卸载）时清理，避免重连补帧场景下重复发 GET。
- */
-const requestCompletedDetailRefresh = (
-  taskId: string,
-  delay: number,
-  epoch: number,
-  source: string,
-): boolean => {
-  if (completedRefreshRequestedTaskIds.has(taskId)) return false
-  completedRefreshRequestedTaskIds.add(taskId)
-  logDiag('completed_detail_refresh_scheduled', {
-    taskId,
-    delay,
-    epoch,
-    source,
-  })
-  scheduleRefreshSingleTask(taskId, delay, epoch)
   return true
 }
 
@@ -1901,15 +1723,15 @@ const canDelete = (task: QuotationTaskItem): boolean => {
   return TERMINAL_STATUSES.includes(task.status)
 }
 
-const handleApprove = async (taskId: string, approvedPartids: string[], extraPartids: string[] = []): Promise<void> => {
+const handleApprove = async (taskId: string, approvedPartids: string[], extraPartids: string[] = [], extraPartidEntries: Array<{ partid: string; type: string }> = []): Promise<void> => {
   if (approvingTasks.value.has(taskId)) return
-  if (!approvedPartids.length && !extraPartids.length) {
+  if (!approvedPartids.length && !extraPartidEntries.length && !extraPartids.length) {
     errorMessage.value = '请至少保留一个已批准的 PARTID'
     return
   }
   approvingTasks.value = new Set([...approvingTasks.value, taskId])
   try {
-    await approveQuotationTask(taskId, approvedPartids, extraPartids)
+    await approveQuotationTask(taskId, approvedPartids, extraPartids, extraPartidEntries)
     await refreshSingleTask(taskId)
   } catch (error) {
     errorMessage.value = (error as { message?: string })?.message ?? '提交审核同意失败'
@@ -1945,7 +1767,6 @@ const confirmDeleteTask = async (): Promise<void> => {
     await deleteQuotationTask(taskId)
     closeSocket(taskId)
     approvalDetailRequestedTaskIds.delete(taskId)
-    completedRefreshRequestedTaskIds.delete(taskId)
     refreshInFlightTaskIds.delete(taskId)
     refreshQueuedTaskIds.delete(taskId)
 
@@ -1955,26 +1776,10 @@ const confirmDeleteTask = async (): Promise<void> => {
       refreshTimers.delete(taskId)
     }
 
-    const deletingSelectedTask = selectedTask.value?.task_id === taskId
     tasks.value = tasks.value.filter((item) => item.task_id !== taskId)
-    syncSelectedTaskRef()
-    if (deletingSelectedTask) {
-      selectedTask.value = null
-      resultModalVisible.value = false
-    }
   } catch (error) {
     errorMessage.value = (error as { message?: string })?.message ?? '删除任务失败'
   }
-}
-
-const openResultModal = (task: QuotationTaskItem): void => {
-  logPhase2ResultSnapshot(task, 'open_result_modal')
-  selectedTask.value = task
-  resultModalVisible.value = true
-}
-
-const closeResultModal = (): void => {
-  resultModalVisible.value = false
 }
 
 const handleViewFile = async (taskId: string): Promise<void> => {
@@ -2102,7 +1907,7 @@ const TaskItemCard = defineComponent({
       default: false,
     },
   },
-  emits: ['cancel', 'delete', 'approve', 'view-result', 'view-file', 'download-u8-xlsx'],
+  emits: ['cancel', 'delete', 'approve', 'view-file', 'download-u8-xlsx'],
   setup(props, { emit }) {
     const RING_RADIUS = 20
     const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
@@ -2126,8 +1931,8 @@ const TaskItemCard = defineComponent({
     })
 
     const pdmItems = computed<QuotationPdmItem[]>(() => {
-      const result = props.task.result as { pdm_result?: QuotationPdmResult } | null | undefined
-      const items = result?.pdm_result?.items
+      const approvalData = props.task.approval_data
+      const items = approvalData?.pdm_result?.items
       return Array.isArray(items) ? items : []
     })
 
@@ -2163,15 +1968,8 @@ const TaskItemCard = defineComponent({
 
     const keywordTypeByIndex = computed<Map<number, string>>(() => {
       const map = new Map<number, string>()
-      const result = props.task.result as
-        | {
-            keywords_payload?: {
-              keywords?: unknown
-            }
-          }
-        | null
-        | undefined
-      const keywords = result?.keywords_payload?.keywords
+      const approvalData = props.task.approval_data
+      const keywords = approvalData?.keywords_payload?.keywords
       if (!Array.isArray(keywords)) return map
 
       keywords.forEach((entry, idx) => {
@@ -2286,7 +2084,7 @@ const TaskItemCard = defineComponent({
           groupCount: groups.length,
           rowCount: rows.length,
           keywordTypeCount: keywordTypeMap.size,
-          resultApproxJsonChars: computeApproxJsonSize(props.task.result),
+          resultApproxJsonChars: computeApproxJsonSize(props.task.approval_data),
         })
       },
       { immediate: true }
@@ -2294,13 +2092,13 @@ const TaskItemCard = defineComponent({
 
     const approvedRowKeys = ref<Set<string>>(new Set())
     const expandedGroupKeys = ref<Set<string>>(new Set())
-    const manualPartidRows = ref<string[]>([''])
+    const manualPartidRows = ref<{ value: string; type: string }[]>([{ value: '', type: '' }])
 
     const extraPartidsFromManual = computed<string[]>(() => {
       const seen = new Set<string>()
       const result: string[] = []
-      for (const raw of manualPartidRows.value) {
-        const v = String(raw ?? '').trim()
+      for (const row of manualPartidRows.value) {
+        const v = String(row.value ?? '').trim()
         if (v && !seen.has(v)) {
           seen.add(v)
           result.push(v)
@@ -2309,19 +2107,34 @@ const TaskItemCard = defineComponent({
       return result
     })
 
-    const updateManualPartidRow = (index: number, value: string): void => {
-      const next = [...manualPartidRows.value]
-      next[index] = value
+    const extraPartidEntriesFromManual = computed<Array<{ partid: string; type: string }>>(() => {
+      const seen = new Set<string>()
+      const result: Array<{ partid: string; type: string }> = []
+      for (const row of manualPartidRows.value) {
+        const v = String(row.value ?? '').trim()
+        const t = String(row.type ?? '').trim()
+        if (v && !seen.has(v)) {
+          seen.add(v)
+          result.push({ partid: v, type: t })
+        }
+      }
+      return result
+    })
+
+    const updateManualPartidRow = (index: number, field: 'value' | 'type', text: string): void => {
+      const next = manualPartidRows.value.map((row, i) =>
+        i === index ? { ...row, [field]: text } : row
+      )
       manualPartidRows.value = next
     }
 
     const addManualPartidRow = (): void => {
-      manualPartidRows.value = [...manualPartidRows.value, '']
+      manualPartidRows.value = [...manualPartidRows.value, { value: '', type: '' }]
     }
 
     const removeManualPartidRow = (index: number): void => {
       if (manualPartidRows.value.length <= 1) {
-        manualPartidRows.value = ['']
+        manualPartidRows.value = [{ value: '', type: '' }]
         return
       }
       manualPartidRows.value = manualPartidRows.value.filter((_, i) => i !== index)
@@ -2367,7 +2180,7 @@ const TaskItemCard = defineComponent({
     const allSelected = computed(
       () => allApprovalRows.value.length > 0 && approvedCount.value === allApprovalRows.value.length
     )
-    const noneSelected = computed(() => approvedCount.value === 0 && extraPartidsFromManual.value.length === 0)
+    const noneSelected = computed(() => approvedCount.value === 0 && extraPartidEntriesFromManual.value.length === 0)
 
     const approvedPartidsPreview = computed<string[]>(() => {
       const seen = new Set<string>()
@@ -2456,7 +2269,7 @@ const TaskItemCard = defineComponent({
     }
 
     const submitApproval = (): void => {
-      emit('approve', [...approvedPartidsPreview.value], [...extraPartidsFromManual.value])
+      emit('approve', [...approvedPartidsPreview.value], [...extraPartidsFromManual.value], [...extraPartidEntriesFromManual.value])
     }
 
     const formatList = (value: unknown): string => {
@@ -2623,21 +2436,31 @@ const TaskItemCard = defineComponent({
         ),
         h('div', { class: 'pdm-approval__manual' }, [
           h('label', { class: 'pdm-approval__manual-label' },
-            '手动补充 PARTID（可与上方表格同时使用）'
+            '手动补充 PARTID — 每行输入 PARTID 和产品类型（可与上方表格同时使用）'
           ),
           h(
             'div',
             { class: 'pdm-approval__manual-rows' },
-            manualPartidRows.value.map((rowValue, index) =>
+            manualPartidRows.value.map((row, index) =>
               h('div', { key: index, class: 'pdm-approval__manual-row' }, [
                 h('input', {
                   type: 'text',
                   class: 'pdm-approval__manual-input',
-                  placeholder: '50GB-XXXXXX',
+                  placeholder: 'PARTID: 50GB-XXXXXX',
                   disabled: props.isApproving,
-                  value: rowValue,
+                  value: row.value,
                   onInput: (e: Event) => {
-                    updateManualPartidRow(index, (e.target as HTMLInputElement).value)
+                    updateManualPartidRow(index, 'value', (e.target as HTMLInputElement).value)
+                  },
+                }),
+                h('input', {
+                  type: 'text',
+                  class: 'pdm-approval__manual-type-input',
+                  placeholder: '类型: 轴承',
+                  disabled: props.isApproving,
+                  value: row.type,
+                  onInput: (e: Event) => {
+                    updateManualPartidRow(index, 'type', (e.target as HTMLInputElement).value)
                   },
                 }),
                 index === manualPartidRows.value.length - 1
@@ -2647,7 +2470,7 @@ const TaskItemCard = defineComponent({
                         type: 'button',
                         class: 'pdm-approval__manual-add-btn',
                         disabled: props.isApproving,
-                        'aria-label': '添加一行 PARTID',
+                        'aria-label': '添加一行',
                         title: '添加一行',
                         onClick: addManualPartidRow,
                       },
@@ -2671,9 +2494,9 @@ const TaskItemCard = defineComponent({
               ])
             )
           ),
-          extraPartidsFromManual.value.length > 0
+          extraPartidEntriesFromManual.value.length > 0
             ? h('p', { class: 'pdm-approval__manual-hint' },
-                `已识别 ${extraPartidsFromManual.value.length} 个 PARTID`
+                `已识别 ${extraPartidEntriesFromManual.value.length} 个手动 PARTID`
               )
             : null,
         ]),
@@ -2686,7 +2509,7 @@ const TaskItemCard = defineComponent({
           },
           (() => {
             if (props.isApproving) return '提交中...'
-            const manualCount = extraPartidsFromManual.value.length
+            const manualCount = extraPartidEntriesFromManual.value.length
             const total = partidCount + manualCount
             if (manualCount > 0) {
               return `提交（${partidCount} 表格 + ${manualCount} 手动 = ${total} 个 PARTID）并继续 U8 查询`
@@ -2793,7 +2616,6 @@ const TaskItemCard = defineComponent({
             { class: 'task-action-btn task-action-btn--danger', disabled: !props.canCancel, onClick: () => emit('cancel') },
             '中断'
           ),
-          h('button', { class: 'task-action-btn task-action-btn--neutral', onClick: () => emit('view-result') }, '结果'),
           h('button', { class: 'task-action-btn task-action-btn--accent', onClick: () => emit('view-file') }, '文件'),
           hasU8ByTypeWorkbook.value
             ? h(
@@ -3371,7 +3193,8 @@ const TaskItemCard = defineComponent({
   gap: 6px;
 }
 
-:deep(.pdm-approval__manual-input) {
+:deep(.pdm-approval__manual-input),
+:deep(.pdm-approval__manual-type-input) {
   flex: 1;
   min-width: 0;
   box-sizing: border-box;
@@ -3384,14 +3207,21 @@ const TaskItemCard = defineComponent({
   color: #3c3a36;
 }
 
-:deep(.pdm-approval__manual-input:focus) {
+:deep(.pdm-approval__manual-input:focus),
+:deep(.pdm-approval__manual-type-input:focus) {
   outline: none;
   border-color: #8b7355;
 }
 
-:deep(.pdm-approval__manual-input:disabled) {
+:deep(.pdm-approval__manual-input:disabled),
+:deep(.pdm-approval__manual-type-input:disabled) {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+:deep(.pdm-approval__manual-type-input) {
+  font-family: sans-serif;
+  font-size: 12px;
 }
 
 :deep(.pdm-approval__manual-add-btn),
@@ -3494,77 +3324,6 @@ const TaskItemCard = defineComponent({
     background: var(--yamato-color-accent-hover);
     border-color: rgba(217, 119, 87, 0.92);
   }
-}
-
-.result-modal-mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.result-modal {
-  width: min(860px, 92vw);
-  max-height: 85vh;
-  background: var(--yamato-color-surface);
-  border-radius: var(--yamato-radius-lg);
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  box-shadow: var(--yamato-shadow-overlay);
-}
-
-.result-modal__header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.result-modal__header h3 {
-  margin: 0;
-  font-size: 21px;
-  line-height: 1.19;
-  color: var(--yamato-color-text-primary);
-}
-
-.icon-btn {
-  border: 1px solid var(--yamato-color-border-subtle);
-  background: var(--yamato-color-surface);
-  color: var(--yamato-color-text-primary);
-  border-radius: var(--yamato-radius-sm);
-  padding: 6px 10px;
-  cursor: pointer;
-
-  &:focus-visible {
-    outline: none;
-    box-shadow: var(--yamato-focus-ring);
-  }
-}
-
-.result-modal__content {
-  overflow: auto;
-}
-
-.result-compact-tip {
-  margin: 8px 0;
-  padding: 8px 10px;
-  border-radius: var(--yamato-radius-sm);
-  background: var(--yamato-color-warning-soft);
-  color: var(--yamato-color-warning);
-  font-size: 12px;
-}
-
-.result-json {
-  background: var(--yamato-color-surface-alt);
-  border-radius: var(--yamato-radius-sm);
-  padding: 12px;
-  font-size: 12px;
-  line-height: 1.5;
-  overflow: auto;
 }
 
 .task-name-field {

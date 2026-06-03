@@ -50,6 +50,15 @@ diag_logger = get_logger("diag.quotation")
 
 _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+
+class QuotationApprovalData(BaseModel):
+    pdm_result: Optional[Dict[str, Any]] = None
+    keywords_payload: Optional[Dict[str, Any]] = None
+    pdm_partids: Optional[List[str]] = None
+    pdm_to_u8_code_mappings: Optional[List[Dict[str, Any]]] = None
+    temp_image_url: Optional[str] = None
+
+
 class QuotationTaskItemResponse(BaseModel):
     task_id: str
     status: str
@@ -64,7 +73,7 @@ class QuotationTaskItemResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    result: Optional[Dict[str, Any]] = None
+    approval_data: Optional[QuotationApprovalData] = None
     error: Optional[str] = None
 
 
@@ -94,6 +103,11 @@ class DeleteTaskResponse(BaseModel):
     task_record_removed: bool
 
 
+class ExtraPartidEntry(BaseModel):
+    partid: str = Field(..., min_length=1, description="手动补充的 PARTID")
+    type: str = Field("", description="手动指定的产品类型（用于分组展示）")
+
+
 class ApproveTaskRequest(BaseModel):
     approved_partids: List[str] = Field(
         ...,
@@ -103,6 +117,10 @@ class ApproveTaskRequest(BaseModel):
     extra_partids: List[str] = Field(
         default_factory=list,
         description="用户手动补充的 PARTID，不受限于 Phase1 结果，与表格勾选合并后一同送入 Phase2",
+    )
+    extra_partid_entries: List[ExtraPartidEntry] = Field(
+        default_factory=list,
+        description="手动补充的 PARTID + 类型（替换 extra_partids 的增强字段），每条包含 partid 和 type",
     )
 
 
@@ -176,43 +194,7 @@ def _build_content_disposition(filename: str) -> str:
     return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8_encoded}"
 
 
-def _compact_query_result(value: Any) -> Any:
-    if not isinstance(value, dict):
-        return value
 
-    compact = {key: item for key, item in value.items() if key != "items"}
-    items = value.get("items")
-    if isinstance(items, list):
-        compact["items_count"] = len(items)
-    return compact
-
-
-def _compact_u8_result_by_type(value: Any) -> Any:
-    if not isinstance(value, dict):
-        return value
-
-    compact = {key: item for key, item in value.items() if key != "items"}
-    groups = value.get("items")
-    if isinstance(groups, list):
-        compact["items_count"] = len(groups)
-        compact["items"] = [_compact_query_result(group) for group in groups]
-    return compact
-
-
-def _compact_result_payload(payload: Any, *, include_pdm_items: bool) -> Any:
-    if not isinstance(payload, dict):
-        return payload
-
-    compact = dict(payload)
-    compact["__result_compact"] = True
-    compact["pdm_result"] = (
-        payload.get("pdm_result")
-        if include_pdm_items
-        else _compact_query_result(payload.get("pdm_result"))
-    )
-    compact["u8_result"] = _compact_query_result(payload.get("u8_result"))
-    compact["u8_result_by_type"] = _compact_u8_result_by_type(payload.get("u8_result_by_type"))
-    return compact
 
 
 def _safe_json_size(value: Any) -> Optional[int]:
@@ -238,22 +220,18 @@ def _log_list_tasks_diag(**details: Any) -> None:
     diag_logger.info("[quotation_tasks_diag] list_tasks | %s", details)
 
 
-def _serialize_task(
-    task: QuotationTask,
-    *,
-    full_result: bool = False,
-    load_result_payload: bool = True,
-) -> QuotationTaskItemResponse:
-    if load_result_payload:
-        result_payload = task.result_payload
-    else:
-        result_payload = {"__result_compact": True, "__result_omitted": True}
-
-    if not full_result and load_result_payload:
-        result_payload = _compact_result_payload(
-            result_payload,
-            include_pdm_items=task.status == "awaiting_approval",
-        )
+def _serialize_task(task: QuotationTask) -> QuotationTaskItemResponse:
+    approval_data: Optional[QuotationApprovalData] = None
+    if task.status == "awaiting_approval":
+        payload = task.result_payload
+        if isinstance(payload, dict):
+            approval_data = QuotationApprovalData(
+                pdm_result=payload.get("pdm_result"),
+                keywords_payload=payload.get("keywords_payload"),
+                pdm_partids=payload.get("pdm_partids"),
+                pdm_to_u8_code_mappings=payload.get("pdm_to_u8_code_mappings"),
+                temp_image_url=payload.get("temp_image_url"),
+            )
 
     return QuotationTaskItemResponse(
         task_id=task.task_id,
@@ -269,7 +247,7 @@ def _serialize_task(
         created_at=task.created_at,
         started_at=task.started_at,
         completed_at=task.completed_at,
-        result=result_payload,
+        approval_data=approval_data,
         error=task.error,
     )
 
@@ -335,17 +313,12 @@ async def list_quotation_tasks(
     status_filter: Optional[str] = Query(None, alias="status", description="按状态过滤"),
     owner_username: Optional[str] = Query(None, description="管理员可按用户名过滤"),
     limit: int = Query(100, ge=1, le=500),
-    full_result: bool = Query(False, description="是否返回完整任务结果；默认仅返回摘要，避免大 U8 结果卡住前端"),
-    active_only: bool = Query(False, description="仅返回活动任务(queued/running/awaiting_approval)，不含大结果"),
+    active_only: bool = Query(False, description="仅返回活动任务(queued/running/awaiting_approval)"),
     db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(get_current_user),
 ) -> QuotationTaskListResponse:
     started_at = time.perf_counter()
-    stmt = select(QuotationTask)
-    if not full_result and not active_only:
-        stmt = stmt.options(defer(QuotationTask.result_payload))
-    elif active_only:
-        stmt = stmt.options(defer(QuotationTask.result_payload))
+    stmt = select(QuotationTask).options(defer(QuotationTask.result_payload))
     if not _is_admin_like(current_user):
         stmt = stmt.where(QuotationTask.owner_id == str(current_user.id))
     elif owner_username:
@@ -361,19 +334,11 @@ async def list_quotation_tasks(
     result = await db.execute(stmt)
     tasks = list(result.scalars().all())
     query_done_at = time.perf_counter()
+    for task in tasks:
+        if task.status == "awaiting_approval":
+            await db.refresh(task, ["result_payload"])
     status_counts = _count_statuses(tasks)
-    included_result_payload_count = sum(
-        1 for task in tasks if (full_result or task.status == "awaiting_approval") and not active_only
-    )
-    load_payload_for_approval = not active_only
-    serialized_items = [
-        _serialize_task(
-            task,
-            full_result=full_result,
-            load_result_payload=full_result or (task.status == "awaiting_approval" and load_payload_for_approval),
-        )
-        for task in tasks
-    ]
+    serialized_items = [_serialize_task(task) for task in tasks]
     serialize_done_at = time.perf_counter()
     response = QuotationTaskListResponse(
         total=len(tasks),
@@ -383,7 +348,6 @@ async def list_quotation_tasks(
     approx_payload_chars = _safe_json_size(response.model_dump(mode="json"))
     _log_list_tasks_diag(
         limit=limit,
-        full_result=full_result,
         active_only=active_only,
         status_filter=status_filter,
         owner_username=owner_username,
@@ -393,7 +357,6 @@ async def list_quotation_tasks(
         awaiting_approval_count=status_counts["awaiting_approval"],
         active_count=status_counts["active"],
         completed_count=status_counts["completed"],
-        included_result_payload_count=included_result_payload_count,
         query_ms=round((query_done_at - query_started_at) * 1000, 2),
         serialize_ms=round((serialize_done_at - query_done_at) * 1000, 2),
         response_build_ms=round((response_ready_at - serialize_done_at) * 1000, 2),
@@ -406,17 +369,14 @@ async def list_quotation_tasks(
 @router.get("/tasks/{task_id}", response_model=QuotationTaskItemResponse, summary="查询报价任务详情")
 async def get_quotation_task(
     task_id: str,
-    full_result: bool = Query(False, description="是否返回完整任务结果；默认仅返回摘要，避免大 U8 结果卡住前端"),
     db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(get_current_user),
 ) -> QuotationTaskItemResponse:
-    task = await _get_task_or_404(db, task_id, defer_result=not full_result)
+    task = await _get_task_or_404(db, task_id, defer_result=True)
     _check_task_permission(task, current_user)
-    return _serialize_task(
-        task,
-        full_result=full_result,
-        load_result_payload=full_result or task.status == "awaiting_approval",
-    )
+    if task.status == "awaiting_approval":
+        await db.refresh(task, ["result_payload"])
+    return _serialize_task(task)
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=CancelTaskResponse, summary="取消报价任务")
@@ -473,6 +433,13 @@ async def approve_quotation_task(
     db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(get_current_user),
 ) -> ApproveTaskResponse:
+    diag_logger.info(
+        "[diag_approve] 收到审批请求 task_id=%s approved_count=%s extra_count=%s extra_entries=%s",
+        task_id,
+        len(request.approved_partids),
+        len(request.extra_partids),
+        [(e.partid, e.type) for e in request.extra_partid_entries],
+    )
     task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
     usecase = ApproveQuotationTaskUseCase(
@@ -486,6 +453,9 @@ async def approve_quotation_task(
             task_id=task_id,
             approved_partids=request.approved_partids,
             extra_partids=request.extra_partids,
+            extra_partid_entries=[
+                {"partid": e.partid, "type": e.type} for e in request.extra_partid_entries
+            ],
         )
     )
     return ApproveTaskResponse(

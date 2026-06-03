@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.core.logging import get_logger
+
+diag_logger = get_logger("diag.u8_grouping")
+
 
 def _normalized_keywords(keywords_payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
     keywords = keywords_payload.get("keywords") if isinstance(keywords_payload, Mapping) else None
@@ -97,6 +101,9 @@ def _build_selection_driven_groups(
 ) -> Tuple[Dict[str, List[str]], List[Dict[str, Any]]]:
     type_to_codes: Dict[str, List[str]] = {}
     type_entries: List[Dict[str, Any]] = []
+    skipped_type: list[str] = []
+    skipped_code: list[str] = []
+    skipped_both: list[str] = []
 
     for partid in approved_partids:
         type_name = partid_to_type.get(partid)
@@ -111,11 +118,25 @@ def _build_selection_driven_groups(
             }
         )
         if not matched:
+            if not type_name and not code:
+                skipped_both.append(partid)
+            elif not type_name:
+                skipped_type.append(partid)
+            else:
+                skipped_code.append(partid)
             continue
 
         codes = type_to_codes.setdefault(type_name, [])
         if code not in codes:
             codes.append(code)
+
+    diag_logger.info(
+        "[diag_u8_grouping] _build_selection_driven_groups: matched=%s skipped_no_type=%s skipped_no_code=%s skipped_neither=%s",
+        len(type_to_codes),
+        skipped_type,
+        skipped_code,
+        skipped_both,
+    )
 
     return type_to_codes, type_entries
 
@@ -162,12 +183,15 @@ def group_u8_result_by_type(
     approved_partids: Optional[List[str]] = None,
     u8_result: Dict[str, Any],
     pdm_to_u8_mappings: List[Dict[str, str]],
+    manual_partid_types: Optional[Dict[str, str]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Build type-grouped U8 payload.
 
     When approval context is available, the grouping follows the approved PARTIDs
-    and their original QUERY_INDEX/type association. Otherwise it falls back to
-    the previous positional behavior.
+    and their original QUERY_INDEX/type association.  ``manual_partid_types``
+    supplies user-provided type names for manually-added PARTIDs that have no
+    PDM row, ensuring their U8 results are included in the correct type group.
+    Otherwise it falls back to the previous positional behavior.
     """
 
     items = u8_result.get("items") if isinstance(u8_result, dict) else None
@@ -182,9 +206,39 @@ def group_u8_result_by_type(
         pdm_result=pdm_result or {},
         query_index_to_type=query_index_to_type,
     )
+    # Merge manual type mapping: user-provided types for extra_partids
+    # override the "no type → skip" gap in PDM-based _selection_to_types.
+    if manual_partid_types:
+        for partid, type_name in manual_partid_types.items():
+            if partid in normalized_approved_partids and type_name:
+                partid_to_type[partid] = type_name
     partid_to_code = _selection_to_u8_codes(
         approved_partids=normalized_approved_partids,
         pdm_to_u8_mappings=pdm_to_u8_mappings,
+    )
+
+    # ------------------------------------------------------------------
+    # Diagnostic: log mismatches between type and code mappings.
+    # Manual partids (extra_partids) exist in pdm_to_u8_mappings (they get
+    # a U8 code) but NOT in pdm_result["items"] (they have no PDM row),
+    # so they are absent from partid_to_type.  This causes
+    # _build_selection_driven_groups to skip their U8 results.
+    # ------------------------------------------------------------------
+    typed_partids = set(partid_to_type.keys())
+    coded_partids = set(partid_to_code.keys())
+    only_typed = typed_partids - coded_partids
+    only_coded = coded_partids - typed_partids
+    both = typed_partids & coded_partids
+    neither = set(normalized_approved_partids) - typed_partids - coded_partids
+    diag_logger.info(
+        "[diag_u8_grouping] approved=%s typed=%s coded=%s both=%s only_typed=%s only_coded=%s neither=%s",
+        normalized_approved_partids,
+        sorted(typed_partids),
+        sorted(coded_partids),
+        sorted(both),
+        sorted(only_typed),
+        sorted(only_coded),
+        sorted(neither),
     )
 
     if normalized_approved_partids and partid_to_type and partid_to_code:

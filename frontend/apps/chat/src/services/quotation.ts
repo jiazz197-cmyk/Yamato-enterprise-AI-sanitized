@@ -49,9 +49,6 @@ export const listQuotationTasks = async (
   if (typeof params?.limit === 'number') {
     query.set('limit', String(params.limit))
   }
-  if (params?.fullResult) {
-    query.set('full_result', 'true')
-  }
   if (params?.activeOnly) {
     query.set('active_only', 'true')
   }
@@ -74,16 +71,9 @@ export const listActiveQuotationTasks = async (params?: {
 }
 
 export const getQuotationTask = async (
-  taskId: string,
-  params?: { fullResult?: boolean }
+  taskId: string
 ): Promise<QuotationTaskItem> => {
-  const query = new URLSearchParams()
-  if (params?.fullResult) {
-    query.set('full_result', 'true')
-  }
-  const queryString = query.toString()
-  const endpoint = `/quotation/tasks/${encodeURIComponent(taskId)}${queryString ? `?${queryString}` : ''}`
-  return apiRequest<QuotationTaskItem>(endpoint)
+  return apiRequest<QuotationTaskItem>(`/quotation/tasks/${encodeURIComponent(taskId)}`)
 }
 
 export const cancelQuotationTask = async (taskId: string): Promise<CancelQuotationTaskResponse> => {
@@ -95,13 +85,15 @@ export const cancelQuotationTask = async (taskId: string): Promise<CancelQuotati
 export const approveQuotationTask = async (
   taskId: string,
   approvedPartids: string[],
-  extraPartids: string[] = []
+  extraPartids: string[] = [],
+  extraPartidEntries: Array<{ partid: string; type: string }> = []
 ): Promise<ApproveQuotationTaskResponse> => {
   return apiRequest<ApproveQuotationTaskResponse>(`/quotation/tasks/${encodeURIComponent(taskId)}/approve`, {
     method: 'POST',
     body: JSON.stringify({
       approved_partids: approvedPartids,
       extra_partids: extraPartids,
+      extra_partid_entries: extraPartidEntries,
     }),
   })
 }

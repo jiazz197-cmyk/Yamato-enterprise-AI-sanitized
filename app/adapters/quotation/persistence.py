@@ -198,6 +198,7 @@ class ResultPayloadQuotationApprovalSelectionAdapter(QuotationApprovalSelectionP
         task_id: str,
         approved_partids: list[str],
         summary_selection_items: list[QuotationSummarySelectionItem],
+        manual_partid_types: dict[str, str] | None = None,
     ) -> None:
         task = await self._get_task_entity(task_id)
         if task is None:
@@ -206,6 +207,8 @@ class ResultPayloadQuotationApprovalSelectionAdapter(QuotationApprovalSelectionP
         payload = dict(task.result_payload or {})
         payload["approved_partids"] = approved_partids
         payload["summary_selection_items"] = [asdict(item) for item in summary_selection_items]
+        if manual_partid_types:
+            payload["manual_partid_types"] = manual_partid_types
         task.result_payload = payload
         await self._db.commit()
 

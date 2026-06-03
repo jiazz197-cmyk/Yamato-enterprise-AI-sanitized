@@ -33,6 +33,7 @@ from app.usecases.quotation.execute_phase2 import ExecuteQuotationPhase2Command
 _persistence = QuotationTaskPersistenceAdapter()
 
 logger = get_logger("quotation_generation")
+diag_logger = get_logger("diag.phase2")
 
 _XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -407,6 +408,16 @@ def process_quotation_task_phase2_background(
             selected_partids = [str(partid) for partid in fallback if str(partid).strip()]
             source = "pdm_partids(fallback)"
 
+        diag_logger.info(
+            "[diag_phase2_worker] task_id=%s source=%s selected_count=%s selected=%s "
+            "payload_keys=%s",
+            task_id,
+            source,
+            len(selected_partids),
+            selected_partids,
+            list(existing_payload.keys()),
+        )
+
         logger.info(
             "Phase2 准备执行 U8 查询: task_id=%s, source=%s, selected_count=%s, sample=%s",
             task_id,
@@ -426,12 +437,14 @@ def process_quotation_task_phase2_background(
         update_progress(60, f"开始 U8 BOM Inventory 查询（{len(selected_partids)} 项）")
 
         phase2_uc = build_execute_quotation_phase2_use_case()
+        manual_types = existing_payload.get("manual_partid_types")
         phase2_result = phase2_uc.execute(
             ExecuteQuotationPhase2Command(
                 pdm_partids=selected_partids,
                 keywords_payload=existing_payload.get("keywords_payload"),
                 pdm_result=existing_payload.get("pdm_result"),
                 approved_partids=selected_partids,
+                manual_partid_types=manual_types if isinstance(manual_types, dict) else None,
                 progress_callback=update_progress,
                 cancel_checker=token.is_cancelled,
             )

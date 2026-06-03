@@ -98,6 +98,7 @@ class QuotationApprovalSelectionPort(Protocol):
         task_id: str,
         approved_partids: list[str],
         summary_selection_items: list[QuotationSummarySelectionItem],
+        manual_partid_types: dict[str, str] | None = None,
     ) -> None:
         ...
 
