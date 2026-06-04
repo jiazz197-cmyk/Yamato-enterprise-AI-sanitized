@@ -17,3 +17,8 @@ class U8BomInventoryQueryPort(Protocol):
 class PdmBomQueryPort(Protocol):
     def run(self, payload: Any, *, cancel_checker: CancelChecker = None) -> Any:
         ...
+
+
+class PdmMatchQueryPort(Protocol):
+    def run(self, payload: Any, *, cancel_checker: CancelChecker = None) -> Any:
+        ...

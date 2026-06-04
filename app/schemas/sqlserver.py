@@ -34,3 +34,4 @@ class QueryResponse(BaseModel):
 
     total: int
     items: List[Dict[str, Any]]
+    components: List[Dict[str, Any]] = []

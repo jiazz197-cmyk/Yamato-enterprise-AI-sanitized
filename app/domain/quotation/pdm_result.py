@@ -6,24 +6,43 @@ from typing import Any, Dict, List
 
 
 def collect_pdm_partids(pdm_result: Dict[str, Any]) -> List[str]:
-    """Extract unique PARTID values from PDM BOM response while keeping order."""
-    items = pdm_result.get("items") if isinstance(pdm_result, dict) else None
-    if not isinstance(items, list):
-        return []
+    """Extract unique PARTID values from PDM BOM response while keeping order.
 
+    Supports both the old flat format (items list) and the new matcher2
+    format (components with layered results).
+    """
     seen: set[str] = set()
     partids: List[str] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        partid = item.get("PARTID")
-        if partid is None:
-            continue
-        value = str(partid).strip()
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        partids.append(value)
+
+    # 新格式: components 分层结构
+    components = pdm_result.get("components") if isinstance(pdm_result, dict) else None
+    if isinstance(components, list):
+        for comp in components:
+            if not isinstance(comp, dict):
+                continue
+            for layer_name in ("high_confidence", "medium_confidence", "low_confidence", "needs_review"):
+                for item in comp.get(layer_name, []):
+                    partid = str(item.get("PARTID", "")).strip()
+                    if partid and partid not in seen:
+                        seen.add(partid)
+                        partids.append(partid)
+        if partids:
+            return partids
+
+    # 旧格式: items 扁平列表
+    items = pdm_result.get("items") if isinstance(pdm_result, dict) else None
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            partid = item.get("PARTID")
+            if partid is None:
+                continue
+            value = str(partid).strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            partids.append(value)
     return partids
 
 

@@ -12,6 +12,30 @@ CancelChecker = Optional[Callable[[], bool]]
 ProgressCallback = Optional[Callable[[int, str], None]]
 
 
+# ── OCR 纯文本提取 ──────────────────────────────────────────
+
+@dataclass
+class OcrTextExtractionResult:
+    text: str
+    extract_method: str  # "pdftotext" | "dotsocr" | "failed"
+    pdftotext_chars: int = 0
+    dotsocr_chars: int = 0
+
+
+class OcrPlainTextPort(Protocol):
+    def extract_text(
+        self, *, pdf_bytes: bytes, cancel_checker: CancelChecker = None, ocr_dpi: int = 200,
+    ) -> OcrTextExtractionResult: ...
+
+
+# ── Spec 解析 + 转换 ──────────────────────────────────────
+
+class SpecParseAndConvertPort(Protocol):
+    def parse_and_convert(
+        self, *, ocr_text: str, cancel_checker: CancelChecker = None,
+    ) -> Dict[str, Any]: ...
+
+
 @dataclass
 class RasterPageResult:
     """First-page rasterization output."""
@@ -98,7 +122,6 @@ class QuotationApprovalSelectionPort(Protocol):
         task_id: str,
         approved_partids: list[str],
         summary_selection_items: list[QuotationSummarySelectionItem],
-        manual_partid_types: dict[str, str] | None = None,
     ) -> None:
         ...
 

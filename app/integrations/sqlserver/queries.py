@@ -155,3 +155,31 @@ def run_pdm_bom_query(
         raise ExternalServiceError("PDM SQLServer", f"查询失败: {exc}") from exc
     finally:
         close_sql_client(shared_client)
+
+
+def run_pdm_match_query(
+    payload: PdmBomRequest,
+    cancel_checker: Optional[Callable[[], bool]] = None,
+) -> QueryResponse:
+    """PDM 部件匹配查询 - 四路召回 + 多维打分。
+
+    通过 matcher2 引擎执行多路召回、打分排序，
+    并将分层结果扁平化返回。
+    """
+    from app.integrations.sqlserver.pdm_matcher_adapter import (
+        run_pdm_match_query as _run_match,
+    )
+
+    try:
+        result = _run_match(payload.keywords)
+        total = result.get("total", 0)
+        items = result.get("items", [])
+        components = result.get("components", [])
+        logger.info(
+            "PDM 匹配查询完成: total=%s",
+            total,
+        )
+        return QueryResponse(total=total, items=items, components=components)
+    except Exception as exc:
+        logger.error("PDM 匹配查询失败: %s", exc, exc_info=True)
+        raise ExternalServiceError("PDM SQLServer", f"匹配查询失败: {exc}") from exc

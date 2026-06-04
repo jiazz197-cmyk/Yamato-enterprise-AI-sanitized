@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.ports.domains.sqlserver_queries import PdmBomQueryPort, U8BomInventoryQueryPort
-from app.ports.dto.sqlserver_queries import PdmBomCommand, U8BomInventoryCommand
+from app.ports.domains.sqlserver_queries import PdmBomQueryPort, PdmMatchQueryPort, U8BomInventoryQueryPort
+from app.ports.dto.sqlserver_queries import PdmBomCommand, PdmMatchCommand, U8BomInventoryCommand
 
 
 class RunU8BomInventoryQueryUseCase:
@@ -21,4 +21,12 @@ class RunPdmBomQueryUseCase:
         self._port = port
 
     def execute(self, payload: PdmBomCommand) -> Any:
+        return self._port.run(payload)
+
+
+class RunPdmMatchQueryUseCase:
+    def __init__(self, port: PdmMatchQueryPort):
+        self._port = port
+
+    def execute(self, payload: PdmMatchCommand) -> Any:
         return self._port.run(payload)

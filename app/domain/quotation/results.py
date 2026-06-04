@@ -16,6 +16,9 @@ class Phase1Result:
     temp_image_minio_path: str
     temp_image_url: str
     raw_extracted_info: Dict[str, Any] = field(default_factory=dict)
+    ocr_text: str = ""
+    extract_method: str = ""
+    parsed_params: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -25,6 +28,9 @@ class Phase1Result:
             "temp_image_minio_path": self.temp_image_minio_path,
             "temp_image_url": self.temp_image_url,
             "raw_extracted_info": self.raw_extracted_info,
+            "ocr_text": self.ocr_text,
+            "extract_method": self.extract_method,
+            "parsed_params": self.parsed_params,
         }
 
 

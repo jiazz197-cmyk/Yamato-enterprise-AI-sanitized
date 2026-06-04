@@ -14,6 +14,13 @@ class PdmBomCommand:
 
 
 @dataclass
+class PdmMatchCommand:
+    """Command for PDM part matching (four-channel recall + scoring)."""
+
+    keywords: Any = None
+
+
+@dataclass
 class U8BomInventoryCommand:
     """Command for querying U8 BOM inventory."""
 
