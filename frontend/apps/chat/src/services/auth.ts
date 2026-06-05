@@ -124,3 +124,14 @@ export const readUserRole = (): string => {
     return ''
   }
 }
+
+export const readUsername = (): string => {
+  try {
+    const raw = localStorage.getItem(config.settingsStorageKey)
+    if (!raw) return ''
+    const parsed = JSON.parse(raw) as { username?: unknown; user?: unknown }
+    return String(parsed.username ?? parsed.user ?? '').trim()
+  } catch {
+    return ''
+  }
+}

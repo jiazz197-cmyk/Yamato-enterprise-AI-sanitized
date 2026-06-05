@@ -20,7 +20,7 @@
           报价生成
         </RouterLink>
         <RouterLink class="sidebar-nav__item" active-class="is-active" to="/closing-form">
-          报单填写
+          营业订单信息
         </RouterLink>
         <RouterLink v-if="isAdminOrSuperuser" class="sidebar-nav__item" active-class="is-active" to="/collection2">
           知识库管理

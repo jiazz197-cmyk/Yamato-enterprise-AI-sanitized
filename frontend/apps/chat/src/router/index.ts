@@ -38,7 +38,7 @@ const routes: RouteRecordRaw[] = [
     path: '/closing-form',
     name: 'closing-form',
     component: () => import('@/pages/PolicyGeneratePage.vue'),
-    meta: { title: '报单填写' },
+    meta: { title: '营业订单信息' },
   },
   {
     path: '/users',
