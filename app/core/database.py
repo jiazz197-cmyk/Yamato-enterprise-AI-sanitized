@@ -205,6 +205,21 @@ def init_db_tables():
 
         try:
             with engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT COUNT(*) FROM data_pending WHERE status = 'rejected'"
+                )).scalar()
+                if result and int(result) > 0:
+                    logger.info("[info] 发现 data_pending 表存在 rejected 状态记录，正在迁移为 pending_revision...")
+                    conn.execute(text(
+                        "UPDATE data_pending SET status = 'pending_revision' WHERE status = 'rejected'"
+                    ))
+                    conn.commit()
+                    logger.info("[success] 成功将 rejected 记录迁移为 pending_revision")
+        except Exception as mig_e:
+            logger.error(f"[warning] data_pending rejected→pending_revision 迁移失败: {mig_e}")
+
+        try:
+            with engine.connect() as conn:
                 owner_ip_column = conn.execute(text(
                     "SELECT column_name "
                     "FROM information_schema.columns "

@@ -23,6 +23,9 @@ class ClosingFormPersistencePort(Protocol):
     async def delete_pending_form(self, form_id: int) -> None:
         ...
 
+    async def update_pending_form(self, form_id: int, form_text: str, image_url_1: Optional[str], image_url_2: Optional[str]) -> None:
+        ...
+
     async def reject_pending_form(self, form_id: int) -> None:
         ...
 

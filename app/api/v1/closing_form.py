@@ -30,6 +30,8 @@ from app.schemas.endpoints.closing_form import (
     ClosingFormDeleteResponse,
     ClosingFormListResponse,
     ClosingFormRejectResponse,
+    ClosingFormRevise,
+    ClosingFormReviseResponse,
     ClosingFormSubmit,
     ClosingFormSubmitResponse,
     Collection2ListResponse,
@@ -43,6 +45,7 @@ from app.usecases.closing_form.operations import (
     ListClosingFormsUseCase,
     ListCollection2UseCase,
     RejectClosingFormUseCase,
+    ReviseClosingFormUseCase,
     SubmitClosingFormUseCase,
     UploadClosingFormImageUseCase,
 )
@@ -260,6 +263,49 @@ async def reject_closing_form(
     except Exception:
         logger.exception("拒绝审批失败: form_id=%s", form_id)
         raise HTTPException(status_code=500, detail="操作失败，请稍后重试")
+
+
+@router.put(
+    "/revise/{form_id}",
+    response_model=ClosingFormReviseResponse,
+    summary="修改待修改表单并重新提交（原提交者）",
+)
+async def revise_closing_form(
+    form_id: int,
+    form_data: ClosingFormRevise,
+    current_user: CurrentUserPort = Depends(get_current_user),
+):
+    cmd = ClosingFormCommand(
+        date=form_data.date,
+        deal_time=form_data.closing_date,
+        customer_name=form_data.customer_name,
+        product_type=form_data.product_type,
+        model_spec=form_data.model_spec,
+        quantity=form_data.quantity,
+        original_price=form_data.price_excluding_tax,
+        production_code=form_data.production_number,
+        material_name=form_data.material_name,
+        weighing_spec=form_data.weighing_spec,
+        speed=str(form_data.speed) if form_data.speed is not None else None,
+        accuracy=form_data.precision,
+        top_cone_type=form_data.top_cone_type,
+        linear_vibrator_type=form_data.linear_vibration_type,
+        layer_adjustment_ring=form_data.material_layer_ring,
+        feeding_hopper=form_data.feed_hopper,
+        weigh_bucket=form_data.metering_hopper,
+        memory_bucket=form_data.memory_hopper,
+        chute_angle=form_data.chute_angle,
+        collecting_cone_type=form_data.collection_hopper_type,
+        scale_config=form_data.scale_type,
+        image_urls=[url for url in (form_data.image_url_1, form_data.image_url_2) if url],
+    )
+    try:
+        return await ReviseClosingFormUseCase(_persistence).execute(form_id, current_user, cmd)
+    except (NotFoundError, ValidationError, APIException):
+        raise
+    except Exception:
+        logger.exception("修改表单失败: form_id=%s", form_id)
+        raise HTTPException(status_code=500, detail="修改失败，请稍后重试")
 
 
 @router.get(

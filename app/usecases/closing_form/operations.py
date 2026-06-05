@@ -113,7 +113,36 @@ class RejectClosingFormUseCase:
         await self._persistence.reject_pending_form(form_id)
 
         logger.info("表单审批不通过: form_id=%s, rejected_by=%s", form_id, current_user.username)
-        return ClosingFormRejectResponse(success=True, message="审批已拒绝")
+        return ClosingFormRejectResponse(success=True, message="审批不通过，已退回待修改")
+
+
+class ReviseClosingFormUseCase:
+    """Owns the revision business flow: validate ownership & status → update form."""
+
+    def __init__(self, persistence: ClosingFormPersistencePort):
+        self._persistence = persistence
+
+    async def execute(self, form_id: int, current_user: CurrentUserPort, cmd: ClosingFormCommand):
+        from app.schemas.endpoints.closing_form import ClosingFormReviseResponse
+
+        row = await self._persistence.get_pending_form(form_id)
+        if row is None:
+            raise NotFoundError("表单不存在")
+        if row["status"] != "pending_revision":
+            raise ValidationError(f"表单状态不是待修改（当前状态：{row['status']}）")
+        if row["uploader"] != current_user.username:
+            raise ValidationError("只能修改自己提交的表单")
+
+        formatted_text = cmd.to_formatted_text()
+        await self._persistence.update_pending_form(
+            form_id=form_id,
+            form_text=formatted_text,
+            image_url_1=cmd.image_url_1,
+            image_url_2=cmd.image_url_2,
+        )
+
+        logger.info("表单已修改重提: form_id=%s, user=%s", form_id, current_user.username)
+        return ClosingFormReviseResponse(success=True, message="修改已提交，等待审批")
 
 
 class ListCollection2UseCase:
@@ -175,8 +204,8 @@ class DeleteRejectedClosingFormUseCase:
         status = await self._persistence.get_rejected_form_status(form_id)
         if status is None:
             raise NotFoundError("记录不存在")
-        if status != "rejected":
-            raise ValidationError("仅允许删除不通过状态的表单")
+        if status not in ("rejected", "pending_revision"):
+            raise ValidationError("仅允许删除不通过或待修改状态的表单")
         await self._persistence.delete_pending_form(form_id)
         logger.info("删除不通过表单: form_id=%s, deleted_by=%s", form_id, current_user.username)
         return ClosingFormDeleteResponse(success=True, message="删除成功", deleted_id=str(form_id))

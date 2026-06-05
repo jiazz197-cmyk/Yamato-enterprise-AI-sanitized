@@ -98,7 +98,77 @@ class ClosingFormRejectResponse(BaseModel):
     """拒绝审批响应"""
 
     success: bool = True
-    message: str = "审批不通过"
+    message: str = "审批不通过，已退回待修改"
+
+
+class ClosingFormRevise(BaseModel):
+    """修改表单提交数据"""
+
+    date: Optional[str] = Field(None, description="日期，格式：YYYY-MM-DD HH:mm:ss")
+    closing_date: Optional[str] = Field(None, description="成交时间，格式：YYYY-MM-DD")
+    customer_name: str = Field(..., description="客户名称")
+    product_type: str = Field(..., description="产品类型")
+    model_spec: str = Field(..., description="型号规格")
+    quantity: int = Field(..., ge=1, description="数量")
+    price_excluding_tax: float = Field(..., ge=0, description="原价不含税")
+    production_number: str = Field(..., description="生产制造编号")
+    material_name: str = Field(..., description="物料名称")
+    weighing_spec: str = Field(..., description="称重规格")
+    speed: int = Field(..., ge=0, description="速度")
+    precision: str = Field(..., description="精度")
+    top_cone_type: str = Field(..., description="顶锥形式")
+    linear_vibration_type: str = Field(..., description="线振形式")
+    material_layer_ring: str = Field(..., description="料层调整圈")
+    feed_hopper: str = Field(..., description="供料斗")
+    metering_hopper: str = Field(..., description="计量斗")
+    memory_hopper: str = Field(..., description="记忆斗")
+    chute_angle: str = Field(..., description="溜槽角度")
+    collection_hopper_type: str = Field(..., description="集合斗形式")
+    scale_type: str = Field(..., description="单双秤/混料/外挂/特殊")
+    image_url_1: Optional[str] = Field(None, max_length=512)
+    image_url_2: Optional[str] = Field(None, max_length=512)
+
+    @field_validator("image_url_1", "image_url_2")
+    @classmethod
+    def validate_image_url_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.startswith(f"{settings.CLOSING_FORM_IMAGE_PREFIX}/"):
+            raise ValueError("非法的图片路径")
+        return v
+
+    def to_formatted_text(self) -> str:
+        from app.domain.closing_form.formatting import format_closing_form_text
+
+        return format_closing_form_text(
+            order_date=self.date,
+            deal_time=self.closing_date,
+            customer_name=self.customer_name,
+            product_type=self.product_type,
+            model_spec=self.model_spec,
+            quantity=self.quantity,
+            original_price=self.price_excluding_tax,
+            production_code=self.production_number,
+            material_name=self.material_name,
+            weighing_spec=self.weighing_spec,
+            speed=str(self.speed) if self.speed is not None else None,
+            accuracy=self.precision,
+            top_cone_type=self.top_cone_type,
+            linear_vibrator_type=self.linear_vibration_type,
+            layer_adjustment_ring=self.material_layer_ring,
+            feeding_hopper=self.feed_hopper,
+            weigh_bucket=self.metering_hopper,
+            memory_bucket=self.memory_hopper,
+            chute_angle=self.chute_angle,
+            collecting_cone_type=self.collection_hopper_type,
+            scale_config=self.scale_type,
+            image_urls=[url for url in (self.image_url_1, self.image_url_2) if url] or None,
+        )
+
+
+class ClosingFormReviseResponse(BaseModel):
+    """修改表单响应"""
+
+    success: bool = True
+    message: str = "修改已提交，等待审批"
 
 
 class ClosingFormListResponse(BaseModel):

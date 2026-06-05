@@ -144,11 +144,25 @@ class ClosingFormPersistence:
             await db.execute(text(f"DELETE FROM {PENDING_TABLE} WHERE id = :id"), {"id": form_id})
             await db.commit()
 
+    async def update_pending_form(self, form_id: int, form_text: str, image_url_1: Optional[str], image_url_2: Optional[str]) -> None:
+        form_text_clean = clean_text_for_postgres(form_text)
+        upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                text(
+                    f"UPDATE {PENDING_TABLE} SET text = :t, image_url_1 = :img1,"
+                    f" image_url_2 = :img2, status = 'pending', upload_time = :ts"
+                    f" WHERE id = :id AND status = 'pending_revision'"
+                ),
+                {"t": form_text_clean, "img1": image_url_1, "img2": image_url_2, "ts": upload_time, "id": form_id},
+            )
+            await db.commit()
+
     async def reject_pending_form(self, form_id: int) -> None:
         async with AsyncSessionLocal() as db:
             await db.execute(
                 text(
-                    f"UPDATE {PENDING_TABLE} SET status = 'rejected',"
+                    f"UPDATE {PENDING_TABLE} SET status = 'pending_revision',"
                     f" image_url_1 = NULL, image_url_2 = NULL WHERE id = :id"
                 ),
                 {"id": form_id},
