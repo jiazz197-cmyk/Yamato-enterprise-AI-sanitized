@@ -17,9 +17,11 @@ class CurrentUserPort(Protocol):
     username: str
     name: str
     role: str
+    permissions: list[str]
 
     def is_admin_like(self) -> bool: ...
     def is_superuser(self) -> bool: ...
+    def has_permission(self, perm: str) -> bool: ...
 
 
 @dataclass
@@ -34,9 +36,13 @@ class CurrentUserDTO:
     username: str = ""
     name: str = ""
     role: str = ROLE_USER
+    permissions: list[str] = field(default_factory=list)
 
     def is_admin_like(self) -> bool:
         return self.role in (ROLE_ADMIN, ROLE_SUPERUSER)
 
     def is_superuser(self) -> bool:
         return self.role == ROLE_SUPERUSER
+
+    def has_permission(self, perm: str) -> bool:
+        return self.is_admin_like() or perm in self.permissions

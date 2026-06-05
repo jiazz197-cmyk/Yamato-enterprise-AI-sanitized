@@ -24,6 +24,7 @@ export interface MeResponse {
   is_active: boolean
   role: string
   roles: { id: number; name: string }[]
+  permissions: string[]
 }
 
 export interface RegisterRequest {
@@ -44,10 +45,16 @@ export interface UserResponse {
   is_active: boolean
   role: string
   roles: { id: number; name: string }[]
+  permissions: string[]
 }
 
 export interface UpdateRoleRequest {
   role: 'admin' | 'user'
+}
+
+export interface UserPagePermissions {
+  view_closing_form: boolean
+  view_quotation: boolean
 }
 
 export const login = async (payload: LoginRequest): Promise<LoginResponse> => {
@@ -103,6 +110,13 @@ export const updateUserRole = (userId: string, payload: UpdateRoleRequest): Prom
   })
 }
 
+export const updateUserPagePermissions = (userId: string, payload: UserPagePermissions): Promise<UserResponse> => {
+  return apiRequest<UserResponse>(`${AUTH_BASE}/users/${userId}/page-permissions`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
 /** 把 role 写入设置缓存，路由切换时少打 /me。 */
 export const saveUserRole = (role: string): void => {
   try {
@@ -133,5 +147,26 @@ export const readUsername = (): string => {
     return String(parsed.username ?? parsed.user ?? '').trim()
   } catch {
     return ''
+  }
+}
+
+export const saveUserPermissions = (permissions: string[]): void => {
+  try {
+    const raw = localStorage.getItem(config.settingsStorageKey)
+    const existing = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+    localStorage.setItem(config.settingsStorageKey, JSON.stringify({ ...existing, permissions }))
+  } catch {
+    // 忽略
+  }
+}
+
+export const readUserPermissions = (): string[] => {
+  try {
+    const raw = localStorage.getItem(config.settingsStorageKey)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as { permissions?: unknown }
+    return Array.isArray(parsed.permissions) ? parsed.permissions as string[] : []
+  } catch {
+    return []
   }
 }

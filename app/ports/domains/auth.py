@@ -28,6 +28,20 @@ class UserRepositoryPort(Protocol):
     async def update_role(self, user_id: str, role: str) -> object:
         ...
 
+    async def get_user_permissions(self, user_id: str) -> list[str]:
+        ...
+
+    async def assign_role(self, user_id: str, role_name: str) -> None:
+        ...
+
+    async def unassign_role(self, user_id: str, role_name: str) -> None:
+        ...
+
+    async def update_page_permissions(
+        self, user_id: str, view_closing_form: bool, view_quotation: bool
+    ) -> object:
+        ...
+
 
 class PasswordHasherPort(Protocol):
     """Abstraction for password hashing and verification."""

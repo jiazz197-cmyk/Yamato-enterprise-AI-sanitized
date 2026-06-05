@@ -9,15 +9,28 @@ from app.core.exceptions import AuthenticationError, NotFoundError, PermissionDe
 from app.core.logging import get_logger
 from app.core.security import get_current_user, require_roles, create_access_token
 from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER
-from app.ports.dto.auth import LoginCommand, RegisterCommand, UpdateUserRoleCommand, UserDTO
+from app.ports.dto.auth import (
+    LoginCommand,
+    RegisterCommand,
+    UpdatePagePermissionsCommand,
+    UpdateUserRoleCommand,
+    UserDTO,
+)
 from app.schemas.platform.token import TokenResponse
-from app.schemas.platform.user import UserLogin, UserRead, UserRoleUpdate, UserRegister
+from app.schemas.platform.user import (
+    UserLogin,
+    UserPagePermissionsUpdate,
+    UserRead,
+    UserRoleUpdate,
+    UserRegister,
+)
 from app.usecases.auth import (
     DeleteUserUseCase,
     GetUserUseCase,
     ListUsersUseCase,
     LoginUseCase,
     RegisterUseCase,
+    UpdateUserPagePermissionsUseCase,
     UpdateUserRoleUseCase,
 )
 
@@ -40,6 +53,7 @@ def _dto_to_user_read(dto: UserDTO) -> UserRead:
         is_active=dto.is_active,
         role=dto.role,
         roles=[],
+        permissions=dto.permissions,
     )
 
 
@@ -143,6 +157,30 @@ async def update_user_role(
             new_role=str(body.role.value if hasattr(body.role, "value") else body.role),
             current_user_id=current_user.id,
             current_user_name=current_user.username,
+        ))
+        return _dto_to_user_read(dto)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=e.message)
+
+
+@router.patch(
+    "/users/{user_id}/page-permissions",
+    response_model=UserRead,
+    summary="修改用户页面可见权限（仅 superuser）",
+)
+async def update_user_page_permissions(
+    user_id: uuid.UUID,
+    body: UserPagePermissionsUpdate,
+    current_user: CurrentUserPort = Depends(require_roles(ROLE_SUPERUSER)),
+):
+    """控制普通用户可查看的页面。"""
+    try:
+        uc = UpdateUserPagePermissionsUseCase(_user_repo)
+        dto = await uc.execute(UpdatePagePermissionsCommand(
+            target_user_id=str(user_id),
+            view_closing_form=body.view_closing_form,
+            view_quotation=body.view_quotation,
+            current_user_id=current_user.id,
         ))
         return _dto_to_user_read(dto)
     except NotFoundError as e:

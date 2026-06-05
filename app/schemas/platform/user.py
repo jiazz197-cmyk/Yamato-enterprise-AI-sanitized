@@ -55,6 +55,12 @@ class UserRead(BaseModel):
     is_active: Optional[bool] = True
     role: UserRole = UserRole.user
     roles: List[RoleSimple] = []
+    permissions: List[str] = []
+
+
+class UserPagePermissionsUpdate(BaseModel):
+    view_closing_form: bool = True
+    view_quotation: bool = True
 
 
 class RoleCreate(BaseModel):

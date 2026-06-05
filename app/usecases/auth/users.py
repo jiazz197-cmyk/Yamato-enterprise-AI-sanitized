@@ -6,25 +6,9 @@ from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.core.logging import get_logger
 from app.ports.contracts.identity import CurrentUserPort
 from app.ports.domains.auth import UserRepositoryPort
-from app.ports.dto.auth import UpdateUserRoleCommand, UserDTO
+from app.ports.dto.auth import UpdatePagePermissionsCommand, UpdateUserRoleCommand, UserDTO
 
 logger = get_logger("auth.users")
-
-
-def _orm_to_dto(user: object) -> UserDTO:
-    """Map repository-returned object to UserDTO."""
-    return UserDTO(
-        id=str(getattr(user, "id", "")),
-        username=getattr(user, "username", ""),
-        email=getattr(user, "email", ""),
-        name=getattr(user, "name", None),
-        role=getattr(user, "role", "user"),
-        is_active=getattr(user, "is_active", True),
-        created_at=str(getattr(user, "created_at", "")),
-        phone=getattr(user, "phone", None),
-        department=getattr(user, "department", None),
-        avatar=getattr(user, "avatar", None),
-    )
 
 
 class GetUserUseCase:
@@ -37,7 +21,7 @@ class GetUserUseCase:
         user = await self._user_repo.get_by_id(user_id)
         if not user:
             raise NotFoundError("用户不存在")
-        return _orm_to_dto(user) if isinstance(user, UserDTO) else user
+        return user
 
 
 class ListUsersUseCase:
@@ -47,8 +31,7 @@ class ListUsersUseCase:
         self._user_repo = user_repo
 
     async def execute(self) -> list[UserDTO]:
-        users = await self._user_repo.list_users()
-        return [_orm_to_dto(u) if not isinstance(u, UserDTO) else u for u in users]
+        return await self._user_repo.list_users()
 
 
 class DeleteUserUseCase:
@@ -93,4 +76,30 @@ class UpdateUserRoleUseCase:
             cmd.current_user_name,
             cmd.current_user_id,
         )
-        return _orm_to_dto(user) if not isinstance(user, UserDTO) else user
+        return user
+
+
+class UpdateUserPagePermissionsUseCase:
+    """Toggle page visibility permissions for a regular user (superuser-only)."""
+
+    def __init__(self, user_repo: UserRepositoryPort):
+        self._user_repo = user_repo
+
+    async def execute(self, cmd: UpdatePagePermissionsCommand) -> UserDTO:
+        target = await self._user_repo.get_by_id(cmd.target_user_id)
+        if not target:
+            raise NotFoundError("用户不存在")
+
+        updated = await self._user_repo.update_page_permissions(
+            cmd.target_user_id,
+            cmd.view_closing_form,
+            cmd.view_quotation,
+        )
+        logger.info(
+            "User page permissions updated: %s (closing=%s, quotation=%s) by %s",
+            cmd.target_user_id,
+            cmd.view_closing_form,
+            cmd.view_quotation,
+            cmd.current_user_id,
+        )
+        return updated if isinstance(updated, UserDTO) else target

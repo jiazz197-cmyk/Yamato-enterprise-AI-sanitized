@@ -16,7 +16,7 @@ from app.adapters.closing_form import (
 from app.core.config import settings
 from app.core.exceptions import APIException, NotFoundError, ValidationError
 from app.core.logging import get_logger
-from app.core.security import get_current_user, require_roles
+from app.core.security import get_current_user, require_roles, require_permission
 from app.core.storage import (
     MINIO_BUCKET_NAME,
     delete_from_minio,
@@ -141,7 +141,7 @@ def get_closing_form_image(object_name: str):
 @router.post("/image/upload", response_model=ImageUploadResponse)
 async def upload_closing_form_image(
     image: UploadFile = File(...),
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_closing_form")),
 ):
     """上传报单图片到 MinIO(form_pic/)，返回 object_name"""
     if not image.filename:
@@ -168,7 +168,7 @@ async def upload_closing_form_image(
 @router.delete("/image")
 def delete_closing_form_image(
     object_name: str = Query(..., description="MinIO object name"),
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_closing_form")),
 ):
     """删除已上传的报单图片（仅限配置的前缀，防越权）"""
     if not object_name.startswith(f"{settings.CLOSING_FORM_IMAGE_PREFIX}/"):
@@ -183,7 +183,7 @@ def delete_closing_form_image(
 @router.post("/submit", response_model=ClosingFormSubmitResponse)
 async def submit_closing_form(
     form_data: ClosingFormSubmit,
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_closing_form")),
 ):
     cmd = ClosingFormCommand(
         date=form_data.date,
@@ -220,7 +220,7 @@ async def submit_closing_form(
 
 @router.get("/list", response_model=ClosingFormListResponse)
 async def list_closing_forms(
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_closing_form")),
 ):
     try:
         result = await ListClosingFormsUseCase(_persistence).execute(current_user)
@@ -275,7 +275,7 @@ async def reject_closing_form(
 async def revise_closing_form(
     form_id: int,
     form_data: ClosingFormRevise,
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_closing_form")),
 ):
     cmd = ClosingFormCommand(
         date=form_data.date,

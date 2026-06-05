@@ -8,6 +8,7 @@ from app.usecases.auth.users import (
     DeleteUserUseCase,
     GetUserUseCase,
     ListUsersUseCase,
+    UpdateUserPagePermissionsUseCase,
     UpdateUserRoleUseCase,
 )
 
@@ -18,4 +19,5 @@ __all__ = [
     "ListUsersUseCase",
     "DeleteUserUseCase",
     "UpdateUserRoleUseCase",
+    "UpdateUserPagePermissionsUseCase",
 ]

@@ -28,7 +28,7 @@ from app.adapters.tasking import TaskManagerStateAdapter, ThreadPoolTaskExecutio
 from app.core.config import settings
 from app.core.dependencies import get_async_db
 from app.core.logging import get_logger
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_permission
 from app.core.async_storage import (
     STREAM_CHUNK_SIZE,
     async_download_object_stream,
@@ -276,7 +276,7 @@ async def create_quotation_task(
     file: UploadFile = File(..., description="仅支持 PDF 文件"),
     task_name: Optional[str] = Form(None, description="任务展示名称（可选）"),
     db: AsyncSession = Depends(get_async_db),
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> QuotationTaskSubmitResponse:
     file_data = await file.read()
     usecase = CreateQuotationTaskUseCase(
@@ -315,7 +315,7 @@ async def list_quotation_tasks(
     limit: int = Query(100, ge=1, le=500),
     active_only: bool = Query(False, description="仅返回活动任务(queued/running/awaiting_approval)"),
     db: AsyncSession = Depends(get_async_db),
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> QuotationTaskListResponse:
     started_at = time.perf_counter()
     stmt = select(QuotationTask).options(defer(QuotationTask.result_payload))
@@ -370,7 +370,7 @@ async def list_quotation_tasks(
 async def get_quotation_task(
     task_id: str,
     db: AsyncSession = Depends(get_async_db),
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> QuotationTaskItemResponse:
     task = await _get_task_or_404(db, task_id, defer_result=True)
     _check_task_permission(task, current_user)
@@ -383,7 +383,7 @@ async def get_quotation_task(
 async def cancel_quotation_task(
     task_id: str,
     db: AsyncSession = Depends(get_async_db),
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> CancelTaskResponse:
     task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
@@ -405,7 +405,7 @@ async def cancel_quotation_task(
 async def delete_quotation_task(
     task_id: str,
     db: AsyncSession = Depends(get_async_db),
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> DeleteTaskResponse:
     task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
@@ -431,7 +431,7 @@ async def approve_quotation_task(
     task_id: str,
     request: ApproveTaskRequest,
     db: AsyncSession = Depends(get_async_db),
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> ApproveTaskResponse:
     diag_logger.info(
         "[diag_approve] 收到审批请求 task_id=%s approved_count=%s extra_count=%s extra_entries=%s",
@@ -471,7 +471,7 @@ async def approve_quotation_task(
 async def get_quotation_task_file(
     task_id: str,
     db: AsyncSession = Depends(get_async_db),
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ):
     task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
@@ -507,7 +507,7 @@ async def get_quotation_task_file(
 async def get_quotation_task_u8_by_type_workbook(
     task_id: str,
     db: AsyncSession = Depends(get_async_db),
-    current_user: CurrentUserPort = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ):
     task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)

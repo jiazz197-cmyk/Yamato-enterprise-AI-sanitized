@@ -8,11 +8,12 @@ from typing import Optional
 from sqlalchemy import select
 
 from app.core.database import AsyncSessionLocal
+from app.core.rbac_queries import load_user_permissions
 from app.ports.domains.auth import UserRepositoryPort
 from app.ports.dto.auth import UserDTO
 
 
-def _orm_user_to_dto(user) -> UserDTO:
+def _orm_user_to_dto(user, permissions: list[str] | None = None) -> UserDTO:
     """Map ORM User to UserDTO."""
     return UserDTO(
         id=str(user.id),
@@ -25,6 +26,7 @@ def _orm_user_to_dto(user) -> UserDTO:
         phone=str(user.phone) if user.phone else None,
         department=str(user.department) if user.department else None,
         avatar=str(user.avatar) if user.avatar else None,
+        permissions=permissions or [],
     )
 
 
@@ -46,12 +48,17 @@ class SqlAlchemyUserRepositoryAdapter(UserRepositoryPort):
                 select(User).filter(User.id == uuid.UUID(user_id))
             )
             user = result.scalars().first()
-            return _orm_user_to_dto(user) if user else None
+            if not user:
+                return None
+            perms = await load_user_permissions(db, str(user.id))
+            return _orm_user_to_dto(user, perms)
 
     async def create(
         self, username: str, email: str, password: str, name: Optional[str]
     ) -> UserDTO:
         from app.models.orm.platform.user import User, UserRole
+        from app.models.orm.platform.role import Role
+        from app.models.orm.platform.user_role import user_role_table
 
         async with AsyncSessionLocal() as db:
             user = User(
@@ -63,17 +70,59 @@ class SqlAlchemyUserRepositoryAdapter(UserRepositoryPort):
                 is_active=True,
             )
             db.add(user)
+            await db.flush()
+
+            roles_result = await db.execute(
+                select(Role).filter(Role.name.in_(["page_closing_form", "page_quotation"]))
+            )
+            existing_roles = {r.name: r.id for r in roles_result.scalars().all()}
+            for rname in ("page_closing_form", "page_quotation"):
+                role_id = existing_roles.get(rname)
+                if role_id:
+                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+                    await db.execute(
+                        pg_insert(user_role_table)
+                        .values(user_id=user.id, role_id=role_id)
+                        .on_conflict_do_nothing()
+                    )
+
             await db.commit()
             await db.refresh(user)
-            return _orm_user_to_dto(user)
+            perms = await load_user_permissions(db, str(user.id))
+            return _orm_user_to_dto(user, perms)
 
     async def list_users(self) -> list[UserDTO]:
         from app.models.orm.platform.user import User
+        from app.models.orm.platform.user_role import user_role_table
+        from app.models.orm.platform.role_permission import role_permission_table
+        from app.models.orm.platform.permission import Permission
+        from app.models.orm.platform.role import Role
 
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(User).order_by(User.created_at))
             users = result.scalars().all()
-            return [_orm_user_to_dto(u) for u in users]
+            if not users:
+                return []
+
+            user_ids = [u.id for u in users]
+            perm_stmt = (
+                select(user_role_table.c.user_id, Permission.name)
+                .select_from(user_role_table)
+                .join(Role, Role.id == user_role_table.c.role_id)
+                .join(role_permission_table, role_permission_table.c.role_id == Role.id)
+                .join(Permission, Permission.id == role_permission_table.c.permission_id)
+                .where(user_role_table.c.user_id.in_(user_ids))
+            )
+            perm_result = await db.execute(perm_stmt)
+            perms_by_user: dict[str, list[str]] = {}
+            for user_id_val, perm_name in perm_result.all():
+                uid_str = str(user_id_val)
+                perms_by_user.setdefault(uid_str, []).append(perm_name)
+
+            return [
+                _orm_user_to_dto(u, perms_by_user.get(str(u.id), []))
+                for u in users
+            ]
 
     async def delete(self, user_id: str) -> None:
         from app.models.orm.platform.user import User
@@ -101,4 +150,94 @@ class SqlAlchemyUserRepositoryAdapter(UserRepositoryPort):
             user.role = role_map.get(role, UserRole.user)
             await db.commit()
             await db.refresh(user)
-            return _orm_user_to_dto(user)
+            perms = await load_user_permissions(db, str(user.id))
+            return _orm_user_to_dto(user, perms)
+
+    async def get_user_permissions(self, user_id: str) -> list[str]:
+        async with AsyncSessionLocal() as db:
+            return await load_user_permissions(db, user_id)
+
+    async def assign_role(self, user_id: str, role_name: str) -> None:
+        from app.models.orm.platform.role import Role
+        from app.models.orm.platform.user_role import user_role_table
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        async with AsyncSessionLocal() as db:
+            role_row = (await db.execute(
+                select(Role).filter(Role.name == role_name)
+            )).scalars().first()
+            if not role_row:
+                return
+            uid = uuid.UUID(user_id)
+            await db.execute(
+                pg_insert(user_role_table)
+                .values(user_id=uid, role_id=role_row.id)
+                .on_conflict_do_nothing()
+            )
+            await db.commit()
+
+    async def unassign_role(self, user_id: str, role_name: str) -> None:
+        from app.models.orm.platform.role import Role
+        from app.models.orm.platform.user_role import user_role_table
+
+        async with AsyncSessionLocal() as db:
+            role_row = (await db.execute(
+                select(Role).filter(Role.name == role_name)
+            )).scalars().first()
+            if not role_row:
+                return
+            uid = uuid.UUID(user_id)
+            await db.execute(
+                user_role_table.delete().where(
+                    (user_role_table.c.user_id == uid)
+                    & (user_role_table.c.role_id == role_row.id)
+                )
+            )
+            await db.commit()
+
+    async def update_page_permissions(
+        self, user_id: str, view_closing_form: bool, view_quotation: bool
+    ) -> UserDTO:
+        from app.models.orm.platform.user import User
+        from app.models.orm.platform.role import Role
+        from app.models.orm.platform.user_role import user_role_table
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(User).filter(User.id == uuid.UUID(user_id))
+            )
+            user = result.scalars().first()
+            if not user:
+                raise ValueError(f"User not found: {user_id}")
+
+            roles_result = await db.execute(
+                select(Role).filter(Role.name.in_(["page_closing_form", "page_quotation"]))
+            )
+            role_map = {r.name: r.id for r in roles_result.scalars().all()}
+
+            uid = uuid.UUID(user_id)
+
+            for rname in ("page_closing_form", "page_quotation"):
+                role_id = role_map.get(rname)
+                if not role_id:
+                    continue
+                enabled = view_closing_form if rname == "page_closing_form" else view_quotation
+                if enabled:
+                    await db.execute(
+                        pg_insert(user_role_table)
+                        .values(user_id=uid, role_id=role_id)
+                        .on_conflict_do_nothing()
+                    )
+                else:
+                    await db.execute(
+                        user_role_table.delete().where(
+                            (user_role_table.c.user_id == uid)
+                            & (user_role_table.c.role_id == role_id)
+                        )
+                    )
+
+            await db.commit()
+            await db.refresh(user)
+            perms = await load_user_permissions(db, str(user.id))
+            return _orm_user_to_dto(user, perms)

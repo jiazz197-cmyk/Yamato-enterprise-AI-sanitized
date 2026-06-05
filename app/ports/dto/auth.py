@@ -20,6 +20,7 @@ class UserDTO:
     phone: Optional[str] = None
     department: Optional[str] = None
     avatar: Optional[str] = None
+    permissions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -56,3 +57,13 @@ class UpdateUserRoleCommand:
     new_role: str
     current_user_id: str
     current_user_name: str
+
+
+@dataclass
+class UpdatePagePermissionsCommand:
+    """Command to update a user's page visibility permissions."""
+
+    target_user_id: str
+    view_closing_form: bool
+    view_quotation: bool
+    current_user_id: str

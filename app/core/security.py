@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.dependencies import get_async_db
+from app.core.rbac_queries import load_user_permissions
 from app.ports.contracts.identity import CurrentUserDTO
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
@@ -38,13 +39,14 @@ def create_access_token(subject: str, expires_delta: timedelta | None = None) ->
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def _orm_to_dto(user) -> CurrentUserDTO:
+def _orm_to_dto(user, permissions: list[str] | None = None) -> CurrentUserDTO:
     """Map SQLAlchemy User ORM to CurrentUserDTO."""
     return CurrentUserDTO(
         id=str(user.id),
         username=str(user.username or ""),
         name=str(user.name or ""),
         role=str(user.role.value if hasattr(user.role, "value") else user.role),
+        permissions=permissions or [],
     )
 
 
@@ -75,7 +77,8 @@ async def get_current_user(
     user = result.scalars().first()
     if user is None or not user.is_active:
         raise credentials_exception
-    return _orm_to_dto(user)
+    perms = await load_user_permissions(db, user.id)
+    return _orm_to_dto(user, perms)
 
 
 async def get_current_user_detached(token: str = Depends(oauth2_scheme)) -> CurrentUserDTO:
@@ -103,8 +106,9 @@ async def get_current_user_detached(token: str = Depends(oauth2_scheme)) -> Curr
         user = result.scalars().first()
         if user is None or not user.is_active:
             raise credentials_exception
+        perms = await load_user_permissions(db, user.id)
         db.expunge(user)
-        return _orm_to_dto(user)
+        return _orm_to_dto(user, perms)
 
 
 def _normalize_identifier(value: object) -> str:
@@ -160,6 +164,20 @@ def require_roles(*roles: str) -> Callable:
 
     def dependency(current_user=Depends(get_current_user)):
         if current_user.role not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions",
+            )
+        return current_user
+
+    return dependency
+
+
+def require_permission(perm: str) -> Callable:
+    """要求当前用户拥有指定权限（admin/superuser 自动放行）。"""
+
+    def dependency(current_user=Depends(get_current_user)):
+        if not current_user.has_permission(perm):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Insufficient permissions",
