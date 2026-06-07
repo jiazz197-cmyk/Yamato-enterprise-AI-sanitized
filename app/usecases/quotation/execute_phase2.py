@@ -141,9 +141,10 @@ class ExecuteQuotationPhase2UseCase:
         u8_result_by_type: Dict[str, Any] = {"total": 0, "items": []}
         u8_result_type_summary: Dict[str, Any] = {"total_types": 0, "types": []}
         kw = cmd.keywords_payload
-        if isinstance(kw, dict) and kw:
+        has_manual = isinstance(cmd.manual_partid_types, dict) and bool(cmd.manual_partid_types)
+        if (isinstance(kw, dict) and kw) or has_manual:
             u8_result_by_type, u8_result_type_summary = group_u8_result_by_type(
-                keywords_payload=kw,
+                keywords_payload=kw if isinstance(kw, dict) else {},
                 pdm_result=cmd.pdm_result,
                 approved_partids=cmd.approved_partids or selected_partids,
                 u8_result=u8_result,

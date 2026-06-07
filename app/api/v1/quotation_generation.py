@@ -8,6 +8,7 @@ import json
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
@@ -106,6 +107,15 @@ class DeleteTaskResponse(BaseModel):
 class ExtraPartidEntry(BaseModel):
     partid: str = Field(..., min_length=1, description="手动补充的 PARTID")
     type: str = Field("", description="手动指定的产品类型（用于分组展示）")
+
+
+class DirectU8Request(BaseModel):
+    partids: List[str] = Field(
+        ...,
+        min_length=1,
+        description="用户直接输入的 U8 父级编码列表，将跳过 Phase1 直接进入 Phase2",
+    )
+    task_name: Optional[str] = Field(None, description="任务展示名称（可选）")
 
 
 class ApproveTaskRequest(BaseModel):
@@ -305,6 +315,101 @@ async def create_quotation_task(
         status=result.status,
         message=result.message,
         queue_position=result.queue_position,
+    )
+
+
+@router.post("/tasks/direct-u8", response_model=QuotationTaskSubmitResponse, summary="直接进行 U8 查询")
+async def create_direct_u8_task(
+    request: Request,
+    body: DirectU8Request,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
+) -> QuotationTaskSubmitResponse:
+    seen: set[str] = set()
+    partids: list[str] = []
+    for raw in body.partids:
+        value = str(raw).strip()
+        if value and value not in seen:
+            seen.add(value)
+            partids.append(value)
+    if not partids:
+        raise HTTPException(status_code=400, detail="至少需要提供一个 PARTID")
+    if len(partids) > 500:
+        raise HTTPException(status_code=400, detail="最多支持 500 个 PARTID")
+
+    unique_name = f"direct_u8_{uuid4().hex}.pdf"
+    minio_path = f"quotation/uploads/{unique_name}"
+    file_storage = MinioFileStorageAdapter()
+    await file_storage.upload_pdf(
+        object_path=minio_path,
+        file_bytes=b"\x00",
+        content_type="application/pdf",
+    )
+
+    task_repo = SqlAlchemyQuotationTaskRepoAdapter(db)
+    file_id = await task_repo.create_file_record(
+        file_name=unique_name,
+        unique_name=unique_name,
+        minio_path=minio_path,
+        content_type="application/pdf",
+        file_size=1,
+        uploader=current_user.username,
+    )
+
+    task_state = TaskManagerStateAdapter()
+    task_name = (body.task_name or "").strip() or "直接U8查询"
+    task_id = await task_state.create_task(
+        task_type="quotation_generation",
+        metadata={
+            "owner_username": current_user.username,
+            "owner_ip": _extract_request_client_ip(request),
+            "file_id": file_id,
+            "file_name": unique_name,
+            "task_name": task_name,
+        },
+    )
+
+    task = await task_repo.create_task(
+        task_id=task_id,
+        owner_id=str(current_user.id),
+        owner_username=current_user.username,
+        owner_ip=_extract_request_client_ip(request),
+        role_snapshot=current_user.role,
+        uploaded_file_id=file_id,
+        uploaded_file_name=unique_name,
+        display_name=task_name,
+        uploaded_file_minio_path=minio_path,
+        uploaded_file_content_type="application/pdf",
+        uploaded_file_size=1,
+    )
+
+    task_execution = ThreadPoolTaskExecutionAdapter()
+    task_execution.set_task_owner(task_id, str(current_user.id))
+
+    manual_partid_types: dict[str, str] = {p: p for p in partids}
+
+    await task_repo.patch_task(
+        task_id,
+        {
+            "status": "running",
+            "progress": 55,
+            "message": "开始 U8 BOM Inventory 查询",
+            "result_payload": {
+                "approved_partids": partids,
+                "manual_partid_types": manual_partid_types,
+            },
+            "error": None,
+        },
+    )
+
+    task_dispatch = QuotationDispatchAdapter()
+    task_dispatch.dispatch_phase2(task_id, str(current_user.id))
+
+    return QuotationTaskSubmitResponse(
+        task_id=task_id,
+        status="running",
+        message="直接 U8 查询已创建",
+        queue_position=0,
     )
 
 

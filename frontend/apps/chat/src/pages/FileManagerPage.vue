@@ -19,6 +19,9 @@
         <button class="secondary-btn" :disabled="loading" @click="() => loadTasks()">
           刷新
         </button>
+        <button class="secondary-btn" :disabled="directU8Submitting" @click="openDirectU8Dialog">
+          {{ directU8Submitting ? '提交中...' : '直接进行u8查询' }}
+        </button>
         <button class="primary-btn" :disabled="uploading" @click="openFilePicker">
           {{ uploading ? '上传中...' : '上传PDF' }}
         </button>
@@ -122,6 +125,36 @@
         />
       </label>
     </ConfirmDialog>
+
+    <ConfirmDialog
+      v-model="showDirectU8Dialog"
+      title="直接进行 U8 查询"
+      type="primary"
+      confirm-text="提交"
+      cancel-text="取消"
+      @confirm="confirmDirectU8Submit"
+      @cancel="cancelDirectU8Dialog"
+    >
+      <label class="task-name-field">
+        <span class="task-name-field__label">请输入任务名称（仅用于展示）</span>
+        <input
+          v-model="directU8TaskName"
+          class="task-name-field__input"
+          type="text"
+          maxlength="120"
+        />
+      </label>
+      <label class="task-name-field" style="margin-top: 12px">
+        <span class="task-name-field__label">PARTID（每行一个，支持从 Excel 粘贴多行，支持换行、逗号、分号、Tab 分隔，最多 500 个）</span>
+        <textarea
+          v-model="directU8PartidsText"
+          class="task-name-field__input task-name-field__textarea"
+          rows="8"
+          maxlength="10000"
+          placeholder="每行一个 PARTID，支持从 Excel 粘贴多行"
+        />
+      </label>
+    </ConfirmDialog>
   </div>
 </template>
 
@@ -133,6 +166,7 @@ import type { QuotationPdmItem, QuotationTaskItem } from '../types/quotation'
 import {
   approveQuotationTask,
   cancelQuotationTask,
+  createDirectU8Task,
   createQuotationTask,
   deleteQuotationTask,
   downloadQuotationTaskFile,
@@ -155,6 +189,10 @@ const showTaskNameDialog = ref(false)
 const pendingUploadFile = ref<File | null>(null)
 const pendingTaskName = ref('')
 const pendingUploadId = ref(0)
+const showDirectU8Dialog = ref(false)
+const directU8PartidsText = ref('')
+const directU8TaskName = ref('')
+const directU8Submitting = ref(false)
 
 const wsMap = new Map<string, WebSocket>()
 const wsTaskEpochMap = new Map<string, number>()
@@ -1820,6 +1858,63 @@ const handleDownloadU8Xlsx = async (taskId: string): Promise<void> => {
   }
 }
 
+const openDirectU8Dialog = (): void => {
+  directU8PartidsText.value = ''
+  directU8TaskName.value = ''
+  directU8Submitting.value = false
+  showDirectU8Dialog.value = true
+}
+
+const cancelDirectU8Dialog = (): void => {
+  showDirectU8Dialog.value = false
+  directU8PartidsText.value = ''
+  directU8TaskName.value = ''
+}
+
+const parseDirectU8Partids = (text: string): string[] => {
+  const seen = new Set<string>()
+  const result: string[] = []
+  const lines = text.split(/\r?\n/)
+  for (const line of lines) {
+    const parts = line.split(/[,;\t]+/)
+    for (const part of parts) {
+      const value = part.trim()
+      if (value && !seen.has(value)) {
+        seen.add(value)
+        result.push(value)
+      }
+    }
+  }
+  return result
+}
+
+const confirmDirectU8Submit = async (): Promise<void> => {
+  const partids = parseDirectU8Partids(directU8PartidsText.value)
+  if (partids.length === 0) {
+    errorMessage.value = '请至少输入一个 PARTID'
+    return
+  }
+  if (partids.length > 500) {
+    errorMessage.value = `最多支持 500 个 PARTID，当前输入了 ${partids.length} 个`
+    return
+  }
+
+  directU8Submitting.value = true
+  errorMessage.value = ''
+  showDirectU8Dialog.value = false
+
+  try {
+    await createDirectU8Task(partids, directU8TaskName.value.trim() || undefined)
+    directU8PartidsText.value = ''
+    directU8TaskName.value = ''
+    await loadTasks()
+  } catch (error) {
+    errorMessage.value = (error as { message?: string })?.message ?? '创建直接 U8 查询任务失败'
+  } finally {
+    directU8Submitting.value = false
+  }
+}
+
 onMounted(() => {
   isPageUnmounted = false
   window.addEventListener('error', handleWindowError)
@@ -3352,6 +3447,13 @@ const TaskItemCard = defineComponent({
     outline: none;
     box-shadow: var(--yamato-focus-ring);
   }
+}
+
+.task-name-field__textarea {
+  padding: 8px 12px;
+  resize: vertical;
+  line-height: 1.5;
+  font-family: inherit;
 }
 
 @media (max-width: 1200px) {
