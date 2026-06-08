@@ -56,7 +56,6 @@ class QuotationApprovalData(BaseModel):
     pdm_result: Optional[Dict[str, Any]] = None
     keywords_payload: Optional[Dict[str, Any]] = None
     pdm_partids: Optional[List[str]] = None
-    pdm_to_u8_code_mappings: Optional[List[Dict[str, Any]]] = None
     temp_image_url: Optional[str] = None
 
 
@@ -114,6 +113,10 @@ class DirectU8Request(BaseModel):
         ...,
         min_length=1,
         description="用户直接输入的 U8 父级编码列表，将跳过 Phase1 直接进入 Phase2",
+    )
+    quantities: Optional[List[int]] = Field(
+        None,
+        description="与 partids 平行的数量数组（同长度）。省略时默认每个 PARTID 数量为 1。",
     )
     task_name: Optional[str] = Field(None, description="任务展示名称（可选）")
 
@@ -239,7 +242,6 @@ def _serialize_task(task: QuotationTask) -> QuotationTaskItemResponse:
                 pdm_result=payload.get("pdm_result"),
                 keywords_payload=payload.get("keywords_payload"),
                 pdm_partids=payload.get("pdm_partids"),
-                pdm_to_u8_code_mappings=payload.get("pdm_to_u8_code_mappings"),
                 temp_image_url=payload.get("temp_image_url"),
             )
 
@@ -325,13 +327,31 @@ async def create_direct_u8_task(
     db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> QuotationTaskSubmitResponse:
+    if body.quantities is not None and len(body.quantities) != len(body.partids):
+        raise HTTPException(
+            status_code=400,
+            detail="quantities 长度必须与 partids 一致",
+        )
+
     seen: set[str] = set()
     partids: list[str] = []
-    for raw in body.partids:
+    manual_partid_quantities: dict[str, int] = {}
+    for idx, raw in enumerate(body.partids):
         value = str(raw).strip()
-        if value and value not in seen:
-            seen.add(value)
-            partids.append(value)
+        if not value or value in seen:
+            continue
+        if body.quantities is not None:
+            qty = body.quantities[idx]
+            if qty < 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"quantities[{idx}] 必须 >= 1",
+                )
+        else:
+            qty = 1
+        seen.add(value)
+        partids.append(value)
+        manual_partid_quantities[value] = qty
     if not partids:
         raise HTTPException(status_code=400, detail="至少需要提供一个 PARTID")
     if len(partids) > 500:
@@ -397,6 +417,7 @@ async def create_direct_u8_task(
             "result_payload": {
                 "approved_partids": partids,
                 "manual_partid_types": manual_partid_types,
+                "manual_partid_quantities": manual_partid_quantities,
             },
             "error": None,
         },

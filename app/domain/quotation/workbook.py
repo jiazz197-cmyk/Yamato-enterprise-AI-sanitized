@@ -173,6 +173,7 @@ def build_quotation_workbook_data(
     raw_extracted_info: Any = None,
     keywords_payload: Any = None,
     generated_at: datetime | None = None,
+    partid_quantities: Dict[str, int] | None = None,
 ) -> QuotationWorkbookData:
     selection_items = _normalize_selection_items(summary_selection_items)
     selection_by_type = _group_selection_by_type(selection_items)
@@ -180,6 +181,7 @@ def build_quotation_workbook_data(
     groups = u8_result_by_type.get("items") if isinstance(u8_result_by_type, dict) else None
     detail_sheets: List[QuotationDetailSheet] = []
     summary_rows: List[QuotationSummaryRow] = []
+    qty_map = partid_quantities or {}
 
     if isinstance(groups, list):
         for group in groups:
@@ -192,6 +194,12 @@ def build_quotation_workbook_data(
                 if isinstance(item, Mapping)
             ]
             total_amount = _rows_total_amount(rows)
+            try:
+                qty = int(qty_map.get(type_name, 1))
+            except (TypeError, ValueError):
+                qty = 1
+            if qty < 1:
+                qty = 1
             detail_sheets.append(
                 QuotationDetailSheet(
                     sheet_name=type_name,
@@ -205,9 +213,9 @@ def build_quotation_workbook_data(
                 QuotationSummaryRow(
                     part_no=_merge_texts([item.partid for item in selected]),
                     name=_merge_texts([item.pdm_name for item in selected]) or type_name,
-                    quantity_display="1",
+                    quantity_display=str(qty),
                     unit_price=total_amount,
-                    amount=total_amount,
+                    amount=round(total_amount * qty, 4),
                     detail_sheet_name=type_name,
                 )
             )

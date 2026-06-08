@@ -133,7 +133,4 @@ class ExecuteQuotationPhase1UseCase:
             temp_image_minio_path=upload.object_path,
             temp_image_url=upload.public_url,
             raw_extracted_info=parse_result.get("params", {}),
-            ocr_text=text_result.text,
-            extract_method=text_result.extract_method,
-            parsed_params=parse_result.get("params", {}),
         )

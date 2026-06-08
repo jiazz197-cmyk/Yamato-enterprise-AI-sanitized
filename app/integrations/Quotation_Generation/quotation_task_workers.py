@@ -38,6 +38,31 @@ diag_logger = get_logger("diag.phase2")
 _XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
+def _extract_partid_quantities(payload: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    """Read ``manual_partid_quantities`` from a task payload and validate types.
+
+    Returns a sanitized ``{partid: int}`` mapping (skipping invalid entries) or
+    ``None`` when the field is missing/empty/malformed. Quantities are clamped
+    to a minimum of 1.
+    """
+    raw = payload.get("manual_partid_quantities")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    cleaned: Dict[str, int] = {}
+    for key, value in raw.items():
+        partid = str(key).strip()
+        if not partid:
+            continue
+        try:
+            qty = int(value)
+        except (TypeError, ValueError):
+            continue
+        if qty < 1:
+            qty = 1
+        cleaned[partid] = qty
+    return cleaned or None
+
+
 def _upload_u8_result_by_type_xlsx_to_minio(
     *,
     task_id: str,
@@ -46,6 +71,7 @@ def _upload_u8_result_by_type_xlsx_to_minio(
     summary_selection_items: Any = None,
     raw_extracted_info: Any = None,
     keywords_payload: Any = None,
+    partid_quantities: Optional[Dict[str, int]] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Build multi-sheet xlsx from ``u8_result_by_type`` and upload via sync MinIO.
 
@@ -61,6 +87,7 @@ def _upload_u8_result_by_type_xlsx_to_minio(
                 raw_extracted_info=raw_extracted_info,
                 keywords_payload=keywords_payload,
                 generated_at=datetime.now(ZoneInfo("Asia/Shanghai")),
+                partid_quantities=partid_quantities,
             )
         )
     except ImportError as exc:
@@ -161,16 +188,6 @@ def _clamp_message(message: str, limit: int = _MESSAGE_COLUMN_LIMIT) -> str:
     suffix = "…(truncated)"
     head = max(0, limit - len(suffix))
     return message[:head] + suffix
-
-
-def _query_result_summary(value: Any) -> Dict[str, Any]:
-    if not isinstance(value, dict):
-        return {"total": 0, "items_count": 0}
-    items = value.get("items")
-    return {
-        "total": value.get("total"),
-        "items_count": len(items) if isinstance(items, list) else 0,
-    }
 
 
 def _u8_by_type_summary(value: Any) -> Dict[str, Any]:
@@ -294,8 +311,6 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
         converted_u8_codes, pdm_to_u8_mappings = convert_partids_to_u8_codes(
             phase1_result.pdm_partids
         )
-        result_payload["u8_parent_inv_codes"] = converted_u8_codes
-        result_payload["pdm_to_u8_code_mappings"] = pdm_to_u8_mappings
         logger.info(
             "Phase1 PDM->U8 编码转换完成: task_id=%s, pdm_count=%s, u8_count=%s, sample=%s",
             task_id,
@@ -473,9 +488,7 @@ def process_quotation_task_phase2_background(
             "keywords_payload": existing_payload.get("keywords_payload"),
             "approved_partids": selected_partids,
             "summary_selection_items": existing_payload.get("summary_selection_items"),
-            "u8_result": _query_result_summary(phase2_result.u8_result),
             "u8_result_by_type": _u8_by_type_summary(full_u8_by_type),
-            "u8_result_type_summary": phase2_result.u8_result_type_summary,
             "cleanup": cleanup_result,
         }
 
@@ -486,6 +499,7 @@ def process_quotation_task_phase2_background(
             summary_selection_items=existing_payload.get("summary_selection_items"),
             raw_extracted_info=existing_payload.get("raw_extracted_info"),
             keywords_payload=existing_payload.get("keywords_payload"),
+            partid_quantities=_extract_partid_quantities(existing_payload),
         )
         if xlsx_path and xlsx_name:
             final_payload["u8_result_by_type_xlsx_minio_path"] = xlsx_path

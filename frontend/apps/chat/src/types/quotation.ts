@@ -25,7 +25,6 @@ export interface QuotationApprovalData {
   pdm_result?: QuotationPdmResult
   keywords_payload?: Record<string, unknown>
   pdm_partids?: string[]
-  pdm_to_u8_code_mappings?: Array<{ pdm_partid?: string; u8_parent_inv_code?: string; [key: string]: unknown }>
   temp_image_url?: string
 }
 

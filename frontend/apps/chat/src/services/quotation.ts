@@ -84,12 +84,14 @@ export const cancelQuotationTask = async (taskId: string): Promise<CancelQuotati
 
 export const createDirectU8Task = async (
   partids: string[],
+  quantities: number[],
   taskName?: string,
 ): Promise<CreateQuotationTaskResponse> => {
   return apiRequest<CreateQuotationTaskResponse>('/quotation/tasks/direct-u8', {
     method: 'POST',
     body: JSON.stringify({
       partids,
+      quantities,
       task_name: (taskName ?? '').trim() || undefined,
     }),
   })

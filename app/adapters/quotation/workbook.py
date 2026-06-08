@@ -85,17 +85,9 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
 
         meta = workbook_data.summary_meta
         summary_ws["C6"] = meta.pricing_title or workbook_data.summary_title
-        summary_ws["F1"] = "\u62a5\u4ef7\u7f16\u53f7\uff1a"
-        summary_ws["G1"] = meta.quote_number
-        summary_ws["F2"] = "\u5236\u9020\u7f16\u53f7\uff1a"
-        summary_ws["G2"] = meta.manufacturing_number
-        summary_ws["F3"] = "\u578b\u53f7\uff1a"
+        summary_ws["F3"] = "型号："
         summary_ws["G3"] = meta.model
-        summary_ws["F4"] = "\u7f16\u5236\uff1a"
-        summary_ws["G4"] = meta.prepared_by
-        summary_ws["F5"] = "\u5ba1\u6838\uff1a"
-        summary_ws["G5"] = meta.reviewed_by
-        summary_ws["F6"] = "\u62a5\u4ef7\u65e5\u671f\uff1a"
+        summary_ws["F6"] = "报价日期："
         summary_ws["G6"] = meta.quote_date
         summary_ws["E8"] = meta.tax_note
         summary_ws["E9"] = "\u5355\u4f4d\uff1a"
@@ -133,7 +125,7 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
                 if cell.value not in (None, ""):
                     cell.font = bold_font
 
-        for cell_range in ("F1:G6", "E8:F10", f"B11:G{row_idx - 1}"):
+        for cell_range in ("F3:G6", "E8:F10", f"B11:G{row_idx - 1}"):
             for rows in summary_ws[cell_range]:
                 for cell in rows:
                     cell.border = thin_border

@@ -145,13 +145,13 @@
         />
       </label>
       <label class="task-name-field" style="margin-top: 12px">
-        <span class="task-name-field__label">PARTID（每行一个，支持从 Excel 粘贴多行，支持换行、逗号、分号、Tab 分隔，最多 500 个）</span>
+        <span class="task-name-field__label">PARTID（每行一条，格式 "PARTID,数量"，数量可省略默认为 1，支持从 Excel 两列粘贴，最多 500 个）</span>
         <textarea
           v-model="directU8PartidsText"
           class="task-name-field__input task-name-field__textarea"
           rows="8"
           maxlength="10000"
-          placeholder="每行一个 PARTID，支持从 Excel 粘贴多行"
+          placeholder="每行格式：PARTID,数量&#10;例如：010101,5"
         />
       </label>
     </ConfirmDialog>
@@ -1871,25 +1871,44 @@ const cancelDirectU8Dialog = (): void => {
   directU8TaskName.value = ''
 }
 
-const parseDirectU8Partids = (text: string): string[] => {
+const parseDirectU8Partids = (text: string): { partids: string[]; quantities: number[]; errors: string[] } => {
   const seen = new Set<string>()
-  const result: string[] = []
+  const partids: string[] = []
+  const quantities: number[] = []
+  const errors: string[] = []
   const lines = text.split(/\r?\n/)
-  for (const line of lines) {
-    const parts = line.split(/[,;\t]+/)
-    for (const part of parts) {
-      const value = part.trim()
-      if (value && !seen.has(value)) {
-        seen.add(value)
-        result.push(value)
+  for (let i = 0; i < lines.length; i++) {
+    const parts = lines[i].split(/[,;\t]+/).map(s => s.trim()).filter(Boolean)
+    if (parts.length === 0) continue
+    const partid = parts[0]
+    if (seen.has(partid)) continue
+    let qty = 1
+    const qtyRaw = parts[1]
+    if (qtyRaw !== undefined) {
+      if (!/^\d+$/.test(qtyRaw)) {
+        errors.push(`第 ${i + 1} 行数量 "${qtyRaw}" 格式错误（必须为正整数）`)
+        continue
       }
+      const parsed = parseInt(qtyRaw, 10)
+      if (parsed < 1) {
+        errors.push(`第 ${i + 1} 行数量 ${parsed} 必须 >= 1`)
+        continue
+      }
+      qty = parsed
     }
+    seen.add(partid)
+    partids.push(partid)
+    quantities.push(qty)
   }
-  return result
+  return { partids, quantities, errors }
 }
 
 const confirmDirectU8Submit = async (): Promise<void> => {
-  const partids = parseDirectU8Partids(directU8PartidsText.value)
+  const { partids, quantities, errors } = parseDirectU8Partids(directU8PartidsText.value)
+  if (errors.length > 0) {
+    errorMessage.value = errors.join('；')
+    return
+  }
   if (partids.length === 0) {
     errorMessage.value = '请至少输入一个 PARTID'
     return
@@ -1904,7 +1923,7 @@ const confirmDirectU8Submit = async (): Promise<void> => {
   showDirectU8Dialog.value = false
 
   try {
-    await createDirectU8Task(partids, directU8TaskName.value.trim() || undefined)
+    await createDirectU8Task(partids, quantities, directU8TaskName.value.trim() || undefined)
     directU8PartidsText.value = ''
     directU8TaskName.value = ''
     await loadTasks()

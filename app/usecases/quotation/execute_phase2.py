@@ -139,11 +139,10 @@ class ExecuteQuotationPhase2UseCase:
         self._emit_progress(cb, 95, "U8 查询完成，正在收尾")
 
         u8_result_by_type: Dict[str, Any] = {"total": 0, "items": []}
-        u8_result_type_summary: Dict[str, Any] = {"total_types": 0, "types": []}
         kw = cmd.keywords_payload
         has_manual = isinstance(cmd.manual_partid_types, dict) and bool(cmd.manual_partid_types)
         if (isinstance(kw, dict) and kw) or has_manual:
-            u8_result_by_type, u8_result_type_summary = group_u8_result_by_type(
+            u8_result_by_type, _ = group_u8_result_by_type(
                 keywords_payload=kw if isinstance(kw, dict) else {},
                 pdm_result=cmd.pdm_result,
                 approved_partids=cmd.approved_partids or selected_partids,
@@ -152,13 +151,11 @@ class ExecuteQuotationPhase2UseCase:
                 manual_partid_types=cmd.manual_partid_types,
             )
             logger.info(
-                "Phase2 U8 按 type 分组完成: total_types=%s, total_items=%s",
+                "Phase2 U8 按 type 分组完成: total_types=%s",
                 u8_result_by_type.get("total"),
-                u8_result_type_summary.get("total_items"),
             )
 
         return Phase2Result(
             u8_result=u8_result,
             u8_result_by_type=u8_result_by_type,
-            u8_result_type_summary=u8_result_type_summary,
         )

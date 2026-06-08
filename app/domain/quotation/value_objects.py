@@ -50,11 +50,7 @@ class QuotationDetailSheet:
 
 @dataclass(frozen=True)
 class QuotationSummaryMeta:
-    quote_number: str = ""
-    manufacturing_number: str = ""
     model: str = ""
-    prepared_by: str = ""
-    reviewed_by: str = ""
     quote_date: str = ""
     pricing_title: str = ""
     table_title: str = ""
