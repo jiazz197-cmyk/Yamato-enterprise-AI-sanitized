@@ -253,7 +253,9 @@ def group_u8_result_by_type(
             pdm_to_u8_mappings=pdm_to_u8_mappings,
         )
 
+    # 按 root_inv_code 分组时，同时获取根父件名称
     root_to_rows: Dict[str, List[Dict[str, Any]]] = {}
+    root_to_name: Dict[str, str] = {}
     for raw in items:
         if not isinstance(raw, dict):
             continue
@@ -262,14 +264,28 @@ def group_u8_result_by_type(
             continue
         root_to_rows.setdefault(root_code, []).append(raw)
 
+        # 获取根父件名称
+        root_name = str(raw.get("__root_inv_name") or "").strip()
+        if root_name and root_code not in root_to_name:
+            root_to_name[root_code] = root_name
+
     grouped_items: List[Dict[str, Any]] = []
     for type_name, codes in type_to_codes.items():
         rows: List[Dict[str, Any]] = []
         for code in codes:
             rows.extend(root_to_rows.get(code, []))
+
+        # 使用根父件名称作为显示名称
+        display_name = type_name
+        if codes:
+            # 尝试从第一个编码获取名称
+            first_code = codes[0]
+            if first_code in root_to_name:
+                display_name = root_to_name[first_code]
+
         grouped_items.append(
             {
-                "type": type_name,
+                "type": display_name,
                 "u8_parent_inv_codes": codes,
                 "total": len(rows),
                 "items": rows,
