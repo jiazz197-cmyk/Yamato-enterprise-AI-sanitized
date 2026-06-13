@@ -125,14 +125,14 @@ class ApproveQuotationTaskUseCase:
 
         final_partids = approved_partids + extra_clean
 
-        diag_logger.info(
+        diag_logger.debug(
             "[diag_approve_usecase] task_id=%s approved_count=%s extra_count=%s final_count=%s "
             "manual_type_map=%s",
             cmd.task_id,
             len(approved_partids),
             len(extra_clean),
             len(final_partids),
-            manual_partid_types,
+            len(manual_partid_types),
         )
 
         if not final_partids:

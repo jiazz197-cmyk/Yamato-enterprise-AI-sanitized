@@ -230,7 +230,7 @@ def _count_statuses(tasks: List[QuotationTask]) -> Dict[str, int]:
 
 
 def _log_list_tasks_diag(**details: Any) -> None:
-    diag_logger.info("[quotation_tasks_diag] list_tasks | %s", details)
+    diag_logger.debug("[quotation_tasks_diag] list_tasks | %s", details)
 
 
 def _serialize_task(task: QuotationTask) -> QuotationTaskItemResponse:
@@ -559,7 +559,7 @@ async def approve_quotation_task(
     db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> ApproveTaskResponse:
-    diag_logger.info(
+    diag_logger.debug(
         "[diag_approve] 收到审批请求 task_id=%s approved_count=%s extra_count=%s extra_entries=%s",
         task_id,
         len(request.approved_partids),

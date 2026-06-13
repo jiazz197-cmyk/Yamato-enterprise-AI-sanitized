@@ -61,22 +61,6 @@ except Exception as e:
     logger.critical("ClosingFormAdapter 初始化失败: %s", e, exc_info=True)
     raise
 
-# 诊断端点：验证 adapter 和 persistence 是否正常
-@router.get("/_diag", summary="内部诊断", include_in_schema=False)
-async def diag():
-    try:
-        pending = await _persistence.list_pending_forms()
-        approved = await _persistence.list_approved_forms()
-        return {
-            "adapter": type(_persistence).__name__,
-            "pending_count": len(pending),
-            "approved_count": len(approved),
-            "sample_approved": approved[0] if approved else None,
-        }
-    except Exception as e:
-        return {"error": str(e), "type": type(e).__name__}
-
-
 @router.get("/image/{object_name:path}")
 def get_closing_form_image(object_name: str):
     """下载/预览报单图片（根据 MinIO object name 流式返回）"""
@@ -94,7 +78,7 @@ def get_closing_form_image(object_name: str):
 
     try:
         get_minio_client().stat_object(MINIO_BUCKET_NAME, object_name)
-        logger.info("报单图片存在，开始流式返回: object=%s", object_name)
+        logger.debug("报单图片存在，开始流式返回: object=%s", object_name)
     except S3Error as e:
         if e.code in {"NoSuchKey", "NoSuchObject", "NoSuchVersion"}:
             logger.warning("报单图片不存在: object=%s, code=%s", object_name, e.code)
@@ -170,9 +154,21 @@ def delete_closing_form_image(
     object_name: str = Query(..., description="MinIO object name"),
     current_user: CurrentUserPort = Depends(require_permission("view_closing_form")),
 ):
-    """删除已上传的报单图片（仅限配置的前缀，防越权）"""
+    """删除已上传的报单图片（仅限配置的前缀 + 归属校验）"""
     if not object_name.startswith(f"{settings.CLOSING_FORM_IMAGE_PREFIX}/"):
         raise HTTPException(status_code=400, detail="非法的图片路径")
+
+    # 归属校验：从 object_name 解析上传者，仅允许本人或管理员删除
+    if not current_user.is_admin_like():
+        # object_name 格式: {prefix}/{uploader}_{timestamp}_{uuid}{ext}
+        filename_part = object_name[len(settings.CLOSING_FORM_IMAGE_PREFIX) + 1:]  # 去掉 prefix/
+        uploader_in_path = filename_part.split("_", 1)[0]  # 取第一个 _ 之前的部分
+        if uploader_in_path != current_user.username:
+            logger.warning(
+                "非归属用户尝试删除图片: user=%s, uploader=%s, object=%s",
+                current_user.username, uploader_in_path, object_name,
+            )
+            raise HTTPException(status_code=403, detail="只能删除自己上传的图片")
 
     ok = delete_from_minio(object_name)
     if not ok:

@@ -130,12 +130,12 @@ def _build_selection_driven_groups(
         if code not in codes:
             codes.append(code)
 
-    diag_logger.info(
+    diag_logger.debug(
         "[diag_u8_grouping] _build_selection_driven_groups: matched=%s skipped_no_type=%s skipped_no_code=%s skipped_neither=%s",
         len(type_to_codes),
-        skipped_type,
-        skipped_code,
-        skipped_both,
+        len(skipped_type),
+        len(skipped_code),
+        len(skipped_both),
     )
 
     return type_to_codes, type_entries
@@ -230,15 +230,15 @@ def group_u8_result_by_type(
     only_coded = coded_partids - typed_partids
     both = typed_partids & coded_partids
     neither = set(normalized_approved_partids) - typed_partids - coded_partids
-    diag_logger.info(
+    diag_logger.debug(
         "[diag_u8_grouping] approved=%s typed=%s coded=%s both=%s only_typed=%s only_coded=%s neither=%s",
-        normalized_approved_partids,
-        sorted(typed_partids),
-        sorted(coded_partids),
-        sorted(both),
-        sorted(only_typed),
-        sorted(only_coded),
-        sorted(neither),
+        len(normalized_approved_partids),
+        len(typed_partids),
+        len(coded_partids),
+        len(both),
+        len(only_typed),
+        len(only_coded),
+        len(neither),
     )
 
     if normalized_approved_partids and partid_to_type and partid_to_code:
@@ -253,7 +253,9 @@ def group_u8_result_by_type(
             pdm_to_u8_mappings=pdm_to_u8_mappings,
         )
 
+    # 按 root_inv_code 分组时，同时获取根父件名称
     root_to_rows: Dict[str, List[Dict[str, Any]]] = {}
+    root_to_name: Dict[str, str] = {}
     for raw in items:
         if not isinstance(raw, dict):
             continue
@@ -262,14 +264,28 @@ def group_u8_result_by_type(
             continue
         root_to_rows.setdefault(root_code, []).append(raw)
 
+        # 获取根父件名称
+        root_name = str(raw.get("__root_inv_name") or "").strip()
+        if root_name and root_code not in root_to_name:
+            root_to_name[root_code] = root_name
+
     grouped_items: List[Dict[str, Any]] = []
     for type_name, codes in type_to_codes.items():
         rows: List[Dict[str, Any]] = []
         for code in codes:
             rows.extend(root_to_rows.get(code, []))
+
+        # 使用根父件名称作为显示名称
+        display_name = type_name
+        if codes:
+            # 尝试从第一个编码获取名称
+            first_code = codes[0]
+            if first_code in root_to_name:
+                display_name = root_to_name[first_code]
+
         grouped_items.append(
             {
-                "type": type_name,
+                "type": display_name,
                 "u8_parent_inv_codes": codes,
                 "total": len(rows),
                 "items": rows,

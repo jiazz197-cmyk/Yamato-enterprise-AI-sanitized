@@ -44,9 +44,9 @@ def run_u8_bom_inventory_query(
             parent_codes, payload.max_depth, cancel_checker=cancel_checker
         )
         rows = format_u8_output_rows(raw_rows)
-        logger.info(
-            "U8 查询完成: parent_inv_codes=%s, raw_rows=%s, output_rows=%s",
-            parent_codes,
+        logger.debug(
+            "U8 查询完成: parent_codes=%s, raw_rows=%s, output_rows=%s",
+            len(parent_codes),
             len(raw_rows),
             len(rows),
         )
@@ -120,12 +120,11 @@ def run_pdm_bom_query(
                     continue
 
                 logger.debug(
-                    "PDM 关键词转换: group_index=%s, product_type=%r, model=%r, raw_group=%s, expanded_keywords=%s",
+                    "PDM 关键词转换: group_index=%s, product_type=%r, model=%r, expanded_count=%s",
                     idx,
                     product_type,
                     model,
-                    group,
-                    mapping_debug,
+                    len(mapping_debug),
                 )
 
                 executed_query_count += 1
@@ -140,7 +139,7 @@ def run_pdm_bom_query(
                     rows.append(item)
 
         deduplicated_rows = deduplicate_pdm_result_rows(rows)
-        logger.info(
+        logger.debug(
             "PDM 查询完成: input_groups=%s, executed_queries=%s, rows=%s, deduplicated_rows=%s",
             len(keyword_groups),
             executed_query_count,
@@ -175,7 +174,7 @@ def run_pdm_match_query(
         total = result.get("total", 0)
         items = result.get("items", [])
         components = result.get("components", [])
-        logger.info(
+        logger.debug(
             "PDM 匹配查询完成: total=%s",
             total,
         )

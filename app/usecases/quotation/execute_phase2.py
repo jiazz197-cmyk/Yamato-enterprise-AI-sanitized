@@ -79,12 +79,6 @@ class ExecuteQuotationPhase2UseCase:
         if not converted_u8_codes:
             raise QuotationPipelineError("PDM PARTID 转换 U8 编码后为空，无法继续 U8 查询")
 
-        diag_logger.info(
-            "[diag_phase2_usecase] task_id=N/A selected_partids=%s converted_codes=%s mappings=%s",
-            selected_partids,
-            converted_u8_codes,
-            pdm_to_u8_mappings,
-        )
 
         logger.info(
             "Phase2 PARTID->U8 编码转换: input_count=%s, output_count=%s, sample=%s",

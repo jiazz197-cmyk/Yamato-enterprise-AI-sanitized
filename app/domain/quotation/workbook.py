@@ -209,10 +209,17 @@ def build_quotation_workbook_data(
             )
 
             selected = selection_by_type.get(type_name, [])
+            # part_no: prefer PDM PARTID (original input code), then U8 parent codes, then type_name
+            part_no = _merge_texts([item.partid for item in selected])
+            if not part_no:
+                # Direct U8 flow: use original input codes from selection items
+                u8_codes = group.get("u8_parent_inv_codes") if isinstance(group, Mapping) else None
+                part_no = _merge_texts([str(c) for c in (u8_codes or [])]) or type_name
+            name = _merge_texts([item.pdm_name for item in selected]) or type_name
             summary_rows.append(
                 QuotationSummaryRow(
-                    part_no=_merge_texts([item.partid for item in selected]),
-                    name=_merge_texts([item.pdm_name for item in selected]) or type_name,
+                    part_no=part_no,
+                    name=name,
                     quantity_display=str(qty),
                     unit_price=total_amount,
                     amount=round(total_amount * qty, 4),

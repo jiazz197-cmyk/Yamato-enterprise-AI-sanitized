@@ -311,13 +311,6 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
         converted_u8_codes, pdm_to_u8_mappings = convert_partids_to_u8_codes(
             phase1_result.pdm_partids
         )
-        logger.info(
-            "Phase1 PDM->U8 编码转换完成: task_id=%s, pdm_count=%s, u8_count=%s, sample=%s",
-            task_id,
-            len(phase1_result.pdm_partids),
-            len(converted_u8_codes),
-            pdm_to_u8_mappings[:8],
-        )
 
         _persistence.patch_task_fields_sync(
             task_id,
@@ -423,22 +416,12 @@ def process_quotation_task_phase2_background(
             selected_partids = [str(partid) for partid in fallback if str(partid).strip()]
             source = "pdm_partids(fallback)"
 
-        diag_logger.info(
-            "[diag_phase2_worker] task_id=%s source=%s selected_count=%s selected=%s "
-            "payload_keys=%s",
-            task_id,
-            source,
-            len(selected_partids),
-            selected_partids,
-            list(existing_payload.keys()),
-        )
-
         logger.info(
             "Phase2 准备执行 U8 查询: task_id=%s, source=%s, selected_count=%s, sample=%s",
             task_id,
             source,
             len(selected_partids),
-            selected_partids[:8],
+            selected_partids[:3],
         )
 
         if not selected_partids:
@@ -472,7 +455,7 @@ def process_quotation_task_phase2_background(
         if isinstance(phase2_result.u8_result, dict):
             u8_total = phase2_result.u8_result.get("total")
             u8_items = phase2_result.u8_result.get("items")
-        logger.info(
+        logger.debug(
             "Phase2 U8 查询结果: task_id=%s, total=%s, items_len=%s",
             task_id,
             u8_total,

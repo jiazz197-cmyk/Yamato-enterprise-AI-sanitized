@@ -215,7 +215,6 @@ def query_pdm_bom_merged(
             AND {where_clause}
             ORDER BY a.PARTID
         """
-        logger.debug("PDM BOM_027 查询 (%s):\n%s", tag, query_sql)
         rows = client.query(query_sql)
         logger.debug("PDM BOM_027 查询 (%s) 命中 %d 条", tag, len(rows))
         return rows
@@ -303,6 +302,5 @@ def query_pdm_bom(
         ORDER BY a.PARTID
     """
 
-    logger.debug("PDM BOM_027 SQL:\n%s", query_sql)
     rows = client.query(query_sql)
     return deduplicate_rows(rows)
