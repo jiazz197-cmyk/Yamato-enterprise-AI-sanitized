@@ -194,8 +194,14 @@ def build_quotation_workbook_data(
                 if isinstance(item, Mapping)
             ]
             total_amount = _rows_total_amount(rows)
+            # Resolve quantity: qty_map is keyed by partid, not by type_name.
+            # Use the group's "partids" list (from u8_grouping) to bridge the lookup.
+            group_partids = group.get("partids") if isinstance(group.get("partids"), list) else []
             try:
-                qty = int(qty_map.get(type_name, 1))
+                if group_partids:
+                    qty = sum(int(qty_map.get(pid, 1)) for pid in group_partids if pid in qty_map) or 1
+                else:
+                    qty = int(qty_map.get(type_name, 1))
             except (TypeError, ValueError):
                 qty = 1
             if qty < 1:

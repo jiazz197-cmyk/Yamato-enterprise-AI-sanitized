@@ -98,8 +98,9 @@ def _build_selection_driven_groups(
     approved_partids: List[str],
     partid_to_type: Dict[str, str],
     partid_to_code: Dict[str, str],
-) -> Tuple[Dict[str, List[str]], List[Dict[str, Any]]]:
+) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], List[Dict[str, Any]]]:
     type_to_codes: Dict[str, List[str]] = {}
+    type_to_partids: Dict[str, List[str]] = {}
     type_entries: List[Dict[str, Any]] = []
     skipped_type: list[str] = []
     skipped_code: list[str] = []
@@ -127,6 +128,7 @@ def _build_selection_driven_groups(
             continue
 
         codes = type_to_codes.setdefault(type_name, [])
+        type_to_partids.setdefault(type_name, []).append(partid)
         if code not in codes:
             codes.append(code)
 
@@ -138,14 +140,14 @@ def _build_selection_driven_groups(
         len(skipped_both),
     )
 
-    return type_to_codes, type_entries
+    return type_to_codes, type_to_partids, type_entries
 
 
 def _build_positional_groups(
     *,
     keywords: List[Dict[str, Any]],
     pdm_to_u8_mappings: List[Dict[str, str]],
-) -> Tuple[Dict[str, List[str]], List[Dict[str, Any]]]:
+) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], List[Dict[str, Any]]]:
     mapped_order: List[str] = []
     mapped_set: set[str] = set()
     for mapping in pdm_to_u8_mappings:
@@ -159,12 +161,15 @@ def _build_positional_groups(
 
     type_entries: List[Dict[str, Any]] = []
     type_to_codes: Dict[str, List[str]] = {}
+    type_to_partids: Dict[str, List[str]] = {}
     for idx, entry in enumerate(keywords, start=1):
         type_name = str(entry.get("type") or "").strip() or "Uncategorized"
         part_code = mapped_order[idx - 1] if idx - 1 < len(mapped_order) else ""
         if not part_code:
             continue
         type_to_codes.setdefault(type_name, []).append(part_code)
+        # positional grouping: use u8 code as pseudo-partid
+        type_to_partids.setdefault(type_name, []).append(part_code)
         type_entries.append(
             {
                 "query_index": idx,
@@ -173,7 +178,7 @@ def _build_positional_groups(
                 "matched": True,
             }
         )
-    return type_to_codes, type_entries
+    return type_to_codes, type_to_partids, type_entries
 
 
 def group_u8_result_by_type(
@@ -242,13 +247,13 @@ def group_u8_result_by_type(
     )
 
     if normalized_approved_partids and partid_to_type and partid_to_code:
-        type_to_codes, type_entries = _build_selection_driven_groups(
+        type_to_codes, type_to_partids, type_entries = _build_selection_driven_groups(
             approved_partids=normalized_approved_partids,
             partid_to_type=partid_to_type,
             partid_to_code=partid_to_code,
         )
     else:
-        type_to_codes, type_entries = _build_positional_groups(
+        type_to_codes, type_to_partids, type_entries = _build_positional_groups(
             keywords=keywords,
             pdm_to_u8_mappings=pdm_to_u8_mappings,
         )
@@ -287,6 +292,7 @@ def group_u8_result_by_type(
             {
                 "type": display_name,
                 "u8_parent_inv_codes": codes,
+                "partids": type_to_partids.get(type_name, []),
                 "total": len(rows),
                 "items": rows,
             }

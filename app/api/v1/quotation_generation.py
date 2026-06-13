@@ -119,6 +119,10 @@ class DirectU8Request(BaseModel):
         description="与 partids 平行的数量数组（同长度）。省略时默认每个 PARTID 数量为 1。",
     )
     task_name: Optional[str] = Field(None, description="任务展示名称（可选）")
+    code_type: Optional[str] = Field(
+        None,
+        description="编码类型标记：'project' 表示项目编码，省略表示 U8 编码",
+    )
 
 
 class ApproveTaskRequest(BaseModel):
@@ -332,6 +336,11 @@ async def create_direct_u8_task(
             status_code=400,
             detail="quantities 长度必须与 partids 一致",
         )
+    if body.code_type is not None and body.code_type != "project":
+        raise HTTPException(
+            status_code=400,
+            detail="code_type 仅支持 'project'，省略表示 U8 编码",
+        )
 
     seen: set[str] = set()
     partids: list[str] = []
@@ -418,6 +427,7 @@ async def create_direct_u8_task(
                 "approved_partids": partids,
                 "manual_partid_types": manual_partid_types,
                 "manual_partid_quantities": manual_partid_quantities,
+                "code_type": body.code_type,
             },
             "error": None,
         },

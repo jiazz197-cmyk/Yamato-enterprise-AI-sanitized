@@ -22,6 +22,9 @@
         <button class="secondary-btn" :disabled="directU8Submitting" @click="openDirectU8Dialog">
           {{ directU8Submitting ? '提交中...' : '直接进行u8查询' }}
         </button>
+        <button class="secondary-btn" :disabled="directProjectSubmitting" @click="openDirectProjectDialog">
+          {{ directProjectSubmitting ? '提交中...' : '直接上传项目编码' }}
+        </button>
         <button class="primary-btn" :disabled="uploading" @click="openFilePicker">
           {{ uploading ? '上传中...' : '上传PDF' }}
         </button>
@@ -155,6 +158,36 @@
         />
       </label>
     </ConfirmDialog>
+
+    <ConfirmDialog
+      v-model="showDirectProjectDialog"
+      title="直接上传项目编码"
+      type="primary"
+      confirm-text="提交"
+      cancel-text="取消"
+      @confirm="confirmDirectProjectSubmit"
+      @cancel="cancelDirectProjectDialog"
+    >
+      <label class="task-name-field">
+        <span class="task-name-field__label">请输入任务名称（仅用于展示）</span>
+        <input
+          v-model="directProjectTaskName"
+          class="task-name-field__input"
+          type="text"
+          maxlength="120"
+        />
+      </label>
+      <label class="task-name-field" style="margin-top: 12px">
+        <span class="task-name-field__label">项目编码（每行一条，最多 500 个）</span>
+        <textarea
+          v-model="directProjectCodesText"
+          class="task-name-field__input task-name-field__textarea"
+          rows="8"
+          maxlength="10000"
+          placeholder="每行一个项目编码&#10;例如：WG250746"
+        />
+      </label>
+    </ConfirmDialog>
   </div>
 </template>
 
@@ -193,6 +226,11 @@ const showDirectU8Dialog = ref(false)
 const directU8PartidsText = ref('')
 const directU8TaskName = ref('')
 const directU8Submitting = ref(false)
+
+const showDirectProjectDialog = ref(false)
+const directProjectCodesText = ref('')
+const directProjectTaskName = ref('')
+const directProjectSubmitting = ref(false)
 
 const wsMap = new Map<string, WebSocket>()
 const wsTaskEpochMap = new Map<string, number>()
@@ -1931,6 +1969,57 @@ const confirmDirectU8Submit = async (): Promise<void> => {
     errorMessage.value = (error as { message?: string })?.message ?? '创建直接 U8 查询任务失败'
   } finally {
     directU8Submitting.value = false
+  }
+}
+
+const openDirectProjectDialog = (): void => {
+  directProjectCodesText.value = ''
+  directProjectTaskName.value = ''
+  directProjectSubmitting.value = false
+  showDirectProjectDialog.value = true
+}
+
+const cancelDirectProjectDialog = (): void => {
+  showDirectProjectDialog.value = false
+  directProjectCodesText.value = ''
+  directProjectTaskName.value = ''
+}
+
+const confirmDirectProjectSubmit = async (): Promise<void> => {
+  const seen = new Set<string>()
+  const partids: string[] = []
+  const lines = directProjectCodesText.value.split(/\r?\n/)
+  for (const line of lines) {
+    const code = line.trim()
+    if (!code || seen.has(code)) continue
+    seen.add(code)
+    partids.push(code)
+  }
+
+  if (partids.length === 0) {
+    errorMessage.value = '请至少输入一个项目编码'
+    return
+  }
+  if (partids.length > 500) {
+    errorMessage.value = `最多支持 500 个编码，当前输入了 ${partids.length} 个`
+    return
+  }
+
+  const quantities = partids.map(() => 1)
+
+  directProjectSubmitting.value = true
+  errorMessage.value = ''
+  showDirectProjectDialog.value = false
+
+  try {
+    await createDirectU8Task(partids, quantities, directProjectTaskName.value.trim() || undefined, 'project')
+    directProjectCodesText.value = ''
+    directProjectTaskName.value = ''
+    await loadTasks()
+  } catch (error) {
+    errorMessage.value = (error as { message?: string })?.message ?? '创建项目编码查询任务失败'
+  } finally {
+    directProjectSubmitting.value = false
   }
 }
 

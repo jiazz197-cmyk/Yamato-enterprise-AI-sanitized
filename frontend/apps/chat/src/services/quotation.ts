@@ -86,6 +86,7 @@ export const createDirectU8Task = async (
   partids: string[],
   quantities: number[],
   taskName?: string,
+  codeType?: string,
 ): Promise<CreateQuotationTaskResponse> => {
   return apiRequest<CreateQuotationTaskResponse>('/quotation/tasks/direct-u8', {
     method: 'POST',
@@ -93,6 +94,7 @@ export const createDirectU8Task = async (
       partids,
       quantities,
       task_name: (taskName ?? '').trim() || undefined,
+      ...(codeType ? { code_type: codeType } : {}),
     }),
   })
 }
