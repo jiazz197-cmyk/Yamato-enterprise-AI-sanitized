@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from app.core.logging import get_logger
 from app.domain.quotation import (
@@ -11,7 +11,6 @@ from app.domain.quotation import (
     QuotationPipelineCancelledError,
     QuotationPipelineError,
     convert_partids_to_u8_codes,
-    group_u8_result_by_type,
     summarize_partid_list,
 )
 from app.ports.domains.quotation import CancelChecker, ProgressCallback
@@ -20,7 +19,6 @@ from app.ports.domains.sqlserver_queries import U8BomInventoryQueryPort
 from app.ports.dto.sqlserver_queries import U8BomInventoryCommand
 
 logger = get_logger("quotation.execute_phase2")
-diag_logger = get_logger("diag.phase2")
 
 _U8_MAX_DEPTH = 3
 
@@ -39,6 +37,7 @@ class ExecuteQuotationPhase2Command:
     pdm_result: Optional[Dict[str, Any]] = None
     approved_partids: Optional[List[str]] = None
     manual_partid_types: Optional[Dict[str, str]] = None
+    code_type: Optional[str] = None
     progress_callback: ProgressCallback = None
     cancel_checker: CancelChecker = None
 
@@ -79,19 +78,35 @@ class ExecuteQuotationPhase2UseCase:
         if not converted_u8_codes:
             raise QuotationPipelineError("PDM PARTID 转换 U8 编码后为空，无法继续 U8 查询")
 
-        diag_logger.info(
-            "[diag_phase2_usecase] task_id=N/A selected_partids=%s converted_codes=%s mappings=%s",
-            selected_partids,
-            converted_u8_codes,
-            pdm_to_u8_mappings,
-        )
-
         logger.info(
             "Phase2 PARTID->U8 编码转换: input_count=%s, output_count=%s, sample=%s",
             len(selected_partids),
             len(converted_u8_codes),
             pdm_to_u8_mappings[:8],
         )
+
+        # 项目编码模式：多次查询
+        if cmd.code_type == "project":
+            return self._execute_project_mode(
+                cmd, selected_partids, converted_u8_codes, pdm_to_u8_mappings, cancel, cb
+            )
+
+        # 普通模式：保持原有逻辑
+        return self._execute_normal_mode(
+            cmd, selected_partids, converted_u8_codes, pdm_to_u8_mappings, cancel, cb
+        )
+
+    def _execute_normal_mode(
+        self,
+        cmd: ExecuteQuotationPhase2Command,
+        selected_partids: List[str],
+        converted_u8_codes: List[str],
+        pdm_to_u8_mappings: List[Dict[str, str]],
+        cancel: CancelChecker,
+        cb: ProgressCallback,
+    ) -> Phase2Result:
+        """普通模式：一次查询后分组"""
+        from app.domain.quotation import group_u8_result_by_type
 
         parent_inv_codes = ",".join(converted_u8_codes)
         u8_summary = summarize_partid_list(converted_u8_codes)
@@ -149,6 +164,7 @@ class ExecuteQuotationPhase2UseCase:
                 u8_result=u8_result,
                 pdm_to_u8_mappings=pdm_to_u8_mappings,
                 manual_partid_types=cmd.manual_partid_types,
+                code_type=None,  # 普通模式
             )
             logger.info(
                 "Phase2 U8 按 type 分组完成: total_types=%s",
@@ -159,3 +175,247 @@ class ExecuteQuotationPhase2UseCase:
             u8_result=u8_result,
             u8_result_by_type=u8_result_by_type,
         )
+
+    def _execute_project_mode(
+        self,
+        cmd: ExecuteQuotationPhase2Command,
+        selected_partids: List[str],
+        converted_u8_codes: List[str],
+        pdm_to_u8_mappings: List[Dict[str, str]],
+        cancel: CancelChecker,
+        cb: ProgressCallback,
+    ) -> Phase2Result:
+        """项目编码模式：多次查询
+
+        1. 浅层查询 (max_depth=1) 获取一级子零件列表
+        2. 虚拟件：单独查询 (max_depth=3)，每个对应一个明细页
+        3. 外购件：不单独查询，只在汇总页显示一行
+        """
+        project_codes_set = set(converted_u8_codes)
+
+        # Step 1: 浅层查询获取一级子零件
+        self._emit_progress(cb, 70, "正在执行项目编码浅层查询...")
+        self._check_cancel(cancel)
+
+        shallow_response = self._u8_query.run(
+            U8BomInventoryCommand(parent_inv_codes=",".join(converted_u8_codes), max_depth=1),
+            cancel_checker=cancel,
+        )
+        shallow_result = _response_to_dict(shallow_response)
+
+        logger.info(
+            "Phase2 项目编码浅层查询完成: total=%s",
+            shallow_result.get("total"),
+        )
+
+        # Step 2: 提取一级子零件编码（区分虚拟件和外购件）
+        virtual_children, purchased_items = self._extract_first_level_children(
+            shallow_result, project_codes_set
+        )
+
+        logger.info(
+            "Phase2 项目编码一级子零件: virtual=%s, purchased=%s",
+            [c["code"] for c in virtual_children],
+            len(purchased_items),
+        )
+
+        # Step 3: 对每个虚拟件一级子零件单独查询
+        all_query_results: List[Dict[str, Any]] = []
+
+        total_children = len(virtual_children)
+        for idx, child in enumerate(virtual_children):
+            child_code = child["code"]
+            child_qty = child["qty"]
+            child_name = child["name"]
+            self._check_cancel(cancel)
+            progress = 70 + int((idx / total_children) * 20) if total_children > 0 else 80
+            self._emit_progress(cb, progress, f"正在查询一级子零件 {idx + 1}/{total_children}: {child_code}")
+
+            try:
+                child_response = self._u8_query.run(
+                    U8BomInventoryCommand(parent_inv_codes=child_code, max_depth=_U8_MAX_DEPTH),
+                    cancel_checker=cancel,
+                )
+            except QueryCancelledError as exc:
+                raise QuotationPipelineCancelledError("U8 查询已取消") from exc
+
+            child_result = _response_to_dict(child_response)
+
+            all_query_results.append({
+                "code": child_code,
+                "name": child_name,  # 使用浅层查询中的一级子零件名称
+                "items": child_result.get("items", []),
+                "qty": child_qty,  # 一级累计用量
+            })
+
+            logger.info(
+                "Phase2 一级子零件查询完成: code=%s, name=%s, qty=%s, items=%s",
+                child_code,
+                child_name,
+                child_qty,
+                len(child_result.get("items", [])),
+            )
+
+        # Step 4: 外购件只在汇总页显示，不生成明细页
+        for item in purchased_items:
+            child_code = str(item.get("材料编码（物料编码）") or "").strip()
+            child_name = str(item.get("子件名称") or child_code).strip()
+            unit_price = item.get("单价")
+            total_price = item.get("总价")
+
+            # 读取一级累计用量
+            cum_qty = item.get("累计用量")
+            try:
+                qty = float(cum_qty) if cum_qty is not None else 1.0
+            except (TypeError, ValueError):
+                qty = 1.0
+            if qty < 1:
+                qty = 1.0
+
+            all_query_results.append({
+                "code": child_code,
+                "name": child_name,
+                "items": [],  # 空明细页
+                "qty": qty,
+                "unit_price": unit_price,
+                "total_price": total_price,
+            })
+
+            logger.info(
+                "Phase2 外购件汇总行: code=%s, name=%s, price=%s",
+                child_code,
+                child_name,
+                total_price,
+            )
+
+        self._emit_progress(cb, 95, "U8 查询完成，正在收尾")
+
+        # Step 5: 构建分组结果
+        u8_result_by_type = self._build_project_mode_groups(all_query_results)
+
+        # 构建完整的 u8_result（合并所有查询结果，排除外购件汇总行）
+        all_items = []
+        for qr in all_query_results:
+            all_items.extend(qr.get("items", []))
+
+        u8_result = {
+            "total": len(all_items),
+            "items": all_items,
+        }
+
+        return Phase2Result(
+            u8_result=u8_result,
+            u8_result_by_type=u8_result_by_type,
+        )
+
+    def _extract_first_level_children(
+        self,
+        shallow_result: Dict[str, Any],
+        project_codes_set: Set[str],
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """从浅层查询结果中提取一级子零件编码
+
+        判断虚拟件的标准：供应类型 == "虚拟件"（对应 iSupplyType=3 或 bForeExpland=1），
+        不使用编码前缀判断。有 BOM 可展开的才是虚拟件，外购件/末级零件只在汇总页显示。
+
+        Returns:
+            (virtual_children, purchased_items)
+            - virtual_children: 虚拟件列表，每项含 code、qty（一级累计用量）
+            - purchased_items: 外购件/末级行（浅层查询的完整行数据）
+        """
+        items = shallow_result.get("items", [])
+        children: List[Dict[str, Any]] = []  # [{code, qty}]
+        children_set: Set[str] = set()
+        purchased_items: List[Dict[str, Any]] = []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            child_code = str(item.get("材料编码（物料编码）") or "").strip()
+            parent_code = str(item.get("__parent_inv_code") or "").strip()
+            supply_type = str(item.get("供应类型") or "").strip()
+            level = item.get("子件层级")
+
+            # 只处理一级子零件
+            if level != 1 or parent_code not in project_codes_set:
+                continue
+
+            if not child_code:
+                continue
+
+            # 排除项目编码自身行（项目编码不应出现在子零件列表中）
+            if child_code in project_codes_set:
+                continue
+
+            # 读取一级子零件名称
+            child_name = str(item.get("子件名称") or child_code).strip()
+
+            # 读取一级累计用量
+            cum_qty = item.get("累计用量")
+            try:
+                qty = float(cum_qty) if cum_qty is not None else 1.0
+            except (TypeError, ValueError):
+                qty = 1.0
+            if qty < 1:
+                qty = 1.0
+
+            # 判断是否为虚拟件：只用供应类型，不用编码前缀
+            is_virtual = supply_type == "虚拟件"
+
+            if is_virtual:
+                if child_code not in children_set:
+                    children.append({"code": child_code, "qty": qty, "name": child_name})
+                    children_set.add(child_code)
+            else:
+                purchased_items.append(item)
+
+        return children, purchased_items
+
+    def _build_project_mode_groups(
+        self,
+        query_results: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """为项目编码模式构建分组结果
+
+        虚拟件：有 items → 生成明细页 + 汇总行
+        外购件：items 为空 → 只生成汇总行，不生成明细页
+        """
+        grouped_items: List[Dict[str, Any]] = []
+
+        for qr in query_results:
+            child_code = qr.get("code", "")
+            child_name = qr.get("name", child_code)
+            items = qr.get("items", [])
+            qty = qr.get("qty", 1)  # 一级累计用量，默认 1
+
+            # 外购件汇总行：直接使用浅层查询中的价格
+            if not items:
+                grouped_items.append({
+                    "type": child_name,
+                    "u8_parent_inv_codes": [child_code],
+                    "root_inv_code": child_code,
+                    "quantity": qty,
+                    "total": 0,
+                    "items": [],
+                    "unit_price": qr.get("unit_price"),
+                    "total_price": qr.get("total_price"),
+                    "summary_only": True,  # 标记：只在汇总页显示
+                })
+                continue
+
+            # 虚拟件：正常生成明细页
+            grouped_items.append({
+                "type": child_name,
+                "u8_parent_inv_codes": [child_code],
+                "root_inv_code": child_code,
+                "quantity": qty,
+                "total": len(items),
+                "items": items,
+                "summary_only": False,
+            })
+
+        return {
+            "total": len(grouped_items),
+            "items": grouped_items,
+        }

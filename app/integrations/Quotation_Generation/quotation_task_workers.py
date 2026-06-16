@@ -423,22 +423,12 @@ def process_quotation_task_phase2_background(
             selected_partids = [str(partid) for partid in fallback if str(partid).strip()]
             source = "pdm_partids(fallback)"
 
-        diag_logger.info(
-            "[diag_phase2_worker] task_id=%s source=%s selected_count=%s selected=%s "
-            "payload_keys=%s",
-            task_id,
-            source,
-            len(selected_partids),
-            selected_partids,
-            list(existing_payload.keys()),
-        )
-
         logger.info(
             "Phase2 准备执行 U8 查询: task_id=%s, source=%s, selected_count=%s, sample=%s",
             task_id,
             source,
             len(selected_partids),
-            selected_partids[:8],
+            selected_partids[:3],
         )
 
         if not selected_partids:
@@ -453,6 +443,7 @@ def process_quotation_task_phase2_background(
 
         phase2_uc = build_execute_quotation_phase2_use_case()
         manual_types = existing_payload.get("manual_partid_types")
+        code_type = existing_payload.get("code_type")
         phase2_result = phase2_uc.execute(
             ExecuteQuotationPhase2Command(
                 pdm_partids=selected_partids,
@@ -460,6 +451,7 @@ def process_quotation_task_phase2_background(
                 pdm_result=existing_payload.get("pdm_result"),
                 approved_partids=selected_partids,
                 manual_partid_types=manual_types if isinstance(manual_types, dict) else None,
+                code_type=code_type,
                 progress_callback=update_progress,
                 cancel_checker=token.is_cancelled,
             )
@@ -472,7 +464,7 @@ def process_quotation_task_phase2_background(
         if isinstance(phase2_result.u8_result, dict):
             u8_total = phase2_result.u8_result.get("total")
             u8_items = phase2_result.u8_result.get("items")
-        logger.info(
+        logger.debug(
             "Phase2 U8 查询结果: task_id=%s, total=%s, items_len=%s",
             task_id,
             u8_total,

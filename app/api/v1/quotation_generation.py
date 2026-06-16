@@ -119,6 +119,10 @@ class DirectU8Request(BaseModel):
         description="与 partids 平行的数量数组（同长度）。省略时默认每个 PARTID 数量为 1。",
     )
     task_name: Optional[str] = Field(None, description="任务展示名称（可选）")
+    code_type: Optional[str] = Field(
+        None,
+        description="编码类型标记：'project' 表示项目编码，省略表示 U8 编码",
+    )
 
 
 class ApproveTaskRequest(BaseModel):
@@ -230,7 +234,7 @@ def _count_statuses(tasks: List[QuotationTask]) -> Dict[str, int]:
 
 
 def _log_list_tasks_diag(**details: Any) -> None:
-    diag_logger.info("[quotation_tasks_diag] list_tasks | %s", details)
+    diag_logger.debug("[quotation_tasks_diag] list_tasks | %s", details)
 
 
 def _serialize_task(task: QuotationTask) -> QuotationTaskItemResponse:
@@ -332,6 +336,11 @@ async def create_direct_u8_task(
             status_code=400,
             detail="quantities 长度必须与 partids 一致",
         )
+    if body.code_type is not None and body.code_type != "project":
+        raise HTTPException(
+            status_code=400,
+            detail="code_type 仅支持 'project'，省略表示 U8 编码",
+        )
 
     seen: set[str] = set()
     partids: list[str] = []
@@ -418,6 +427,7 @@ async def create_direct_u8_task(
                 "approved_partids": partids,
                 "manual_partid_types": manual_partid_types,
                 "manual_partid_quantities": manual_partid_quantities,
+                "code_type": body.code_type,
             },
             "error": None,
         },
@@ -559,7 +569,7 @@ async def approve_quotation_task(
     db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> ApproveTaskResponse:
-    diag_logger.info(
+    diag_logger.debug(
         "[diag_approve] 收到审批请求 task_id=%s approved_count=%s extra_count=%s extra_entries=%s",
         task_id,
         len(request.approved_partids),

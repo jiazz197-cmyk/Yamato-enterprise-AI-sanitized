@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.core.logging import get_logger
 
 diag_logger = get_logger("diag.u8_grouping")
+logger = get_logger("u8_grouping")
 
 
 def _normalized_keywords(keywords_payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -98,8 +99,9 @@ def _build_selection_driven_groups(
     approved_partids: List[str],
     partid_to_type: Dict[str, str],
     partid_to_code: Dict[str, str],
-) -> Tuple[Dict[str, List[str]], List[Dict[str, Any]]]:
+) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], List[Dict[str, Any]]]:
     type_to_codes: Dict[str, List[str]] = {}
+    type_to_partids: Dict[str, List[str]] = {}
     type_entries: List[Dict[str, Any]] = []
     skipped_type: list[str] = []
     skipped_code: list[str] = []
@@ -127,25 +129,26 @@ def _build_selection_driven_groups(
             continue
 
         codes = type_to_codes.setdefault(type_name, [])
+        type_to_partids.setdefault(type_name, []).append(partid)
         if code not in codes:
             codes.append(code)
 
-    diag_logger.info(
+    diag_logger.debug(
         "[diag_u8_grouping] _build_selection_driven_groups: matched=%s skipped_no_type=%s skipped_no_code=%s skipped_neither=%s",
         len(type_to_codes),
-        skipped_type,
-        skipped_code,
-        skipped_both,
+        len(skipped_type),
+        len(skipped_code),
+        len(skipped_both),
     )
 
-    return type_to_codes, type_entries
+    return type_to_codes, type_to_partids, type_entries
 
 
 def _build_positional_groups(
     *,
     keywords: List[Dict[str, Any]],
     pdm_to_u8_mappings: List[Dict[str, str]],
-) -> Tuple[Dict[str, List[str]], List[Dict[str, Any]]]:
+) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], List[Dict[str, Any]]]:
     mapped_order: List[str] = []
     mapped_set: set[str] = set()
     for mapping in pdm_to_u8_mappings:
@@ -159,12 +162,15 @@ def _build_positional_groups(
 
     type_entries: List[Dict[str, Any]] = []
     type_to_codes: Dict[str, List[str]] = {}
+    type_to_partids: Dict[str, List[str]] = {}
     for idx, entry in enumerate(keywords, start=1):
         type_name = str(entry.get("type") or "").strip() or "Uncategorized"
         part_code = mapped_order[idx - 1] if idx - 1 < len(mapped_order) else ""
         if not part_code:
             continue
         type_to_codes.setdefault(type_name, []).append(part_code)
+        # positional grouping: use u8 code as pseudo-partid
+        type_to_partids.setdefault(type_name, []).append(part_code)
         type_entries.append(
             {
                 "query_index": idx,
@@ -173,7 +179,7 @@ def _build_positional_groups(
                 "matched": True,
             }
         )
-    return type_to_codes, type_entries
+    return type_to_codes, type_to_partids, type_entries
 
 
 def group_u8_result_by_type(
@@ -184,6 +190,7 @@ def group_u8_result_by_type(
     u8_result: Dict[str, Any],
     pdm_to_u8_mappings: List[Dict[str, str]],
     manual_partid_types: Optional[Dict[str, str]] = None,
+    code_type: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Build type-grouped U8 payload.
 
@@ -192,7 +199,17 @@ def group_u8_result_by_type(
     supplies user-provided type names for manually-added PARTIDs that have no
     PDM row, ensuring their U8 results are included in the correct type group.
     Otherwise it falls back to the previous positional behavior.
+
+    Note: When ``code_type == "project"``, this function should not be called.
+    Project code mode is handled separately in ExecuteQuotationPhase2UseCase.
     """
+    # 项目编码模式不应该调用此函数
+    if code_type == "project":
+        logger.warning(
+            "group_u8_result_by_type called with code_type='project', returning empty result. "
+            "Project code mode should be handled in ExecuteQuotationPhase2UseCase."
+        )
+        return {"total": 0, "items": []}, {"total_types": 0, "types": []}
 
     items = u8_result.get("items") if isinstance(u8_result, dict) else None
     if not isinstance(items, list):
@@ -230,25 +247,25 @@ def group_u8_result_by_type(
     only_coded = coded_partids - typed_partids
     both = typed_partids & coded_partids
     neither = set(normalized_approved_partids) - typed_partids - coded_partids
-    diag_logger.info(
+    diag_logger.debug(
         "[diag_u8_grouping] approved=%s typed=%s coded=%s both=%s only_typed=%s only_coded=%s neither=%s",
-        normalized_approved_partids,
-        sorted(typed_partids),
-        sorted(coded_partids),
-        sorted(both),
-        sorted(only_typed),
-        sorted(only_coded),
-        sorted(neither),
+        len(normalized_approved_partids),
+        len(typed_partids),
+        len(coded_partids),
+        len(both),
+        len(only_typed),
+        len(only_coded),
+        len(neither),
     )
 
     if normalized_approved_partids and partid_to_type and partid_to_code:
-        type_to_codes, type_entries = _build_selection_driven_groups(
+        type_to_codes, type_to_partids, type_entries = _build_selection_driven_groups(
             approved_partids=normalized_approved_partids,
             partid_to_type=partid_to_type,
             partid_to_code=partid_to_code,
         )
     else:
-        type_to_codes, type_entries = _build_positional_groups(
+        type_to_codes, type_to_partids, type_entries = _build_positional_groups(
             keywords=keywords,
             pdm_to_u8_mappings=pdm_to_u8_mappings,
         )
@@ -287,6 +304,7 @@ def group_u8_result_by_type(
             {
                 "type": display_name,
                 "u8_parent_inv_codes": codes,
+                "partids": type_to_partids.get(type_name, []),
                 "total": len(rows),
                 "items": rows,
             }
