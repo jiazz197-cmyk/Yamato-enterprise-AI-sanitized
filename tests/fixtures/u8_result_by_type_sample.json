@@ -3,7 +3,9 @@
   "items": [
     {
       "type": "机架",
-      "u8_parent_inv_codes": ["Z0072011"],
+      "u8_parent_inv_codes": [
+        "Z0072011"
+      ],
       "total": 1,
       "items": [
         {
@@ -18,13 +20,16 @@
           "单价": 86,
           "总价": 86,
           "__root_inv_code": "Z0072011",
-          "__parent_inv_code": "Z0072011"
+          "__parent_inv_code": "Z0072011",
+          "累计用量": 1
         }
       ]
     },
     {
       "type": "供料漏斗",
-      "u8_parent_inv_codes": ["Z0112140"],
+      "u8_parent_inv_codes": [
+        "Z0112140"
+      ],
       "total": 5,
       "items": [
         {
@@ -39,7 +44,8 @@
           "单价": null,
           "总价": null,
           "__root_inv_code": "Z0112140",
-          "__parent_inv_code": "Z0112140"
+          "__parent_inv_code": "Z0112140",
+          "累计用量": 1
         },
         {
           "子件层级": 2,
@@ -53,13 +59,16 @@
           "单价": 4.88,
           "总价": 4.88,
           "__root_inv_code": "Z0112140",
-          "__parent_inv_code": "701100366"
+          "__parent_inv_code": "701100366",
+          "累计用量": 1
         }
       ]
     },
     {
       "type": "顶锥",
-      "u8_parent_inv_codes": ["Z0122065"],
+      "u8_parent_inv_codes": [
+        "Z0122065"
+      ],
       "total": 248,
       "items": [
         {
@@ -74,7 +83,8 @@
           "单价": null,
           "总价": null,
           "__root_inv_code": "Z0122065",
-          "__parent_inv_code": "Z0122065"
+          "__parent_inv_code": "Z0122065",
+          "累计用量": 10
         },
         {
           "子件层级": 2,
@@ -88,13 +98,16 @@
           "单价": 3.1261,
           "总价": 62.522000000000006,
           "__root_inv_code": "Z0122065",
-          "__parent_inv_code": "41001034"
+          "__parent_inv_code": "41001034",
+          "累计用量": 20
         }
       ]
     },
     {
       "type": "振动盘",
-      "u8_parent_inv_codes": ["Z0232060"],
+      "u8_parent_inv_codes": [
+        "Z0232060"
+      ],
       "total": 104,
       "items": [
         {
@@ -109,13 +122,16 @@
           "单价": 234.05,
           "总价": 234.05,
           "__root_inv_code": "Z0232060",
-          "__parent_inv_code": "Z0232060"
+          "__parent_inv_code": "Z0232060",
+          "累计用量": 1
         }
       ]
     },
     {
       "type": "供料斗",
-      "u8_parent_inv_codes": ["Z0242007"],
+      "u8_parent_inv_codes": [
+        "Z0242007"
+      ],
       "total": 5,
       "items": [
         {
@@ -130,7 +146,8 @@
           "单价": 880,
           "总价": 880,
           "__root_inv_code": "Z0242007",
-          "__parent_inv_code": "Z0242007"
+          "__parent_inv_code": "Z0242007",
+          "累计用量": 1
         },
         {
           "子件层级": 1,
@@ -144,13 +161,16 @@
           "单价": 23.94,
           "总价": 167.58,
           "__root_inv_code": "Z0242007",
-          "__parent_inv_code": "Z0242007"
+          "__parent_inv_code": "Z0242007",
+          "累计用量": 7
         }
       ]
     },
     {
       "type": "计量斗",
-      "u8_parent_inv_codes": ["Z0092021"],
+      "u8_parent_inv_codes": [
+        "Z0092021"
+      ],
       "total": 39,
       "items": [
         {
@@ -165,19 +185,24 @@
           "单价": null,
           "总价": null,
           "__root_inv_code": "Z0092021",
-          "__parent_inv_code": "Z0092021"
+          "__parent_inv_code": "Z0092021",
+          "累计用量": 1
         }
       ]
     },
     {
       "type": "驱动单元",
-      "u8_parent_inv_codes": ["Z0224019"],
+      "u8_parent_inv_codes": [
+        "Z0224019"
+      ],
       "total": 0,
       "items": []
     },
     {
       "type": "溜槽",
-      "u8_parent_inv_codes": ["Z0302008"],
+      "u8_parent_inv_codes": [
+        "Z0302008"
+      ],
       "total": 5,
       "items": [
         {
@@ -192,19 +217,24 @@
           "单价": 431.8344,
           "总价": 431.8344,
           "__root_inv_code": "Z0302008",
-          "__parent_inv_code": "Z0302008"
+          "__parent_inv_code": "Z0302008",
+          "累计用量": 1
         }
       ]
     },
     {
       "type": "收集锥",
-      "u8_parent_inv_codes": ["Z0187394"],
+      "u8_parent_inv_codes": [
+        "Z0187394"
+      ],
       "total": 0,
       "items": []
     },
     {
       "type": "电气",
-      "u8_parent_inv_codes": ["Z0192059"],
+      "u8_parent_inv_codes": [
+        "Z0192059"
+      ],
       "total": 10,
       "items": [
         {
@@ -219,7 +249,8 @@
           "单价": 424.78,
           "总价": 424.78,
           "__root_inv_code": "Z0192059",
-          "__parent_inv_code": "Z0192059"
+          "__parent_inv_code": "Z0192059",
+          "累计用量": 1
         }
       ]
     }

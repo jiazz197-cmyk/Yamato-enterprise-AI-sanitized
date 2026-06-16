@@ -270,15 +270,10 @@ def format_u8_output_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "子件层级": row.get("LEVEL"),
                 "子件名称": row.get("CHINANAME"),
                 "材料编码（物料编码）": row.get("cInvCode"),
-                "基本用量": row.get("COUNTS"),
                 "累计用量": row.get("CUM_QTY"),
-                "供应类型": supply_type,
-                "仓库编码": row.get("cDefWareHouse"),
-                "领料部门": row.get("cInvDepCode"),
                 "规格型号": row.get("cInvStd"),
                 "单价": row.get("iInvNcost"),
                 "总价": row.get("TOTAL_PRICE"),
-                "__root_inv_code": row.get("ROOT_INV_CODE"),
                 "__parent_inv_code": row.get("ParentInvCode"),
             }
         )
