@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.core.logging import get_logger
 
 diag_logger = get_logger("diag.u8_grouping")
+logger = get_logger("u8_grouping")
 
 
 def _normalized_keywords(keywords_payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -189,6 +190,7 @@ def group_u8_result_by_type(
     u8_result: Dict[str, Any],
     pdm_to_u8_mappings: List[Dict[str, str]],
     manual_partid_types: Optional[Dict[str, str]] = None,
+    code_type: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Build type-grouped U8 payload.
 
@@ -197,7 +199,17 @@ def group_u8_result_by_type(
     supplies user-provided type names for manually-added PARTIDs that have no
     PDM row, ensuring their U8 results are included in the correct type group.
     Otherwise it falls back to the previous positional behavior.
+
+    Note: When ``code_type == "project"``, this function should not be called.
+    Project code mode is handled separately in ExecuteQuotationPhase2UseCase.
     """
+    # 项目编码模式不应该调用此函数
+    if code_type == "project":
+        logger.warning(
+            "group_u8_result_by_type called with code_type='project', returning empty result. "
+            "Project code mode should be handled in ExecuteQuotationPhase2UseCase."
+        )
+        return {"total": 0, "items": []}, {"total_types": 0, "types": []}
 
     items = u8_result.get("items") if isinstance(u8_result, dict) else None
     if not isinstance(items, list):

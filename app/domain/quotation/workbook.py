@@ -193,26 +193,44 @@ def build_quotation_workbook_data(
                 for item in (group.get("items") if isinstance(group.get("items"), list) else [])
                 if isinstance(item, Mapping)
             ]
-            total_amount = _rows_total_amount(rows)
-            # Resolve quantity: qty_map is keyed by partid, not by type_name.
-            # Use the group's "partids" list (from u8_grouping) to bridge the lookup.
-            group_partids = group.get("partids") if isinstance(group.get("partids"), list) else []
-            try:
-                if group_partids:
-                    qty = sum(int(qty_map.get(pid, 1)) for pid in group_partids if pid in qty_map) or 1
-                else:
+
+            # 数量优先级：分组自带的 quantity > qty_map 查找 > 默认 1
+            group_qty = group.get("quantity")
+            if group_qty is not None:
+                try:
+                    qty = float(group_qty)
+                except (TypeError, ValueError):
+                    qty = 1.0
+            else:
+                try:
                     qty = int(qty_map.get(type_name, 1))
-            except (TypeError, ValueError):
-                qty = 1
+                except (TypeError, ValueError):
+                    qty = 1
             if qty < 1:
                 qty = 1
-            detail_sheets.append(
-                QuotationDetailSheet(
-                    sheet_name=type_name,
-                    rows=[dict(row) for row in rows],
-                    total_amount=total_amount,
+
+            summary_only = bool(group.get("summary_only"))
+
+            if summary_only:
+                # 外购件：只在汇总页显示，不生成明细页
+                # 优先使用 group 自带的价格，否则从 rows 计算
+                total_amount = _parse_amount(group.get("total_price"))
+                if total_amount == 0.0:
+                    total_amount = _rows_total_amount(rows)
+                unit_price = _parse_amount(group.get("unit_price"))
+                if unit_price == 0.0:
+                    unit_price = total_amount
+            else:
+                # 虚拟件/有明细的组件：正常生成明细页
+                total_amount = _rows_total_amount(rows)
+                unit_price = total_amount
+                detail_sheets.append(
+                    QuotationDetailSheet(
+                        sheet_name=type_name,
+                        rows=[dict(row) for row in rows],
+                        total_amount=total_amount,
+                    )
                 )
-            )
 
             selected = selection_by_type.get(type_name, [])
             # part_no: prefer PDM PARTID (original input code), then U8 parent codes, then type_name
@@ -222,14 +240,16 @@ def build_quotation_workbook_data(
                 u8_codes = group.get("u8_parent_inv_codes") if isinstance(group, Mapping) else None
                 part_no = _merge_texts([str(c) for c in (u8_codes or [])]) or type_name
             name = _merge_texts([item.pdm_name for item in selected]) or type_name
+
+            detail_sheet_ref = type_name if not summary_only else ""
             summary_rows.append(
                 QuotationSummaryRow(
                     part_no=part_no,
                     name=name,
                     quantity_display=str(qty),
-                    unit_price=total_amount,
+                    unit_price=unit_price,
                     amount=round(total_amount * qty, 4),
-                    detail_sheet_name=type_name,
+                    detail_sheet_name=detail_sheet_ref,
                 )
             )
 

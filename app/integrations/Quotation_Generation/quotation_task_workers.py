@@ -311,6 +311,13 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
         converted_u8_codes, pdm_to_u8_mappings = convert_partids_to_u8_codes(
             phase1_result.pdm_partids
         )
+        logger.info(
+            "Phase1 PDM->U8 编码转换完成: task_id=%s, pdm_count=%s, u8_count=%s, sample=%s",
+            task_id,
+            len(phase1_result.pdm_partids),
+            len(converted_u8_codes),
+            pdm_to_u8_mappings[:8],
+        )
 
         _persistence.patch_task_fields_sync(
             task_id,
@@ -436,6 +443,7 @@ def process_quotation_task_phase2_background(
 
         phase2_uc = build_execute_quotation_phase2_use_case()
         manual_types = existing_payload.get("manual_partid_types")
+        code_type = existing_payload.get("code_type")
         phase2_result = phase2_uc.execute(
             ExecuteQuotationPhase2Command(
                 pdm_partids=selected_partids,
@@ -443,6 +451,7 @@ def process_quotation_task_phase2_background(
                 pdm_result=existing_payload.get("pdm_result"),
                 approved_partids=selected_partids,
                 manual_partid_types=manual_types if isinstance(manual_types, dict) else None,
+                code_type=code_type,
                 progress_callback=update_progress,
                 cancel_checker=token.is_cancelled,
             )

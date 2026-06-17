@@ -111,7 +111,7 @@ def _supplement_missing_prices(
 
     supplement_prices = _query_recordoutlist_prices(client, missing_codes)
     if not supplement_prices:
-        logger.debug("U8 价格补充: recordoutlist 无匹配价格, missing_codes=%s", len(missing_codes))
+        logger.info("U8 价格补充: recordoutlist 无匹配价格, missing_codes=%s", len(missing_codes))
         return
 
     supplemented_count = 0
@@ -135,7 +135,7 @@ def _supplement_missing_prices(
         supplemented_count += 1
 
     if supplemented_count > 0:
-        logger.debug(
+        logger.info(
             "U8 价格补充完成: supplemented=%s/%s missing, queried_codes=%s",
             supplemented_count,
             len(missing_codes),
@@ -243,11 +243,10 @@ def _fill_inventory_only_rows(
             inv_by_code[code] = row
 
     filled_count = 0
-    missing_count = 0
     for code in no_bom_codes:
         inv = inv_by_code.get(code)
         if not inv:
-            missing_count += 1
+            logger.info("U8 采购件回退: 编码 %s 在 Inventory 中无记录", code)
             continue
 
         inv_cost = inv.get("iInvNcost")
@@ -283,11 +282,8 @@ def _fill_inventory_only_rows(
         )
         filled_count += 1
 
-    if missing_count > 0:
-        logger.debug("U8 采购件回退: %s/%s 编码在 Inventory 中无记录", missing_count, len(no_bom_codes))
-
     if filled_count > 0:
-        logger.debug(
+        logger.info(
             "U8 采购件回退完成: filled=%s/%s codes",
             filled_count,
             len(no_bom_codes),
@@ -507,7 +503,6 @@ def _query_u8_bom_inventory(
         # Collect root codes that have no BOM children (purchased/leaf items)
         no_bom_root_codes: List[str] = []
 
-        total_rows_before = len(result_rows)
         for root_code in parent_codes:
             raise_if_cancelled(cancel_checker)
             before = len(result_rows)
@@ -522,8 +517,7 @@ def _query_u8_bom_inventory(
             rows_added = len(result_rows) - before
             if rows_added == 0:
                 no_bom_root_codes.append(root_code)
-        total_rows_added = len(result_rows) - total_rows_before
-        logger.info("U8 BOM 展开完成: %s 个根节点, 共 %s 行", len(parent_codes), total_rows_added)
+            logger.info("U8 根节点展开完成: root_code=%s, rows=%s", root_code, rows_added)
 
         # For root codes without BOM children, query Inventory directly
         _fill_inventory_only_rows(
