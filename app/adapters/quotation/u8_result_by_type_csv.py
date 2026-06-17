@@ -13,9 +13,38 @@ from app.ports.domains.u8_result_by_type_csv import (
     U8ResultByTypeXlsxExport,
 )
 
-_EXCLUDED_ROW_KEYS: frozenset[str] = frozenset({"__root_inv_code", "__parent_inv_code"})
+_EXCLUDED_ROW_KEYS: frozenset[str] = frozenset({
+    "__root_inv_code",
+    "__parent_inv_code",
+    "基本用量",
+    "供应类型",
+    "仓库编码",
+    "领料部门",
+})
 _SAFE_KEY_RE = re.compile(r"[^\w\u4e00-\u9fff\-]+")
 _EXCEL_TITLE_INVALID = set(':*?/\\[]')
+
+_DETAIL_TOTAL_FIELD_CANDIDATES = (
+    "\u603b\u4ef7",
+    "\u91d1\u989d",
+    "amount",
+    "total_price",
+    "totalPrice",
+)
+
+_UNIT_PRICE_FIELD_CANDIDATES = (
+    "\u5355\u4ef7",
+    "iInvNcost",
+    "unit_price",
+    "price",
+)
+
+_CUM_QTY_FIELD_CANDIDATES = (
+    "\u7d2f\u8ba1\u7528\u91cf",
+    "CUM_QTY",
+    "cum_qty",
+    "quantity",
+)
 
 
 def _sanitize_table_key(type_label: str, *, index: int) -> str:
@@ -25,7 +54,6 @@ def _sanitize_table_key(type_label: str, *, index: int) -> str:
 
 
 def _excel_sheet_title(raw: str, used: MutableSet[str]) -> str:
-    """Excel worksheet name: max 31 chars, unique, no : * ? / \\ [ ]."""
     chars: List[str] = []
     for c in raw[:50]:
         if c in _EXCEL_TITLE_INVALID:
@@ -46,19 +74,43 @@ def _excel_sheet_title(raw: str, used: MutableSet[str]) -> str:
     return title
 
 
+def _normalize_row(row: Mapping[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in row.items() if k not in _EXCLUDED_ROW_KEYS}
+
+
 def _collect_fieldnames(rows: Iterable[Mapping[str, Any]]) -> List[str]:
     ordered: List[str] = []
     seen: MutableSet[str] = set()
     for row in rows:
         if not isinstance(row, Mapping):
             continue
-        for key in row:
-            if key in _EXCLUDED_ROW_KEYS:
-                continue
+        normed = _normalize_row(row)
+        for key in normed:
             if key not in seen:
-                seen.add(str(key))
-                ordered.append(str(key))
+                seen.add(key)
+                ordered.append(key)
     return ordered
+
+
+def _detail_total_column_index(fieldnames: List[str]) -> int | None:
+    for idx, fieldname in enumerate(fieldnames):
+        if fieldname in _DETAIL_TOTAL_FIELD_CANDIDATES:
+            return idx
+    return None
+
+
+def _unit_price_column_index(fieldnames: List[str]) -> int | None:
+    for idx, name in enumerate(fieldnames):
+        if name in _UNIT_PRICE_FIELD_CANDIDATES:
+            return idx
+    return None
+
+
+def _cum_qty_column_index(fieldnames: List[str]) -> int | None:
+    for idx, name in enumerate(fieldnames):
+        if name in _CUM_QTY_FIELD_CANDIDATES:
+            return idx
+    return None
 
 
 def _group_rows_by_sheet(u8_result_by_type: Mapping[str, Any]) -> Dict[str, List[Mapping[str, Any]]]:
@@ -117,12 +169,14 @@ def _rows_to_csv(rows: List[Mapping[str, Any]]) -> str:
     for row in rows:
         if not isinstance(row, Mapping):
             continue
-        writer.writerow({k: row.get(k) for k in fieldnames})
+        normed = _normalize_row(row)
+        writer.writerow({k: normed.get(k) for k in fieldnames})
     return buf.getvalue()
 
 
 def _rows_by_sheet_to_xlsx(rows_by_sheet: Dict[str, List[Mapping[str, Any]]]) -> bytes:
     from openpyxl import Workbook  # noqa: PLC0415 — optional dependency at runtime
+    from openpyxl.utils import get_column_letter  # noqa: PLC0415
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -146,10 +200,33 @@ def _rows_by_sheet_to_xlsx(rows_by_sheet: Dict[str, List[Mapping[str, Any]]]) ->
             ws["A1"] = "(no rows)"
             continue
         ws.append(fieldnames)
+
+        price_col_idx = _unit_price_column_index(fieldnames)
+        cum_qty_col_idx = _cum_qty_column_index(fieldnames)
+        total_col_idx = _detail_total_column_index(fieldnames)
+
+        data_start_row = 2
+        row_num = data_start_row
+
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
-            ws.append([row.get(k) for k in fieldnames])
+            normed = _normalize_row(row)
+            row_values = [normed.get(k) for k in fieldnames]
+
+            if total_col_idx is not None and cum_qty_col_idx is not None and price_col_idx is not None:
+                qty_letter = get_column_letter(cum_qty_col_idx + 1)
+                price_letter = get_column_letter(price_col_idx + 1)
+                row_values[total_col_idx] = f"={qty_letter}{row_num}*{price_letter}{row_num}"
+
+            ws.append(row_values)
+            row_num += 1
+
+        if total_col_idx is not None and row_num > data_start_row:
+            total_row = [None] * len(fieldnames)
+            total_letter = get_column_letter(total_col_idx + 1)
+            total_row[total_col_idx] = f"=SUM({total_letter}{data_start_row}:{total_letter}{row_num - 1})"
+            ws.append(total_row)
 
     bio = BytesIO()
     wb.save(bio)

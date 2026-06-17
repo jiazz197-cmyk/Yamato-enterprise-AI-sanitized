@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from io import BytesIO
-from typing import Any, Iterable, List, Mapping, MutableSet
+from typing import Any, Dict, Iterable, List, Mapping, MutableSet
 
 from app.ports.domains.quotation_workbook import QuotationWorkbookRenderPort
 from app.ports.dto.quotation_workbook import QuotationWorkbookData, QuotationWorkbookExport
 
-_EXCLUDED_ROW_KEYS: frozenset[str] = frozenset({"__root_inv_code", "__parent_inv_code"})
+_EXCLUDED_ROW_KEYS: frozenset[str] = frozenset({
+    "__root_inv_code",
+    "__parent_inv_code",
+    "基本用量",
+    "供应类型",
+    "仓库编码",
+    "领料部门",
+})
 _EXCEL_TITLE_INVALID = set(':*?/\\[]')
 
 _SUMMARY_HEADERS = [
@@ -25,6 +32,20 @@ _DETAIL_TOTAL_FIELD_CANDIDATES = (
     "amount",
     "total_price",
     "totalPrice",
+)
+
+_UNIT_PRICE_FIELD_CANDIDATES = (
+    "\u5355\u4ef7",
+    "iInvNcost",
+    "unit_price",
+    "price",
+)
+
+_CUM_QTY_FIELD_CANDIDATES = (
+    "\u7d2f\u8ba1\u7528\u91cf",
+    "CUM_QTY",
+    "cum_qty",
+    "quantity",
 )
 
 
@@ -47,18 +68,21 @@ def _excel_sheet_title(raw: str, used: MutableSet[str]) -> str:
     return title
 
 
+def _normalize_row(row: Mapping[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in row.items() if k not in _EXCLUDED_ROW_KEYS}
+
+
 def _collect_fieldnames(rows: Iterable[Mapping[str, Any]]) -> List[str]:
     ordered: List[str] = []
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, Mapping):
             continue
-        for key in row:
-            if key in _EXCLUDED_ROW_KEYS:
-                continue
+        normed = _normalize_row(row)
+        for key in normed:
             if key not in seen:
-                seen.add(str(key))
-                ordered.append(str(key))
+                seen.add(key)
+                ordered.append(key)
     return ordered
 
 
@@ -69,10 +93,30 @@ def _detail_total_column_index(fieldnames: List[str]) -> int | None:
     return None
 
 
+def _unit_price_column_index(fieldnames: List[str]) -> int | None:
+    for idx, name in enumerate(fieldnames):
+        if name in _UNIT_PRICE_FIELD_CANDIDATES:
+            return idx
+    return None
+
+
+def _cum_qty_column_index(fieldnames: List[str]) -> int | None:
+    for idx, name in enumerate(fieldnames):
+        if name in _CUM_QTY_FIELD_CANDIDATES:
+            return idx
+    return None
+
+
+def _sheet_cell_ref(sheet_title: str, col_letter: str, row_num: int) -> str:
+    escaped = sheet_title.replace("'", "''")
+    return f"='{escaped}'!{col_letter}{row_num}"
+
+
 class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
     def export_workbook(self, workbook_data: QuotationWorkbookData) -> QuotationWorkbookExport:
         from openpyxl import Workbook  # noqa: PLC0415
         from openpyxl.styles import Border, Font, Side  # noqa: PLC0415
+        from openpyxl.utils import get_column_letter  # noqa: PLC0415
 
         wb = Workbook()
         used_titles: set[str] = set()
@@ -82,6 +126,51 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
 
         summary_ws = wb.active
         summary_ws.title = _excel_sheet_title(workbook_data.summary_sheet_name, used_titles)
+
+        detail_sheet_refs: List[Dict[str, Any]] = []
+
+        for detail_sheet in workbook_data.detail_sheets:
+            ws = wb.create_sheet(title=_excel_sheet_title(detail_sheet.sheet_name, used_titles))
+            actual_title = ws.title
+            if not detail_sheet.rows:
+                ws["A1"] = "(no rows)"
+                detail_sheet_refs.append({"title": actual_title})
+                continue
+            fieldnames = _collect_fieldnames(detail_sheet.rows)
+            if not fieldnames:
+                ws["A1"] = "(no rows)"
+                detail_sheet_refs.append({"title": actual_title})
+                continue
+            ws.append(fieldnames)
+
+            price_col_idx = _unit_price_column_index(fieldnames)
+            cum_qty_col_idx = _cum_qty_column_index(fieldnames)
+            total_col_idx = _detail_total_column_index(fieldnames)
+
+            data_start_row = 2
+            row_num = data_start_row
+
+            for row in detail_sheet.rows:
+                normed = _normalize_row(row)
+                row_values = [normed.get(key) for key in fieldnames]
+
+                if total_col_idx is not None and cum_qty_col_idx is not None and price_col_idx is not None:
+                    qty_letter = get_column_letter(cum_qty_col_idx + 1)
+                    price_letter = get_column_letter(price_col_idx + 1)
+                    row_values[total_col_idx] = f"={qty_letter}{row_num}*{price_letter}{row_num}"
+
+                ws.append(row_values)
+                row_num += 1
+
+            ref: Dict[str, Any] = {"title": actual_title}
+            if total_col_idx is not None and row_num > data_start_row:
+                total_row = [None] * len(fieldnames)
+                total_letter = get_column_letter(total_col_idx + 1)
+                total_row[total_col_idx] = f"=SUM({total_letter}{data_start_row}:{total_letter}{row_num - 1})"
+                ws.append(total_row)
+                ref["total_letter"] = total_letter
+                ref["total_row_num"] = row_num
+            detail_sheet_refs.append(ref)
 
         meta = workbook_data.summary_meta
         summary_ws["C6"] = meta.pricing_title or workbook_data.summary_title
@@ -102,12 +191,27 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
             summary_ws.cell(row=summary_header_row, column=col_idx, value=header)
 
         row_idx = summary_header_row + 1
-        for row in workbook_data.summary_rows:
+        for i, row in enumerate(workbook_data.summary_rows):
             summary_ws.cell(row=row_idx, column=2, value=row.part_no)
             summary_ws.cell(row=row_idx, column=3, value=row.name)
-            summary_ws.cell(row=row_idx, column=4, value=row.quantity_display)
-            summary_ws.cell(row=row_idx, column=5, value=row.unit_price)
-            summary_ws.cell(row=row_idx, column=6, value=row.amount)
+            qty_val: Any = row.quantity_display
+            try:
+                qty_num = float(qty_val)
+                qty_val = int(qty_num) if qty_num == int(qty_num) else qty_num
+            except (TypeError, ValueError):
+                pass
+            summary_ws.cell(row=row_idx, column=4, value=qty_val)
+
+            detail_ref = detail_sheet_refs[i] if i < len(detail_sheet_refs) else None
+            if detail_ref and "total_letter" in detail_ref and "total_row_num" in detail_ref:
+                summary_ws.cell(
+                    row=row_idx, column=5,
+                    value=_sheet_cell_ref(detail_ref["title"], detail_ref["total_letter"], detail_ref["total_row_num"]),
+                )
+            else:
+                summary_ws.cell(row=row_idx, column=5, value=row.unit_price)
+
+            summary_ws.cell(row=row_idx, column=6, value=f"=E{row_idx}*D{row_idx}")
             summary_ws.cell(row=row_idx, column=7, value=row.remark)
             row_idx += 1
 
@@ -129,24 +233,6 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
             for rows in summary_ws[cell_range]:
                 for cell in rows:
                     cell.border = thin_border
-
-        for detail_sheet in workbook_data.detail_sheets:
-            ws = wb.create_sheet(title=_excel_sheet_title(detail_sheet.sheet_name, used_titles))
-            if not detail_sheet.rows:
-                ws["A1"] = "(no rows)"
-                continue
-            fieldnames = _collect_fieldnames(detail_sheet.rows)
-            if not fieldnames:
-                ws["A1"] = "(no rows)"
-                continue
-            ws.append(fieldnames)
-            for row in detail_sheet.rows:
-                ws.append([row.get(key) for key in fieldnames])
-            total_col_idx = _detail_total_column_index(fieldnames)
-            if total_col_idx is not None:
-                total_row = [None] * len(fieldnames)
-                total_row[total_col_idx] = detail_sheet.total_amount
-                ws.append(total_row)
 
         bio = BytesIO()
         wb.save(bio)
