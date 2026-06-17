@@ -173,6 +173,15 @@ async def _startup_resume_quotation_services() -> None:
 async def lifespan(app: FastAPI):
     """启动时初始化依赖，关闭时按序释放。"""
     app.state.metrics = prometheus_metrics
+    main_loop = asyncio.get_running_loop()
+    try:
+        from app.integrations.Quotation_Generation.quotation_task_workers import (
+            set_quotation_dispatch_loop,
+        )
+        set_quotation_dispatch_loop(main_loop)
+        print("[success] 报价任务调度主事件循环已注册")
+    except Exception as e:
+        print(f"[warning] 报价任务调度主事件循环注册失败: {e}")
     
     try:
         from app.core.database import init_db_tables
@@ -276,6 +285,13 @@ async def lifespan(app: FastAPI):
     import sys
     
     print("\n[shutdown] 开始关闭...")
+    try:
+        from app.integrations.Quotation_Generation.quotation_task_workers import (
+            set_quotation_dispatch_loop,
+        )
+        set_quotation_dispatch_loop(None)
+    except Exception:
+        pass
     
     def force_exit(signum=None, frame=None):
         print("\n[warning] 关闭超时，强制退出")

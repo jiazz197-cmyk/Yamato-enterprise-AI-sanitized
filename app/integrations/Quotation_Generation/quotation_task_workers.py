@@ -31,6 +31,7 @@ from app.usecases.quotation.execute_phase1 import ExecuteQuotationPhase1Command
 from app.usecases.quotation.execute_phase2 import ExecuteQuotationPhase2Command
 
 _persistence = QuotationTaskPersistenceAdapter()
+_quotation_dispatch_loop: asyncio.AbstractEventLoop | None = None
 
 logger = get_logger("quotation_generation")
 diag_logger = get_logger("diag.phase2")
@@ -121,6 +122,66 @@ def _upload_u8_result_by_type_xlsx_to_minio(
     return object_path, download_name
 
 
+def set_quotation_dispatch_loop(loop: asyncio.AbstractEventLoop | None) -> None:
+    """Register the main application event loop used for async DB dispatch.
+
+    Worker-thread callbacks must not create fresh event loops for asyncpg-backed
+    SQLAlchemy sessions because asyncpg connections are bound to their original
+    loop.  They should submit dispatch coroutines back to this loop instead.
+    """
+    global _quotation_dispatch_loop
+    _quotation_dispatch_loop = loop
+
+
+def _schedule_dispatch_coro(coro, *, log_label: str, owner_id: str) -> None:
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    dispatch_loop = _quotation_dispatch_loop
+    if dispatch_loop is not None and not dispatch_loop.is_closed():
+        if running_loop is dispatch_loop:
+            dispatch_loop.create_task(coro)
+        else:
+            future = asyncio.run_coroutine_threadsafe(coro, dispatch_loop)
+
+            def _log_dispatch_failure(done, owner_id: str = owner_id, log_label: str = log_label) -> None:
+                try:
+                    exc = done.exception()
+                except Exception as callback_exc:
+                    logger.error(
+                        "%s 回投主循环状态检查失败 owner_id=%s: %s",
+                        log_label,
+                        owner_id,
+                        callback_exc,
+                        exc_info=True,
+                    )
+                    return
+                if exc is not None:
+                    logger.error(
+                        "%s 回投主循环失败 owner_id=%s: %s",
+                        log_label,
+                        owner_id,
+                        exc,
+                        exc_info=(type(exc), exc, exc.__traceback__),
+                    )
+
+            future.add_done_callback(_log_dispatch_failure)
+        return
+
+    if running_loop is not None:
+        running_loop.create_task(coro)
+        return
+
+    coro.close()
+    logger.error(
+        "%s 失败 owner_id=%s: 主事件循环未注册，拒绝在临时事件循环中使用 async DB",
+        log_label,
+        owner_id,
+    )
+
+
 async def _dispatch_quotation_queue_for_owner_async(owner_id: str) -> None:
     """Async implementation: dequeue queued tasks and submit them to the executor."""
     try:
@@ -153,26 +214,17 @@ async def _dispatch_quotation_queue_for_owner_async(owner_id: str) -> None:
 
 
 def dispatch_quotation_queue_for_owner(owner_id: str) -> None:
-    """Schedule queued tasks for the given owner.
+    """Schedule queued tasks for the given owner on the main event loop.
 
-    Event-loop-safe: when called from within a running event loop (e.g. FastAPI
-    handler or lifespan), the async dispatch is scheduled via ``create_task()``
-    to avoid the ``RuntimeError: run_async() cannot be used inside a running
-    event loop`` that ``run_async()`` would raise.  When no loop is running
-    (e.g. worker-thread done_callback), ``asyncio.run()`` is used directly.
+    Async SQLAlchemy/asyncpg connections are loop-affine.  When this function is
+    called from executor worker callbacks, submit the coroutine back to the main
+    loop instead of creating a fresh loop.
     """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop is not None:
-        # Called from within a running event loop – schedule without blocking.
-        loop.create_task(_dispatch_quotation_queue_for_owner_async(owner_id))
-        return
-
-    # No event loop running – safe to use asyncio.run().
-    asyncio.run(_dispatch_quotation_queue_for_owner_async(owner_id))
+    _schedule_dispatch_coro(
+        _dispatch_quotation_queue_for_owner_async(owner_id),
+        log_label="报价队列调度",
+        owner_id=owner_id,
+    )
 
 
 # Keep progress messages compact; detailed query parameters belong in logs, not task cards.
@@ -578,19 +630,12 @@ def dispatch_quotation_phase2(task_id: str, owner_id: str) -> None:
 
     The executor retains Phase 1's Future under the same task_id for history,
     so we evict it first to allow resubmitting with the same business id.
-
-    Event-loop-safe: when called from within a running event loop (e.g. FastAPI
-    handler), the async dispatch is scheduled via ``create_task()``; otherwise
-    ``asyncio.run()`` is used directly.
+    Dispatch is always scheduled on the main event loop to avoid asyncpg
+    connection-pool cross-loop reuse.
     """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop is not None:
-        loop.create_task(_dispatch_quotation_phase2_async(task_id, owner_id))
-        return
-
-    asyncio.run(_dispatch_quotation_phase2_async(task_id, owner_id))
+    _schedule_dispatch_coro(
+        _dispatch_quotation_phase2_async(task_id, owner_id),
+        log_label="报价 Phase2 调度",
+        owner_id=owner_id,
+    )
 

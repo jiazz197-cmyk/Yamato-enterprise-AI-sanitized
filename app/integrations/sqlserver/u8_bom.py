@@ -583,6 +583,7 @@ def format_u8_output_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "根父件名称": row.get("ROOT_INV_NAME"),
                 "材料编码（物料编码）": row.get("cInvCode"),
                 "累计用量": row.get("CUM_QTY"),
+                "供应类型": supply_type,
                 "规格型号": row.get("cInvStd"),
                 "单价": row.get("iInvNcost"),
                 "总价": row.get("TOTAL_PRICE"),
