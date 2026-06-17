@@ -127,19 +127,19 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
         summary_ws = wb.active
         summary_ws.title = _excel_sheet_title(workbook_data.summary_sheet_name, used_titles)
 
-        detail_sheet_refs: List[Dict[str, Any]] = []
+        detail_sheet_refs_by_name: Dict[str, Dict[str, Any]] = {}
 
         for detail_sheet in workbook_data.detail_sheets:
             ws = wb.create_sheet(title=_excel_sheet_title(detail_sheet.sheet_name, used_titles))
             actual_title = ws.title
             if not detail_sheet.rows:
                 ws["A1"] = "(no rows)"
-                detail_sheet_refs.append({"title": actual_title})
+                detail_sheet_refs_by_name[detail_sheet.sheet_name] = {"title": actual_title}
                 continue
             fieldnames = _collect_fieldnames(detail_sheet.rows)
             if not fieldnames:
                 ws["A1"] = "(no rows)"
-                detail_sheet_refs.append({"title": actual_title})
+                detail_sheet_refs_by_name[detail_sheet.sheet_name] = {"title": actual_title}
                 continue
             ws.append(fieldnames)
 
@@ -170,7 +170,7 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
                 ws.append(total_row)
                 ref["total_letter"] = total_letter
                 ref["total_row_num"] = row_num
-            detail_sheet_refs.append(ref)
+            detail_sheet_refs_by_name[detail_sheet.sheet_name] = ref
 
         meta = workbook_data.summary_meta
         summary_ws["C6"] = meta.pricing_title or workbook_data.summary_title
@@ -187,11 +187,12 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
         summary_ws.append([])
 
         summary_header_row = 11
+        summary_data_start = summary_header_row + 1
         for col_idx, header in enumerate(_SUMMARY_HEADERS, start=2):
             summary_ws.cell(row=summary_header_row, column=col_idx, value=header)
 
         row_idx = summary_header_row + 1
-        for i, row in enumerate(workbook_data.summary_rows):
+        for row in workbook_data.summary_rows:
             summary_ws.cell(row=row_idx, column=2, value=row.part_no)
             summary_ws.cell(row=row_idx, column=3, value=row.name)
             qty_val: Any = row.quantity_display
@@ -202,7 +203,7 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
                 pass
             summary_ws.cell(row=row_idx, column=4, value=qty_val)
 
-            detail_ref = detail_sheet_refs[i] if i < len(detail_sheet_refs) else None
+            detail_ref = detail_sheet_refs_by_name.get(row.detail_sheet_name) if row.detail_sheet_name else None
             if detail_ref and "total_letter" in detail_ref and "total_row_num" in detail_ref:
                 summary_ws.cell(
                     row=row_idx, column=5,
@@ -223,6 +224,9 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
                 summary_ws.cell(row=row_idx, column=5, value=row.amount)
                 summary_ws.cell(row=row_idx, column=6, value=row.remark)
                 row_idx += 1
+
+        summary_data_end = row_idx - 1
+        summary_ws["F10"] = f"=SUM(F{summary_data_start}:F{summary_data_end})" if summary_data_end >= summary_data_start else 0
 
         for row in summary_ws.iter_rows():
             for cell in row:

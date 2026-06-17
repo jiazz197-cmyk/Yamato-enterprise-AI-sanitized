@@ -111,6 +111,22 @@ def _group_selection_by_type(
     return grouped
 
 
+def _quantity_from_map(
+    group: Mapping[str, Any],
+    type_name: str,
+    qty_map: Mapping[str, int],
+) -> int:
+    for key in ("partids", "u8_parent_inv_codes"):
+        values = group.get(key)
+        if not isinstance(values, list):
+            continue
+        for raw in values:
+            code = str(raw or "").strip()
+            if code in qty_map:
+                return int(qty_map[code])
+    return int(qty_map.get(type_name, 1))
+
+
 def _merge_texts(values: List[str]) -> str:
     seen: set[str] = set()
     merged: List[str] = []
@@ -194,7 +210,7 @@ def build_quotation_workbook_data(
                 if isinstance(item, Mapping)
             ]
 
-            # 数量优先级：分组自带的 quantity > qty_map 查找 > 默认 1
+            # 数量优先级：分组自带的 quantity > 原始编码/U8 编码/type 查找 > 默认 1
             group_qty = group.get("quantity")
             if group_qty is not None:
                 try:
@@ -203,7 +219,7 @@ def build_quotation_workbook_data(
                     qty = 1.0
             else:
                 try:
-                    qty = int(qty_map.get(type_name, 1))
+                    qty = _quantity_from_map(group, type_name, qty_map)
                 except (TypeError, ValueError):
                     qty = 1
             if qty < 1:

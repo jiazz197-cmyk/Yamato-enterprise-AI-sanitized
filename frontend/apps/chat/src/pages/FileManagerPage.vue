@@ -1945,6 +1945,10 @@ const parseDirectU8Partids = (
       }
       continue
     }
+    if (/[,;\t]/.test(partid)) {
+      errors.push(`第 ${i + 1} 行编码包含分隔符，请将数量填写到右侧数量框`)
+      continue
+    }
     if (seen.has(partid)) continue
     let qty = 1
     if (qtyRaw) {
