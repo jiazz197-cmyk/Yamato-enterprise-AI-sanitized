@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from app.adapters.ocr_executor_jobs import ExecutorManagerAsyncTaskAdapter, ImageUploadJobAdapter
 from app.core.exceptions import APIException
 from app.core.security import get_current_user
-from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserPort
 from app.usecases.async_executor.executor_task_query import (
     CancelExecutorTaskCommand,
     CancelExecutorTaskUseCase,
@@ -45,7 +45,7 @@ def _adapters():
 async def upload_image(
     file: UploadFile = File(...),
     request: ImageUploadRequest = ImageUploadRequest(),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> ImageUploadResponse:
     _, jobs = _adapters()
     file_data = await file.read()
@@ -74,7 +74,7 @@ async def upload_image(
 @router.get("/image/task/{task_id}")
 async def get_image_upload_task_status(
     task_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> Dict[str, Any]:
     ex, _ = _adapters()
     try:
@@ -97,7 +97,7 @@ async def get_image_upload_task_status(
 @router.get("/image/task/{task_id}/result")
 async def get_image_upload_task_result(
     task_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> Dict[str, Any]:
     ex, _ = _adapters()
     try:
@@ -120,7 +120,7 @@ async def get_image_upload_task_result(
 @router.delete("/image/task/{task_id}")
 async def cancel_image_upload_task(
     task_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> Dict[str, Any]:
     ex, _ = _adapters()
     try:
@@ -144,7 +144,7 @@ async def cancel_image_upload_task(
 
 @router.get("/image/tasks/stats")
 async def get_image_upload_tasks_stats(
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> Dict[str, Any]:
     ex, _ = _adapters()
     try:

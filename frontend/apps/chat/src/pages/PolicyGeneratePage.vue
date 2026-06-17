@@ -2,7 +2,7 @@
   <div class="page">
     <div class="page-header">
       <div class="page-header__left">
-        <h1 class="page-header__title">报单填写</h1>
+        <h1 class="page-header__title">营业订单信息</h1>
         <div class="page__tabs">
       <button
         class="page__tab"
@@ -20,6 +20,15 @@
         >
           {{ isAdmin ? '全部表单' : '我的表单' }}
         </button>
+        <button
+          v-if="revisionCount > 0 || activeTab === 'revision'"
+          class="page__tab"
+          :class="{ 'page__tab--active': activeTab === 'revision', 'page__tab--badge': revisionCount > 0 && activeTab !== 'revision' }"
+          type="button"
+          @click="switchToRevision"
+        >
+          待修改<template v-if="revisionCount > 0"> ({{ revisionCount }})</template>
+        </button>
       </div>
     </div>
   </div>
@@ -28,6 +37,11 @@
 
       <!-- 填写表单 -->
       <form v-if="activeTab === 'form'" class="form" @submit.prevent="submitForm">
+
+        <div v-if="revisingFormId" class="form-revision-banner">
+          <span>正在修改被退回的报单，请编辑后点击「重新提交」。规格书与原价书均需重新上传。</span>
+          <button class="form-revision-banner__cancel" type="button" @click="cancelRevise">取消修改</button>
+        </div>
 
         <section class="form-section">
           <div class="form-section__title">基本信息</div>
@@ -95,13 +109,23 @@
               />
             </div>
             <div class="form-field">
-              <label class="form-field__label" for="production_number">生产编号</label>
+              <label class="form-field__label" for="production_number">制造编号</label>
               <input
                 id="production_number"
                 v-model="form.production_number"
                 type="text"
                 class="form-field__input"
-                placeholder="请输入生产编号"
+                placeholder="请输入制造编号"
+              />
+            </div>
+            <div class="form-field">
+              <label class="form-field__label" for="contract_number">合同编号</label>
+              <input
+                id="contract_number"
+                v-model="form.contract_number"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入合同编号"
               />
             </div>
           </div>
@@ -151,6 +175,16 @@
                 placeholder="例如：≤1g"
               />
             </div>
+            <div class="form-field">
+              <label class="form-field__label" for="packaging_machine_type">包装机类型</label>
+              <input
+                id="packaging_machine_type"
+                v-model="form.packaging_machine_type"
+                type="text"
+                class="form-field__input"
+                placeholder="请输入包装机类型"
+              />
+            </div>
           </div>
         </section>
 
@@ -188,13 +222,13 @@
               />
             </div>
             <div class="form-field">
-              <label class="form-field__label" for="feed_hopper">进料斗</label>
+              <label class="form-field__label" for="feed_hopper">供料斗</label>
               <input
                 id="feed_hopper"
                 v-model="form.feed_hopper"
                 type="text"
                 class="form-field__input"
-                placeholder="请输入进料斗"
+                placeholder="请输入供料斗"
               />
             </div>
             <div class="form-field">
@@ -208,13 +242,13 @@
               />
             </div>
             <div class="form-field">
-              <label class="form-field__label" for="memory_hopper">存储斗</label>
+              <label class="form-field__label" for="memory_hopper">记忆斗</label>
               <input
                 id="memory_hopper"
                 v-model="form.memory_hopper"
                 type="text"
                 class="form-field__input"
-                placeholder="请输入存储斗"
+                placeholder="请输入记忆斗"
               />
             </div>
             <div class="form-field">
@@ -251,32 +285,37 @@
         </section>
 
         <section class="form-section">
-          <div class="form-section__title">图片附件（最多2张）</div>
+          <div class="form-section__title">图片附件</div>
+          <p class="form-section__hint">请上传「规格书」和「原价书」各一张，两项均为必填。</p>
           <div class="image-upload-area">
-            <div class="image-upload-item">
-              <input ref="imageInput1" type="file" accept="image/*"
-                     style="display:none" @change="onImageSelected($event, 0)" />
-              <div v-if="!imageFiles[0]" class="image-upload-placeholder"
-                   @click="triggerImageInput(0)">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
-                <span>上传图片1</span>
+            <div
+              v-for="(label, index) in IMAGE_LABELS"
+              :key="label"
+              class="image-upload-slot"
+            >
+              <div class="image-upload-slot__label">
+                {{ label }}<span class="image-upload-slot__required">*</span>
               </div>
-              <div v-else class="image-preview">
-                <img :src="imagePreviews[0]!" alt="预览" />
-                <button type="button" class="image-remove-btn" @click="removeImage(0)">&times;</button>
-              </div>
-            </div>
-            <div v-if="imageFiles[0]" class="image-upload-item">
-              <input ref="imageInput2" type="file" accept="image/*"
-                     style="display:none" @change="onImageSelected($event, 1)" />
-              <div v-if="!imageFiles[1]" class="image-upload-placeholder"
-                   @click="triggerImageInput(1)">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
-                <span>上传图片2</span>
-              </div>
-              <div v-else class="image-preview">
-                <img :src="imagePreviews[1]!" alt="预览" />
-                <button type="button" class="image-remove-btn" @click="removeImage(1)">&times;</button>
+              <div class="image-upload-item">
+                <input
+                  :ref="(el) => setImageInputRef(el as HTMLInputElement | null, index)"
+                  type="file"
+                  accept="image/*"
+                  style="display:none"
+                  @change="onImageSelected($event, index)"
+                />
+                <div
+                  v-if="!hasImageAt(index)"
+                  class="image-upload-placeholder"
+                  @click="triggerImageInput(index)"
+                >
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                  <span>上传{{ label }}</span>
+                </div>
+                <div v-else class="image-preview">
+                  <img :src="getPreviewAt(index)!" :alt="label" />
+                  <button type="button" class="image-remove-btn" @click="removeImage(index)">&times;</button>
+                </div>
               </div>
             </div>
           </div>
@@ -285,14 +324,14 @@
         <div class="form-actions">
           <button class="form-actions__reset" type="button" @click="resetForm">重置</button>
           <button class="form-actions__submit" type="submit" :disabled="submitting">
-            {{ submitting ? '提交中…' : '提交' }}
+            {{ submitting ? (revisingFormId ? '重新提交中…' : '提交中…') : (revisingFormId ? '重新提交' : '提交') }}
           </button>
         </div>
 
       </form>
 
       <!-- 表单记录 -->
-      <div v-else class="records">
+      <div v-else-if="activeTab === 'records'" class="records">
 
         <div class="records__toolbar">
           <button class="records__refresh" type="button" :disabled="loadingRecords" @click="loadRecords">
@@ -345,6 +384,7 @@
               'record-card--pending': record.status === 'pending',
               'record-card--approved': record.status === 'approved',
               'record-card--rejected': record.status === 'rejected',
+              'record-card--pending-revision': record.status === 'pending_revision',
             }"
           >
             <div class="record-card__header" @click="toggleExpand(record.id)">
@@ -358,7 +398,7 @@
               <div class="record-card__right">
                 <span class="status-badge" :class="`status-badge--${record.status}`">
                   <span class="status-badge__dot"></span>
-                  {{ record.status === 'approved' ? '已通过' : record.status === 'rejected' ? '不通过' : '待审批' }}
+                  {{ getStatusLabel(record.status) }}
                 </span>
                 <div v-if="isAdmin && record.status === 'approved'" class="action-buttons">
                   <button
@@ -369,13 +409,22 @@
                     {{ deletingApprovedId === record.id ? '...' : '删除' }}
                   </button>
                 </div>
-                <div v-if="isAdmin && record.status === 'rejected'" class="action-buttons">
+                <div v-if="isAdmin && (record.status === 'rejected' || record.status === 'pending_revision')" class="action-buttons">
                   <button
                     class="approve-btn reject-btn"
                     :disabled="deletingRejectedId === record.id"
                     @click.stop="deleteRejectedRecord(record.id)"
                   >
                     {{ deletingRejectedId === record.id ? '...' : '删除' }}
+                  </button>
+                </div>
+                <div v-if="canReviseRecord(record)" class="action-buttons">
+                  <button
+                    class="approve-btn revise-btn"
+                    :disabled="revisingId === record.id"
+                    @click.stop="startRevise(record)"
+                  >
+                    {{ revisingId === record.id ? '...' : '修改' }}
                   </button>
                 </div>
                 <div v-if="isAdmin && record.status === 'pending'" class="action-buttons">
@@ -428,12 +477,144 @@
                 <a v-if="record.image_url_1"
                    :href="getImageDownloadUrl(record.image_url_1)"
                    target="_blank" class="record-image-link">
-                  图片1
+                  规格书
                 </a>
                 <a v-if="record.image_url_2"
                    :href="getImageDownloadUrl(record.image_url_2)"
                    target="_blank" class="record-image-link">
-                  图片2
+                  原价书
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- 待修改 -->
+      <div v-else-if="activeTab === 'revision'" class="records">
+
+        <div class="records__toolbar">
+          <button class="records__refresh" type="button" :disabled="loadingRevision" @click="loadRevisionRecords">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              :class="{ 'records__refresh-icon--spinning': loadingRevision }"
+              class="records__refresh-icon"
+              aria-hidden="true"
+            >
+              <path
+                d="M1 4v6h6M23 20v-6h-6"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            刷新
+          </button>
+          <span class="records__count">共 {{ revisionRecords.length }} 条</span>
+        </div>
+
+        <div v-if="loadingRevision" class="records__loading">
+          <div class="records__loading-dots">
+            <span></span><span></span><span></span>
+          </div>
+        </div>
+
+        <div v-else-if="revisionRecords.length === 0" class="records__empty">
+          暂无待修改的表单
+        </div>
+
+        <div v-else class="records__list">
+          <div
+            v-for="record in revisionRecords"
+            :key="record.id"
+            class="record-card record-card--pending-revision"
+            :class="{
+              'record-card--expanded': expandedRevisionId === record.id,
+            }"
+          >
+            <div class="record-card__header" @click="toggleExpandRevision(record.id)">
+              <div class="record-card__meta">
+                <span class="record-card__time">{{ record.upload_time || '—' }}</span>
+                <span v-if="isAdmin && record.uploader" class="record-card__uploader">
+                  {{ record.uploader }}
+                </span>
+                <span class="record-card__summary">{{ getSummary(record.text) }}</span>
+              </div>
+              <div class="record-card__right">
+                <span class="status-badge status-badge--pending-revision">
+                  <span class="status-badge__dot"></span>
+                  待修改
+                </span>
+                <div v-if="isAdmin" class="action-buttons">
+                  <button
+                    class="approve-btn reject-btn"
+                    :disabled="deletingRejectedId === record.id"
+                    @click.stop="deleteRejectedRecord(record.id)"
+                  >
+                    {{ deletingRejectedId === record.id ? '...' : '删除' }}
+                  </button>
+                </div>
+                <div v-if="canReviseRecord(record)" class="action-buttons">
+                  <button
+                    class="approve-btn revise-btn"
+                    :disabled="revisingId === record.id"
+                    @click.stop="startRevise(record)"
+                  >
+                    {{ revisingId === record.id ? '...' : '修改' }}
+                  </button>
+                </div>
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  class="record-card__chevron"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M6 9l6 6 6-6"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </div>
+            </div>
+
+            <div v-if="expandedRevisionId === record.id" class="record-card__body">
+              <div class="record-fields">
+                <div
+                  v-for="field in parseFields(record.text)"
+                  :key="field.label"
+                  class="record-field"
+                >
+                  <span class="record-field__label">{{ field.label }}</span>
+                  <span class="record-field__value">{{ field.value }}</span>
+                </div>
+              </div>
+              <div v-if="record.image_url_1 || record.image_url_2" class="record-images">
+                <a v-if="record.image_url_1"
+                   :href="getImageDownloadUrl(record.image_url_1)"
+                   target="_blank" class="record-image-link">
+                  规格书
+                </a>
+                <a v-if="record.image_url_2"
+                   :href="getImageDownloadUrl(record.image_url_2)"
+                   target="_blank" class="record-image-link">
+                  原价书
                 </a>
               </div>
             </div>
@@ -457,7 +638,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ConfirmDialog, useToast } from '@yamato/components'
 import {
   approveClosingForm,
@@ -466,10 +648,11 @@ import {
   deleteRejectedClosingForm,
   listClosingFormRecords,
   rejectClosingForm,
+  reviseClosingForm,
   submitClosingForm,
   uploadClosingFormImage,
 } from '../services/closing_form'
-import { readUserRole } from '../services/auth'
+import { readUsername, readUserRole } from '../services/auth'
 import { getAuthTokenFromStorage } from '../services/token_storage'
 import { config } from '../config'
 
@@ -481,10 +664,12 @@ interface FormData {
   quantity: number | null
   price_excluding_tax: number | null
   production_number: string
+  contract_number: string
   material_name: string
   weighing_spec: string
   speed: number | null
   precision: string
+  packaging_machine_type: string
   top_cone_type: string
   linear_vibration_type: string
   material_layer_ring: string
@@ -511,15 +696,50 @@ interface ParsedField {
   value: string
 }
 
-const { showSuccess, showError } = useToast()
+const IMAGE_LABELS = ['规格书', '原价书'] as const
 
-const activeTab = ref<'form' | 'records'>('form')
+const FIELD_LABEL_MAP: Record<string, keyof FormData> = {
+  '日期': 'closing_date',
+  '成交时间': 'closing_date',
+  '客户名称': 'customer_name',
+  '产品类型': 'product_type',
+  '型号规格': 'model_spec',
+  '数量': 'quantity',
+  '原价不含税': 'price_excluding_tax',
+  '生产制造编号': 'production_number',
+  '合同编号': 'contract_number',
+  '物料名称': 'material_name',
+  '称重规格': 'weighing_spec',
+  '速度': 'speed',
+  '精度': 'precision',
+  '包装机类型': 'packaging_machine_type',
+  '顶锥形式': 'top_cone_type',
+  '线振形式': 'linear_vibration_type',
+  '料层调整圈': 'material_layer_ring',
+  '供料斗': 'feed_hopper',
+  '计量斗': 'metering_hopper',
+  '记忆斗': 'memory_hopper',
+  '溜槽角度': 'chute_angle',
+  '集合斗形式': 'collection_hopper_type',
+  '单双秤/混料/外挂/特殊': 'scale_type',
+}
+
+const { showSuccess, showError } = useToast()
+const route = useRoute()
+
+const activeTab = ref<'form' | 'records' | 'revision'>('form')
+const currentUsername = ref(readUsername())
 
 const isAdmin = computed(() => {
   const role = readUserRole()
   return role === 'admin' || role === 'superuser'
 })
-const isSuperuser = computed(() => readUserRole() === 'superuser')
+
+const isRevisionStatus = (status: string): boolean =>
+  status === 'pending_revision' || status === 'rejected'
+
+const canReviseRecord = (record: FormRecord): boolean =>
+  isRevisionStatus(record.status) && record.uploader === currentUsername.value
 
 const createEmptyForm = (): FormData => ({
   closing_date: '',
@@ -529,10 +749,12 @@ const createEmptyForm = (): FormData => ({
   quantity: null,
   price_excluding_tax: null,
   production_number: '',
+  contract_number: '',
   material_name: '',
   weighing_spec: '',
   speed: null,
   precision: '',
+  packaging_machine_type: '',
   top_cone_type: '',
   linear_vibration_type: '',
   material_layer_ring: '',
@@ -546,6 +768,8 @@ const createEmptyForm = (): FormData => ({
 
 const form = ref<FormData>(createEmptyForm())
 const submitting = ref(false)
+const revisingFormId = ref<string | null>(null)
+const revisingSourceRecord = ref<FormRecord | null>(null)
 
 const records = ref<FormRecord[]>([])
 const loadingRecords = ref(false)
@@ -556,14 +780,46 @@ const deletingRejectedId = ref<string | null>(null)
 const showDeleteApprovedDialog = ref(false)
 const approvedToDelete = ref<string | null>(null)
 
+const revisionRecords = ref<FormRecord[]>([])
+const loadingRevision = ref(false)
+const expandedRevisionId = ref<string | null>(null)
+const revisingId = ref<string | null>(null)
+
+const revisionCount = computed(() => revisionRecords.value.length)
+
 const imageFiles = ref<(File | null)[]>([null, null])
 const imagePreviews = ref<(string | null)[]>([null, null])
-const imageInput1 = ref<HTMLInputElement | null>(null)
-const imageInput2 = ref<HTMLInputElement | null>(null)
+const existingImageUrls = ref<(string | null)[]>([null, null])
+const imageInputs = ref<(HTMLInputElement | null)[]>([null, null])
+
+const setImageInputRef = (el: HTMLInputElement | null, index: number) => {
+  imageInputs.value[index] = el
+}
+
+const getImageDownloadUrl = (objectName: string): string => {
+  return `${config.apiBaseUrl}/closing-form/image/${encodeURIComponent(objectName)}`
+}
+
+const hasImageAt = (index: number): boolean =>
+  Boolean(imageFiles.value[index] || existingImageUrls.value[index])
+
+const getPreviewAt = (index: number): string | null =>
+  imagePreviews.value[index] ?? (
+    existingImageUrls.value[index]
+      ? getImageDownloadUrl(existingImageUrls.value[index]!)
+      : null
+  )
+
+const getMissingImageLabels = (): string[] =>
+  IMAGE_LABELS.filter((_, index) => !hasImageAt(index))
+
+const resolveFinalImageUrls = (uploadedUrls: (string | null)[]): (string | null)[] => [
+  uploadedUrls[0] ?? existingImageUrls.value[0] ?? null,
+  uploadedUrls[1] ?? existingImageUrls.value[1] ?? null,
+]
 
 const triggerImageInput = (index: number) => {
-  if (index === 0) imageInput1.value?.click()
-  else imageInput2.value?.click()
+  imageInputs.value[index]?.click()
 }
 
 const onImageSelected = (event: Event, index: number) => {
@@ -572,6 +828,7 @@ const onImageSelected = (event: Event, index: number) => {
   if (!file) return
 
   imageFiles.value[index] = file
+  existingImageUrls.value[index] = null
   const reader = new FileReader()
   reader.onload = (e) => {
     imagePreviews.value[index] = e.target?.result as string
@@ -583,20 +840,25 @@ const onImageSelected = (event: Event, index: number) => {
 const removeImage = (index: number) => {
   imageFiles.value[index] = null
   imagePreviews.value[index] = null
-  if (index === 0) { if (imageInput1.value) imageInput1.value.value = '' }
-  else { if (imageInput2.value) imageInput2.value.value = '' }
-}
-
-const getImageDownloadUrl = (objectName: string): string => {
-  return `${config.apiBaseUrl}/closing-form/image/${encodeURIComponent(objectName)}`
+  existingImageUrls.value[index] = null
+  if (imageInputs.value[index]) imageInputs.value[index]!.value = ''
 }
 
 const resetForm = () => {
   form.value = createEmptyForm()
   imageFiles.value = [null, null]
   imagePreviews.value = [null, null]
-  if (imageInput1.value) imageInput1.value.value = ''
-  if (imageInput2.value) imageInput2.value.value = ''
+  existingImageUrls.value = [null, null]
+  imageInputs.value.forEach((input) => {
+    if (input) input.value = ''
+  })
+  revisingFormId.value = null
+  revisingSourceRecord.value = null
+}
+
+const cancelRevise = () => {
+  resetForm()
+  activeTab.value = 'revision'
 }
 
 const isTokenExpired = (): boolean => {
@@ -627,6 +889,12 @@ const submitForm = async () => {
     return
   }
 
+  const missingLabels = getMissingImageLabels()
+  if (missingLabels.length > 0) {
+    showError(`请上传${missingLabels.join('和')}后再提交`)
+    return
+  }
+
   submitting.value = true
   let uploadedUrls: (string | null)[] = []
 
@@ -634,16 +902,37 @@ const submitForm = async () => {
     uploadedUrls = await uploadImagesForSubmit()
 
     const payload: Record<string, unknown> = { ...form.value }
-    payload.image_url_1 = uploadedUrls[0] ?? null
-    payload.image_url_2 = uploadedUrls[1] ?? null
-    await submitClosingForm(payload)
-
-    showSuccess('提交成功，等待审批')
-    resetForm()
-    imageFiles.value = [null, null]
-    imagePreviews.value = [null, null]
+    if (revisingFormId.value) {
+      const [url1, url2] = resolveFinalImageUrls(uploadedUrls)
+      payload.image_url_1 = url1
+      payload.image_url_2 = url2
+      await reviseClosingForm(revisingFormId.value, payload)
+      showSuccess('修改已提交，等待审批')
+      resetForm()
+      void loadRevisionRecords()
+      void loadRecords()
+      activeTab.value = 'revision'
+    } else {
+      payload.image_url_1 = uploadedUrls[0]
+      payload.image_url_2 = uploadedUrls[1]
+      await submitClosingForm(payload)
+      showSuccess('提交成功，等待审批')
+      resetForm()
+    }
   } catch (err: any) {
-    showError(err?.message || err?.detail || '提交失败，请稍后重试')
+    if (revisingFormId.value && (err?.status === 404 || err?.status === 400)) {
+      showError(
+        err?.status === 404
+          ? '该任务已被删除'
+          : (err?.message || '该表单状态已变更，无法修改')
+      )
+      resetForm()
+      void loadRevisionRecords()
+      void loadRecords()
+      activeTab.value = 'revision'
+    } else {
+      showError(err?.message || (revisingFormId.value ? '修改失败，请稍后重试' : '提交失败，请稍后重试'))
+    }
     for (const url of uploadedUrls) {
       if (url) {
         try { await deleteClosingFormImage(url) } catch { /* best-effort */ }
@@ -665,12 +954,35 @@ const loadRecords = async () => {
   }
 }
 
+const loadRevisionRecords = async () => {
+  loadingRevision.value = true
+  try {
+    const allRecords = await listClosingFormRecords()
+    revisionRecords.value = allRecords.filter((r) => isRevisionStatus(r.status))
+  } catch (err: any) {
+    showError(err?.message || '加载失败')
+  } finally {
+    loadingRevision.value = false
+  }
+}
+
+const getStatusLabel = (status: string): string => {
+  switch (status) {
+    case 'approved': return '已通过'
+    case 'rejected': return '不通过'
+    case 'pending_revision': return '待修改'
+    default: return '待审批'
+  }
+}
+
 const approveRecord = async (formId: string) => {
   approvingId.value = formId
   try {
     await approveClosingForm(formId)
-    const idx = records.value.findIndex((r) => r.id === formId)
-    if (idx !== -1) records.value[idx] = { ...records.value[idx], status: 'approved' }
+    if (expandedId.value === formId) {
+      expandedId.value = null
+    }
+    await loadRecords()
     showSuccess('已审批通过')
   } catch (err: any) {
     showError(err?.message || '审批失败')
@@ -684,8 +996,9 @@ const rejectRecord = async (formId: string) => {
   try {
     await rejectClosingForm(formId)
     const idx = records.value.findIndex((r) => r.id === formId)
-    if (idx !== -1) records.value[idx] = { ...records.value[idx], status: 'rejected' }
-    showSuccess('已审批不通过')
+    if (idx !== -1) records.value[idx] = { ...records.value[idx], status: 'pending_revision' }
+    void loadRevisionRecords()
+    showSuccess('已审批不通过，已退回待修改')
   } catch (err: any) {
     showError(err?.message || '操作失败')
   } finally {
@@ -703,10 +1016,23 @@ const deleteRejectedRecord = async (formId: string) => {
   try {
     await deleteRejectedClosingForm(formId)
     records.value = records.value.filter((record) => record.id !== formId)
+    revisionRecords.value = revisionRecords.value.filter((record) => record.id !== formId)
     if (expandedId.value === formId) {
       expandedId.value = null
     }
-    showSuccess('已删除不通过表单')
+    if (expandedRevisionId.value === formId) {
+      expandedRevisionId.value = null
+    }
+    if (revisingFormId.value === formId) {
+      resetForm()
+      if (activeTab.value === 'form') {
+        showSuccess('该表单已被删除，修改已取消')
+      } else {
+        showSuccess('已删除')
+      }
+    } else {
+      showSuccess('已删除')
+    }
   } catch (err: any) {
     showError(err?.message || '删除失败')
   } finally {
@@ -737,13 +1063,53 @@ const confirmDeleteApproved = async () => {
   }
 }
 
+const startRevise = (record: FormRecord) => {
+  revisingId.value = record.id
+  try {
+    const fields = parseFields(record.text)
+    const newForm = createEmptyForm()
+    for (const field of fields) {
+      const formKey = FIELD_LABEL_MAP[field.label]
+      if (formKey) {
+        const numKeys: (keyof FormData)[] = ['quantity', 'speed', 'price_excluding_tax']
+        if (numKeys.includes(formKey)) {
+          (newForm as any)[formKey] = field.value === '' ? null : Number(field.value)
+        } else {
+          (newForm as any)[formKey] = field.value
+        }
+      }
+    }
+    form.value = newForm
+    revisingFormId.value = record.id
+    revisingSourceRecord.value = record
+    imageFiles.value = [null, null]
+    imagePreviews.value = [null, null]
+    existingImageUrls.value = [record.image_url_1 ?? null, record.image_url_2 ?? null]
+    imageInputs.value.forEach((input) => {
+      if (input) input.value = ''
+    })
+    activeTab.value = 'form'
+  } finally {
+    revisingId.value = null
+  }
+}
+
 const switchToRecords = () => {
   activeTab.value = 'records'
   void loadRecords()
 }
 
+const switchToRevision = () => {
+  activeTab.value = 'revision'
+  void loadRevisionRecords()
+}
+
 const toggleExpand = (id: string) => {
   expandedId.value = expandedId.value === id ? null : id
+}
+
+const toggleExpandRevision = (id: string) => {
+  expandedRevisionId.value = expandedRevisionId.value === id ? null : id
 }
 
 const parseFields = (text: string): ParsedField[] => {
@@ -765,6 +1131,15 @@ const getSummary = (text: string): string => {
   const parts = [customer, model, qty ? `×${qty}` : ''].filter(Boolean)
   return parts.join('  ')
 }
+
+onMounted(async () => {
+  currentUsername.value = readUsername()
+  await loadRevisionRecords()
+  const tab = typeof route.query.tab === 'string' ? route.query.tab : ''
+  if (tab === 'revision' && revisionRecords.value.length > 0) {
+    activeTab.value = 'revision'
+  }
+})
 </script>
 
 <style scoped lang="scss">
@@ -835,6 +1210,14 @@ const getSummary = (text: string): string => {
     background: var(--yamato-color-accent-soft);
     font-weight: 600;
   }
+
+  &--badge {
+    position: relative;
+    font-weight: 600;
+    color: #e67e22;
+    border-color: rgba(230, 126, 34, 0.3);
+    background: rgba(230, 126, 34, 0.08);
+  }
 }
 
 .page__content {
@@ -855,6 +1238,35 @@ const getSummary = (text: string): string => {
   gap: 20px;
 }
 
+.form-revision-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--yamato-radius-sm);
+  background: rgba(230, 126, 34, 0.1);
+  border: 1px solid rgba(230, 126, 34, 0.28);
+  color: #b35c12;
+  font-size: 13px;
+}
+
+.form-revision-banner__cancel {
+  flex-shrink: 0;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid rgba(230, 126, 34, 0.35);
+  border-radius: var(--yamato-radius-pill);
+  background: #fff;
+  color: #b35c12;
+  font-size: 12px;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(230, 126, 34, 0.08);
+  }
+}
+
 .form-section {
   border-radius: var(--yamato-radius-sm);
   background: #ffffff;
@@ -870,6 +1282,12 @@ const getSummary = (text: string): string => {
   margin-bottom: 14px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--yamato-color-border-subtle);
+}
+
+.form-section__hint {
+  margin: -6px 0 14px;
+  font-size: 13px;
+  color: var(--yamato-color-text-secondary);
 }
 
 .form-grid {
@@ -1089,6 +1507,10 @@ const getSummary = (text: string): string => {
   &--rejected {
     border-left: 3px solid var(--yamato-color-danger);
   }
+
+  &--pending-revision {
+    border-left: 3px solid #e67e22;
+  }
 }
 
 .record-card__header {
@@ -1185,6 +1607,15 @@ const getSummary = (text: string): string => {
       background: var(--yamato-color-danger);
     }
   }
+
+  &--pending-revision {
+    background: rgba(230, 126, 34, 0.12);
+    color: #e67e22;
+
+    .status-badge__dot {
+      background: #e67e22;
+    }
+  }
 }
 
 .status-badge__dot {
@@ -1232,6 +1663,15 @@ const getSummary = (text: string): string => {
   }
 }
 
+.revise-btn {
+  color: #e67e22;
+  background: rgba(230, 126, 34, 0.12);
+
+  &:hover:not(:disabled) {
+    background: rgba(230, 126, 34, 0.24);
+  }
+}
+
 .record-card__body {
   border-top: 1px solid var(--yamato-color-border-subtle);
   padding: 16px;
@@ -1264,7 +1704,24 @@ const getSummary = (text: string): string => {
 
 .image-upload-area {
   display: flex;
-  gap: 16px;
+  gap: 20px;
+}
+
+.image-upload-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.image-upload-slot__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--yamato-color-text-secondary);
+}
+
+.image-upload-slot__required {
+  margin-left: 2px;
+  color: var(--yamato-color-danger);
 }
 
 .image-upload-item {

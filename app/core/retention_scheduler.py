@@ -6,12 +6,7 @@ import asyncio
 from typing import Optional
 
 from app.core.config import settings
-from app.core.database import SessionLocal
 from app.core.logging import get_logger
-from app.usecases.quotation.retention import (
-    expire_awaiting_approval_tasks,
-    purge_old_terminal_tasks_global,
-)
 
 logger = get_logger("quotation.retention_scheduler")
 
@@ -20,21 +15,21 @@ _loop_task: Optional[asyncio.Task] = None
 
 
 async def run_retention_once() -> None:
-    db = SessionLocal()
+    from app.adapters.quotation.purge import QuotationTaskPurgeAdapter
+    from app.adapters.quotation.retention import QuotationTaskRetentionAdapter
+
+    purge_adapter = QuotationTaskPurgeAdapter()
+    retention_adapter = QuotationTaskRetentionAdapter(purge_adapter)
     try:
-        await expire_awaiting_approval_tasks(
-            db,
+        await retention_adapter.expire_awaiting_approval_tasks(
             ttl_hours=settings.QUOTATION_AWAITING_APPROVAL_TTL_HOURS,
         )
-        await purge_old_terminal_tasks_global(
-            db,
+        await retention_adapter.purge_old_terminal_tasks_global(
             max_total=settings.QUOTATION_RETENTION_MAX_TOTAL,
             target=settings.QUOTATION_RETENTION_TARGET,
         )
     except Exception:
         logger.exception("Quotation retention run failed")
-    finally:
-        db.close()
 
 
 async def _retention_loop(interval_sec: int) -> None:

@@ -7,7 +7,7 @@ from typing import Any, List, Optional, Tuple
 
 from app.core.exceptions import PermissionDeniedError, ValidationError
 from app.core.logging import get_logger
-from app.models.orm.platform.user import UserRole
+from app.ports.contracts.identity import ROLE_SUPERUSER
 from app.ports.contracts.identity import CurrentUserPort
 from app.ports.domains.file_manager import FileManagerPort
 from app.ports.dto.files import FileRecordDTO
@@ -16,7 +16,7 @@ logger = get_logger("file_manager_uc")
 
 
 def _ensure_file_access(dto: FileRecordDTO, current_user: CurrentUserPort, *, detail: str) -> None:
-    if current_user.role != UserRole.superuser and dto.uploader != current_user.username:
+    if not current_user.is_superuser() and dto.uploader != current_user.username:
         raise PermissionDeniedError(detail)
 
 
@@ -34,10 +34,10 @@ class UploadFileUseCase:
     def __init__(self, files: FileManagerPort):
         self._files = files
 
-    def execute(self, cmd: UploadFileCommand) -> FileRecordDTO:
+    async def execute(self, cmd: UploadFileCommand) -> FileRecordDTO:
         if not cmd.original_filename:
             raise ValidationError("文件名不能为空")
-        return self._files.upload_stream_persist(
+        return await self._files.upload_stream_persist(
             file_stream=cmd.file_stream,
             original_filename=cmd.original_filename,
             file_size=cmd.file_size,
@@ -58,8 +58,8 @@ class GetFileForAccessUseCase:
     def __init__(self, files: FileManagerPort):
         self._files = files
 
-    def execute(self, query: GetFileByIdQuery) -> FileRecordDTO:
-        dto = self._files.get_file_or_not_found(query.file_id)
+    async def execute(self, query: GetFileByIdQuery) -> FileRecordDTO:
+        dto = await self._files.get_file_or_not_found(query.file_id)
         _ensure_file_access(dto, query.current_user, detail=query.forbidden_detail)
         return dto
 
@@ -84,8 +84,8 @@ class ListFilesUseCase:
     def __init__(self, files: FileManagerPort):
         self._files = files
 
-    def execute(self, query: ListFilesQuery) -> Tuple[int, List[FileRecordDTO]]:
-        return self._files.list_files_page(
+    async def execute(self, query: ListFilesQuery) -> Tuple[int, List[FileRecordDTO]]:
+        return await self._files.list_files_page(
             current_user=query.current_user,
             page=query.page,
             page_size=query.page_size,
@@ -97,8 +97,8 @@ class SearchFilesUseCase:
     def __init__(self, files: FileManagerPort):
         self._files = files
 
-    def execute(self, query: SearchFilesQuery) -> Tuple[int, List[FileRecordDTO]]:
-        return self._files.search_files_page(
+    async def execute(self, query: SearchFilesQuery) -> Tuple[int, List[FileRecordDTO]]:
+        return await self._files.search_files_page(
             current_user=query.current_user,
             keyword=query.keyword,
             page=query.page,
@@ -116,10 +116,10 @@ class DeleteFileUseCase:
     def __init__(self, files: FileManagerPort):
         self._files = files
 
-    def execute(self, cmd: DeleteFileCommand) -> FileRecordDTO:
-        dto = self._files.get_file_or_not_found(cmd.file_id)
+    async def execute(self, cmd: DeleteFileCommand) -> FileRecordDTO:
+        dto = await self._files.get_file_or_not_found(cmd.file_id)
         _ensure_file_access(dto, cmd.current_user, detail="无权删除该文件")
-        self._files.delete_file_and_object(dto)
+        await self._files.delete_file_and_object(dto)
         logger.info("文件删除成功: %s (ID: %s)", dto.file_name, cmd.file_id)
         return dto
 
@@ -141,10 +141,10 @@ class BatchDeleteFilesUseCase:
     def __init__(self, files: FileManagerPort):
         self._files = files
 
-    def execute(self, cmd: BatchDeleteFilesCommand) -> BatchDeleteFilesResult:
-        if cmd.current_user.role != UserRole.superuser:
+    async def execute(self, cmd: BatchDeleteFilesCommand) -> BatchDeleteFilesResult:
+        if not cmd.current_user.is_superuser():
             raise PermissionDeniedError("仅超级管理员可批量删除")
-        success_count, failed_count, failed_ids = self._files.batch_delete_ids(cmd.file_ids)
+        success_count, failed_count, failed_ids = await self._files.batch_delete_ids(cmd.file_ids)
         logger.info("批量删除完成: 成功 %s, 失败 %s", success_count, failed_count)
         return BatchDeleteFilesResult(
             success_count=success_count,

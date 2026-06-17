@@ -9,11 +9,11 @@ from app.core.exceptions import ExternalServiceError, ValidationError
 from app.core.logging import get_logger
 from app.schemas.sqlserver import PdmBomRequest, QueryResponse, U8BomInventoryRequest
 
-from app.integrations.keyword import (
+from app.domain.quotation.keyword_mapping import (
     detect_product_type,
     expand_keyword_mapping,
-    normalize_pdm_keywords,
 )
+from app.domain.quotation.keyword_normalizer import normalize_pdm_keywords
 from app.integrations.sqlserver.client import close_sql_client, get_sql_client
 from app.integrations.sqlserver.exceptions import QueryCancelledError, raise_if_cancelled
 from app.integrations.sqlserver.pdm_bom import (
@@ -44,9 +44,9 @@ def run_u8_bom_inventory_query(
             parent_codes, payload.max_depth, cancel_checker=cancel_checker
         )
         rows = format_u8_output_rows(raw_rows)
-        logger.info(
-            "U8 查询完成: parent_inv_codes=%s, raw_rows=%s, output_rows=%s",
-            parent_codes,
+        logger.debug(
+            "U8 查询完成: parent_codes=%s, raw_rows=%s, output_rows=%s",
+            len(parent_codes),
             len(raw_rows),
             len(rows),
         )
@@ -120,12 +120,11 @@ def run_pdm_bom_query(
                     continue
 
                 logger.debug(
-                    "PDM 关键词转换: group_index=%s, product_type=%r, model=%r, raw_group=%s, expanded_keywords=%s",
+                    "PDM 关键词转换: group_index=%s, product_type=%r, model=%r, expanded_count=%s",
                     idx,
                     product_type,
                     model,
-                    group,
-                    mapping_debug,
+                    len(mapping_debug),
                 )
 
                 executed_query_count += 1
@@ -140,7 +139,7 @@ def run_pdm_bom_query(
                     rows.append(item)
 
         deduplicated_rows = deduplicate_pdm_result_rows(rows)
-        logger.info(
+        logger.debug(
             "PDM 查询完成: input_groups=%s, executed_queries=%s, rows=%s, deduplicated_rows=%s",
             len(keyword_groups),
             executed_query_count,
@@ -155,3 +154,31 @@ def run_pdm_bom_query(
         raise ExternalServiceError("PDM SQLServer", f"查询失败: {exc}") from exc
     finally:
         close_sql_client(shared_client)
+
+
+def run_pdm_match_query(
+    payload: PdmBomRequest,
+    cancel_checker: Optional[Callable[[], bool]] = None,
+) -> QueryResponse:
+    """PDM 部件匹配查询 - 四路召回 + 多维打分。
+
+    通过 matcher2 引擎执行多路召回、打分排序，
+    并将分层结果扁平化返回。
+    """
+    from app.integrations.sqlserver.pdm_matcher_adapter import (
+        run_pdm_match_query as _run_match,
+    )
+
+    try:
+        result = _run_match(payload.keywords)
+        total = result.get("total", 0)
+        items = result.get("items", [])
+        components = result.get("components", [])
+        logger.debug(
+            "PDM 匹配查询完成: total=%s",
+            total,
+        )
+        return QueryResponse(total=total, items=items, components=components)
+    except Exception as exc:
+        logger.error("PDM 匹配查询失败: %s", exc, exc_info=True)
+        raise ExternalServiceError("PDM SQLServer", f"匹配查询失败: {exc}") from exc

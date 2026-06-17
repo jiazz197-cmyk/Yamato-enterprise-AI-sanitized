@@ -3,77 +3,99 @@ import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import or_
-from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db
+from app.adapters.auth import BcryptPasswordHasherAdapter, SqlAlchemyUserRepositoryAdapter
+from app.core.exceptions import AuthenticationError, NotFoundError, PermissionDeniedError
 from app.core.logging import get_logger
-from app.core.security import (
-    verify_password,
-    hash_password,
-    create_access_token,
-    get_current_user,
-    require_roles,
+from app.core.security import get_current_user, require_roles, create_access_token
+from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER
+from app.ports.dto.auth import (
+    LoginCommand,
+    RegisterCommand,
+    UpdatePagePermissionsCommand,
+    UpdateUserRoleCommand,
+    UserDTO,
 )
-from app.models.orm.platform.user import User, UserRole
 from app.schemas.platform.token import TokenResponse
-from app.schemas.platform.user import UserLogin, UserRead, UserRoleUpdate, UserRegister
+from app.schemas.platform.user import (
+    UserLogin,
+    UserPagePermissionsUpdate,
+    UserRead,
+    UserRoleUpdate,
+    UserRegister,
+)
+from app.usecases.auth import (
+    DeleteUserUseCase,
+    GetUserUseCase,
+    ListUsersUseCase,
+    LoginUseCase,
+    RegisterUseCase,
+    UpdateUserPagePermissionsUseCase,
+    UpdateUserRoleUseCase,
+)
 
 router = APIRouter()
 logger = get_logger("security.auth")
 
+_user_repo = SqlAlchemyUserRepositoryAdapter()
+_password_hasher = BcryptPasswordHasherAdapter()
+
+
+def _dto_to_user_read(dto: UserDTO) -> UserRead:
+    return UserRead(
+        id=uuid.UUID(dto.id) if dto.id else uuid.uuid4(),
+        username=dto.username,
+        name=dto.name,
+        email=dto.email,
+        phone=dto.phone,
+        department=dto.department,
+        avatar=dto.avatar,
+        is_active=dto.is_active,
+        role=dto.role,
+        roles=[],
+        permissions=dto.permissions,
+    )
+
 
 @router.post("/login", response_model=TokenResponse, summary="用户登录")
-def login(body: UserLogin, db: Session = Depends(get_db)):
+async def login(body: UserLogin):
     """校验账号密码，返回 JWT。"""
-    user = db.query(User).filter(User.username == body.username).first()
-    if not user or not verify_password(body.password, user.password):
+    try:
+        uc = LoginUseCase(_user_repo, _password_hasher)
+        result = await uc.execute(LoginCommand(username=body.username, password=body.password))
+        return result
+    except AuthenticationError as e:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            status_code=e.status_code,
+            detail=e.message,
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is disabled",
-        )
-
-    access_token = create_access_token(subject=str(user.id))
-    logger.info(f"User logged in: {user.username} (id={user.id})")
-    return TokenResponse(access_token=access_token, token_type="bearer")
 
 
 @router.get("/me", response_model=UserRead, summary="获取当前用户信息")
-def get_me(current_user: User = Depends(get_current_user)):
-    """当前登录用户 ORM。"""
-    return current_user
+async def get_me(current_user: CurrentUserPort = Depends(get_current_user)):
+    """当前登录用户信息。"""
+    uc = GetUserUseCase(_user_repo)
+    dto = await uc.execute(current_user.id)
+    return _dto_to_user_read(dto)
 
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED, summary="用户注册")
-def register(body: UserRegister, db: Session = Depends(get_db)):
+async def register(body: UserRegister):
     """新用户，角色固定为 user。"""
-    conflict = db.query(User).filter(
-        or_(User.username == body.username, User.email == body.email)
-    ).first()
-    if conflict:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="用户名或邮箱已被注册",
-        )
-    user = User(
-        username=body.username,
-        email=body.email,
-        password=hash_password(body.password),
-        name=body.name,
-        role=UserRole.user,
-        is_active=True,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    logger.info(f"New user registered: {user.username} (id={user.id})")
-    return user
+    try:
+        uc = RegisterUseCase(_user_repo, _password_hasher)
+        dto = await uc.execute(RegisterCommand(
+            username=body.username,
+            email=str(body.email),
+            password=body.password,
+            name=body.name,
+        ))
+        return _dto_to_user_read(dto)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"注册失败: {e}")
 
 
 @router.get(
@@ -81,12 +103,13 @@ def register(body: UserRegister, db: Session = Depends(get_db)):
     response_model=List[UserRead],
     summary="获取所有用户列表（仅 superuser）",
 )
-def list_users(
-    db: Session = Depends(get_db),
-    _: User = Depends(require_roles(UserRole.superuser)),
+async def list_users(
+    _: CurrentUserPort = Depends(require_roles(ROLE_SUPERUSER)),
 ):
     """全量用户列表，需 superuser。"""
-    return db.query(User).order_by(User.created_at).all()
+    uc = ListUsersUseCase(_user_repo)
+    dtos = await uc.execute()
+    return [_dto_to_user_read(d) for d in dtos]
 
 
 @router.delete(
@@ -94,26 +117,21 @@ def list_users(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="删除用户（仅 superuser）",
 )
-def delete_user(
+async def delete_user(
     user_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.superuser)),
+    current_user: CurrentUserPort = Depends(require_roles(ROLE_SUPERUSER)),
 ):
     """按 UUID 删除；不能删自己。"""
-    if user_id == current_user.id:
+    if str(user_id) == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete your own account",
         )
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-    db.delete(user)
-    db.commit()
-    logger.info(f"User deleted: {user.username} (id={user.id}) by superuser {current_user.username}")
+    try:
+        uc = DeleteUserUseCase(_user_repo, current_user)
+        await uc.execute(str(user_id))
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=e.message)
 
 
 @router.patch(
@@ -121,34 +139,49 @@ def delete_user(
     response_model=UserRead,
     summary="修改用户角色（仅 superuser）",
 )
-def update_user_role(
+async def update_user_role(
     user_id: uuid.UUID,
     body: UserRoleUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.superuser)),
+    current_user: CurrentUserPort = Depends(require_roles(ROLE_SUPERUSER)),
 ):
     """改角色为 admin/user；不可授予 superuser，不可改自己。"""
-    if body.role == UserRole.superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot grant superuser role",
-        )
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-    if user.id == current_user.id:
+    if str(user_id) == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot change your own role",
         )
-    user.role = body.role
-    db.commit()
-    db.refresh(user)
-    logger.info(
-        f"Role updated: {user.username} (id={user.id}) → {body.role.value} "
-        f"by superuser {current_user.username}"
-    )
-    return user
+    try:
+        uc = UpdateUserRoleUseCase(_user_repo)
+        dto = await uc.execute(UpdateUserRoleCommand(
+            target_user_id=str(user_id),
+            new_role=str(body.role.value if hasattr(body.role, "value") else body.role),
+            current_user_id=current_user.id,
+            current_user_name=current_user.username,
+        ))
+        return _dto_to_user_read(dto)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=e.message)
+
+
+@router.patch(
+    "/users/{user_id}/page-permissions",
+    response_model=UserRead,
+    summary="修改用户页面可见权限（仅 superuser）",
+)
+async def update_user_page_permissions(
+    user_id: uuid.UUID,
+    body: UserPagePermissionsUpdate,
+    current_user: CurrentUserPort = Depends(require_roles(ROLE_SUPERUSER)),
+):
+    """控制普通用户可查看的页面。"""
+    try:
+        uc = UpdateUserPagePermissionsUseCase(_user_repo)
+        dto = await uc.execute(UpdatePagePermissionsCommand(
+            target_user_id=str(user_id),
+            view_closing_form=body.view_closing_form,
+            view_quotation=body.view_quotation,
+            current_user_id=current_user.id,
+        ))
+        return _dto_to_user_read(dto)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=e.message)

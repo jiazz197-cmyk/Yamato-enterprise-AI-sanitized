@@ -7,7 +7,7 @@ from typing import Any, Dict
 
 from app.core.exceptions import APIException, NotFoundError, PermissionDeniedError
 from app.core.logging import get_logger
-from app.models.orm.platform.user import User, UserRole
+from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER
 from app.ports.contracts.executor_async import ExecutorAsyncTaskPort
 from app.ports.contracts.tasking import TaskStatePort
 
@@ -17,19 +17,19 @@ logger = get_logger("document_processing_uc")
 @dataclass
 class CancelDocumentTaskCommand:
     task_id: str
-    current_user: User
+    current_user: CurrentUserPort
 
 
 @dataclass
 class DeleteDocumentTaskCommand:
     task_id: str
-    current_user: User
+    current_user: CurrentUserPort
     cancel_if_running: bool
 
 
-def _owner_ok(metadata: dict, current_user: User, detail: str) -> None:
+def _owner_ok(metadata: dict, current_user: CurrentUserPort, detail: str) -> None:
     owner_id = str(metadata.get("owner_id", "")).strip()
-    if current_user.role != UserRole.superuser and owner_id != str(current_user.id):
+    if not current_user.is_superuser() and owner_id != current_user.id:
         raise PermissionDeniedError(detail)
 
 

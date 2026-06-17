@@ -186,6 +186,17 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
             f"{self.POSTGRES_DB}"
         )
 
+    @property
+    def ASYNC_SQLALCHEMY_DATABASE_URI(self) -> str:
+        """asyncpg 异步数据库连接串。"""
+        return (
+            f"postgresql+asyncpg://{self.POSTGRES_USER}:"
+            f"{self.POSTGRES_PASSWORD}@"
+            f"{self.POSTGRES_SERVER}:"
+            f"{self.POSTGRES_PORT}/"
+            f"{self.POSTGRES_DB}"
+        )
+
     REDIS_HOST: str = Field("127.0.0.1", env="REDIS_HOST")
     REDIS_PORT: int = Field(6379, env="REDIS_PORT")
     REDIS_DB: int = Field(0, env="REDIS_DB")
@@ -223,6 +234,14 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     OCR_HTTP_CONNECT_TIMEOUT: float = Field(10.0, ge=1.0, le=300.0, env="OCR_HTTP_CONNECT_TIMEOUT")
     OCR_HTTP_READ_TIMEOUT: float = Field(300.0, ge=5.0, le=3600.0, env="OCR_HTTP_READ_TIMEOUT")
 
+    OCR_PDFTEXT_ENABLED: bool = Field(True, env="OCR_PDFTEXT_ENABLED")
+    OCR_PDFTEXT_TIMEOUT: int = Field(30, ge=5, le=120, env="OCR_PDFTEXT_TIMEOUT")
+    OCR_DOTSOCR_MAX_TOKENS: int = Field(4096, ge=1024, le=16384, env="OCR_DOTSOCR_MAX_TOKENS")
+
+    HTTP_CLIENT_TIMEOUT: float = Field(30.0, env="HTTP_CLIENT_TIMEOUT")
+    HTTP_CLIENT_MAX_CONNECTIONS: int = Field(100, env="HTTP_CLIENT_MAX_CONNECTIONS")
+    HTTP_CLIENT_MAX_KEEPALIVE: int = Field(20, env="HTTP_CLIENT_MAX_KEEPALIVE")
+
     SECRET_KEY: str = Field(default_factory=lambda: secrets.token_urlsafe(32), env="SECRET_KEY")
     ALGORITHM: str = Field("HS256", env="ALGORITHM")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(60, env="ACCESS_TOKEN_EXPIRE_MINUTES")
@@ -234,12 +253,12 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     BOOTSTRAP_SUPERUSER_EMAIL: Optional[str] = Field(default=None, env="BOOTSTRAP_SUPERUSER_EMAIL")
     BOOTSTRAP_SUPERUSER_PASSWORD: Optional[str] = Field(default=None, env="BOOTSTRAP_SUPERUSER_PASSWORD")
 
-    RATE_LIMIT_REQUESTS_PER_MINUTE: int = Field(100, env="RATE_LIMIT_REQUESTS_PER_MINUTE")
-    RATE_LIMIT_REQUESTS_PER_HOUR: int = Field(1000, env="RATE_LIMIT_REQUESTS_PER_HOUR")
-    RATE_LIMIT_AUTH: int = Field(100, env="RATE_LIMIT_AUTH")
-    RATE_LIMIT_ANON: int = Field(20, env="RATE_LIMIT_ANON")
-    RATE_LIMIT_EXPENSIVE_AUTH: int = Field(20, env="RATE_LIMIT_EXPENSIVE_AUTH")
-    RATE_LIMIT_EXPENSIVE_ANON: int = Field(5, env="RATE_LIMIT_EXPENSIVE_ANON")
+    RATE_LIMIT_REQUESTS_PER_MINUTE: int = Field(300, env="RATE_LIMIT_REQUESTS_PER_MINUTE")
+    RATE_LIMIT_REQUESTS_PER_HOUR: int = Field(3000, env="RATE_LIMIT_REQUESTS_PER_HOUR")
+    RATE_LIMIT_AUTH: int = Field(300, env="RATE_LIMIT_AUTH")
+    RATE_LIMIT_ANON: int = Field(60, env="RATE_LIMIT_ANON")
+    RATE_LIMIT_EXPENSIVE_AUTH: int = Field(60, env="RATE_LIMIT_EXPENSIVE_AUTH")
+    RATE_LIMIT_EXPENSIVE_ANON: int = Field(15, env="RATE_LIMIT_EXPENSIVE_ANON")
     RATE_LIMIT_WINDOW: int = Field(60, env="RATE_LIMIT_WINDOW")
     RATE_LIMIT_FAIL_OPEN: bool = Field(True, env="RATE_LIMIT_FAIL_OPEN")
     RATE_LIMIT_REDIS_ERROR_STATUS: int = Field(503, env="RATE_LIMIT_REDIS_ERROR_STATUS")

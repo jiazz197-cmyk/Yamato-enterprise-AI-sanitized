@@ -1,17 +1,27 @@
-"""File manager port adapter over integrations.file_manager.service."""
+"""File manager adapter: encapsulates ORM + MinIO behind FileManagerPort."""
 
 from __future__ import annotations
 
 from typing import Any, List, Optional, Tuple
 
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
 
-from app.core.exceptions import APIException
-from app.integrations.file_manager import service as file_service
+from app.core.database import AsyncSessionLocal
+from app.core.exceptions import NotFoundError, ValidationError
+from app.core.logging import get_logger
+from app.core.security import normalize_self_uploader
+from app.core.async_storage import (
+    async_delete_from_minio,
+    async_stat_object,
+    async_upload_stream_to_minio,
+)
+from app.domain.file_manager.naming import generate_unique_filename
 from app.models.orm.file_resource import FileResource
-from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserPort
 from app.ports.domains.file_manager import FileManagerPort
 from app.ports.dto.files import FileRecordDTO
+
+logger = get_logger("file_manager")
 
 
 def _to_dto(rec: FileResource) -> FileRecordDTO:
@@ -29,10 +39,12 @@ def _to_dto(rec: FileResource) -> FileRecordDTO:
 
 
 class SqlAlchemyFileManagerAdapter(FileManagerPort):
-    def __init__(self, db: Session):
-        self._db = db
+    """Encapsulates all ORM queries and MinIO operations.
 
-    def upload_stream_persist(
+    Each method manages its own session lifecycle internally.
+    """
+
+    async def upload_stream_persist(
         self,
         *,
         file_stream: Any,
@@ -40,65 +52,144 @@ class SqlAlchemyFileManagerAdapter(FileManagerPort):
         file_size: int,
         content_type: str,
         uploader: str,
-        current_user: User,
+        current_user: CurrentUserPort,
     ) -> FileRecordDTO:
-        try:
-            rec = file_service.upload_stream_persist(
-                self._db,
-                file_stream=file_stream,
-                original_filename=original_filename,
-                file_size=file_size,
-                content_type=content_type,
-                uploader=uploader,
-                current_user=current_user,
-            )
-        except RuntimeError as e:
-            err = str(e)
-            if err.startswith("Error"):
-                raise APIException(err, status_code=500, error_code="MINIO_UPLOAD_FAILED") from e
-            raise
-        return _to_dto(rec)
+        if not original_filename:
+            raise ValidationError("文件名不能为空")
 
-    def get_file_or_not_found(self, file_id: int) -> FileRecordDTO:
-        return _to_dto(file_service.get_file_or_not_found(self._db, file_id))
+        unique_name = generate_unique_filename(original_filename)
+        minio_path = f"uploads/{unique_name}"
+        result = await async_upload_stream_to_minio(file_stream, minio_path, file_size, content_type)
+        if result.startswith("Error"):
+            raise RuntimeError(result)
 
-    def list_files_page(
+        if file_size == -1:
+            try:
+                stat = await async_stat_object(minio_path)
+                file_size = stat.size
+            except Exception as e:
+                logger.warning("无法获取上传文件大小: %s", e)
+                file_size = 0
+
+        normalized_uploader = normalize_self_uploader(uploader, current_user)
+
+        async with AsyncSessionLocal() as db:
+            try:
+                file_record = FileResource(
+                    file_name=original_filename,
+                    unique_name=unique_name,
+                    minio_object_path=minio_path,
+                    content_type=content_type,
+                    file_size=file_size,
+                    uploader=normalized_uploader,
+                )
+                db.add(file_record)
+                await db.commit()
+                await db.refresh(file_record)
+                logger.info("文件上传成功: %s -> %s (ID: %s)", original_filename, minio_path, file_record.id)
+                return _to_dto(file_record)
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def get_file_or_not_found(self, file_id: int) -> FileRecordDTO:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(FileResource).filter(FileResource.id == file_id))
+            file_record = result.scalars().first()
+            if not file_record:
+                raise NotFoundError(f"文件 ID {file_id} 不存在")
+            return _to_dto(file_record)
+
+    async def list_files_page(
         self,
         *,
-        current_user: User,
+        current_user: CurrentUserPort,
         page: int,
         page_size: int,
         uploader: Optional[str],
     ) -> Tuple[int, List[FileRecordDTO]]:
-        total, items = file_service.list_files_page(
-            self._db,
-            current_user=current_user,
-            page=page,
-            page_size=page_size,
-            uploader=uploader,
-        )
-        return total, [_to_dto(i) for i in items]
+        async with AsyncSessionLocal() as db:
+            count_stmt = select(func.count(FileResource.id))
+            list_stmt = select(FileResource)
+            if not current_user.is_superuser():
+                count_stmt = count_stmt.filter(FileResource.uploader == current_user.username)
+                list_stmt = list_stmt.filter(FileResource.uploader == current_user.username)
+            elif uploader:
+                count_stmt = count_stmt.filter(FileResource.uploader == uploader)
+                list_stmt = list_stmt.filter(FileResource.uploader == uploader)
 
-    def search_files_page(
+            total = (await db.execute(count_stmt)).scalar_one()
+            offset = (page - 1) * page_size
+            result = await db.execute(
+                list_stmt.order_by(FileResource.created_at.desc()).offset(offset).limit(page_size)
+            )
+            items = result.scalars().all()
+            return total, [_to_dto(i) for i in items]
+
+    async def search_files_page(
         self,
         *,
-        current_user: User,
+        current_user: CurrentUserPort,
         keyword: str,
         page: int,
         page_size: int,
     ) -> Tuple[int, List[FileRecordDTO]]:
-        total, items = file_service.search_files_page(
-            self._db,
-            current_user=current_user,
-            keyword=keyword,
-            page=page,
-            page_size=page_size,
-        )
-        return total, [_to_dto(i) for i in items]
+        async with AsyncSessionLocal() as db:
+            count_stmt = select(func.count(FileResource.id)).filter(
+                FileResource.file_name.ilike(f"%{keyword}%")
+            )
+            list_stmt = select(FileResource).filter(FileResource.file_name.ilike(f"%{keyword}%"))
+            if not current_user.is_superuser():
+                count_stmt = count_stmt.filter(FileResource.uploader == current_user.username)
+                list_stmt = list_stmt.filter(FileResource.uploader == current_user.username)
 
-    def delete_file_and_object(self, file_record: FileRecordDTO) -> None:
-        rec = file_service.get_file_or_not_found(self._db, file_record.id)
-        file_service.delete_file_and_object(self._db, rec)
+            total = (await db.execute(count_stmt)).scalar_one()
+            offset = (page - 1) * page_size
+            result = await db.execute(
+                list_stmt.order_by(FileResource.created_at.desc()).offset(offset).limit(page_size)
+            )
+            items = result.scalars().all()
+            return total, [_to_dto(i) for i in items]
 
-    def batch_delete_ids(self, file_ids: List[int]) -> Tuple[int, int, List[int]]:
-        return file_service.batch_delete_ids(self._db, file_ids)
+    async def delete_file_and_object(self, file_record: FileRecordDTO) -> None:
+        async with AsyncSessionLocal() as db:
+            try:
+                result = await db.execute(
+                    select(FileResource).filter(FileResource.id == file_record.id)
+                )
+                rec = result.scalars().first()
+                if not rec:
+                    raise NotFoundError(f"文件 ID {file_record.id} 不存在")
+                if not await async_delete_from_minio(rec.minio_object_path):
+                    logger.warning("MinIO 删除失败，但继续删除数据库记录: %s", rec.minio_object_path)
+                await db.delete(rec)
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def batch_delete_ids(self, file_ids: List[int]) -> Tuple[int, int, List[int]]:
+        success_count = 0
+        failed_count = 0
+        failed_ids: List[int] = []
+        async with AsyncSessionLocal() as db:
+            for file_id in file_ids:
+                try:
+                    result = await db.execute(
+                        select(FileResource).filter(FileResource.id == file_id)
+                    )
+                    file_record = result.scalars().first()
+                    if not file_record:
+                        failed_count += 1
+                        failed_ids.append(file_id)
+                        continue
+                    await async_delete_from_minio(file_record.minio_object_path)
+                    await db.delete(file_record)
+                    await db.commit()
+                    success_count += 1
+                except Exception:
+                    logger.exception("批量删除失败 (ID: %s)", file_id)
+                    failed_count += 1
+                    failed_ids.append(file_id)
+                    await db.rollback()
+        return success_count, failed_count, failed_ids

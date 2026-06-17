@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Sequence
 
-from app.integrations.keyword.mapping import get_attr_whitelist
+from app.domain.quotation.keyword_mapping import get_attr_whitelist
 
 
 YES_VALUES = {"yes", "true", "y", "1", "是"}

@@ -1,4 +1,4 @@
-"""Specification mapping and structured keyword payload builder."""
+"""Specification mapping and structured keyword payload builder (moved from app.integrations.Quotation_Generation.SpecificationMapping)."""
 
 from __future__ import annotations
 
@@ -327,4 +327,3 @@ class SpecificationMapping:
     def from_json_file(cls, file_path: str) -> "SpecificationMapping":
         with open(file_path, "r", encoding="utf-8") as fp:
             return cls(json.load(fp))
-        

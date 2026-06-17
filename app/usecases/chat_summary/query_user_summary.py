@@ -27,8 +27,8 @@ class QueryUserSummaryUseCase:
         self._user_lookup = user_lookup
         self._summary_repo = summary_repo
 
-    def execute(self, query: QueryUserSummaryQuery) -> QueryUserSummaryResult:
-        effective_user_id = self._user_lookup.resolve_effective_user_id(
+    async def execute(self, query: QueryUserSummaryQuery) -> QueryUserSummaryResult:
+        effective_user_id = await self._user_lookup.resolve_effective_user_id(
             requested_user_id=query.user_id,
             current_user=query.current_user,
         )

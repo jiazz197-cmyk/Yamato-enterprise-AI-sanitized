@@ -19,6 +19,7 @@ class BuildQuotationWorkbookCommand:
     raw_extracted_info: Any = None
     keywords_payload: Any = None
     generated_at: datetime | None = None
+    partid_quantities: Dict[str, int] | None = None
 
 
 class BuildQuotationWorkbookUseCase:
@@ -33,5 +34,6 @@ class BuildQuotationWorkbookUseCase:
             raw_extracted_info=cmd.raw_extracted_info,
             keywords_payload=cmd.keywords_payload,
             generated_at=cmd.generated_at,
+            partid_quantities=cmd.partid_quantities,
         )
         return self._render_port.export_workbook(workbook_data)

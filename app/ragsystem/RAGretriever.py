@@ -1,14 +1,19 @@
 """PGVector + HTTP 嵌入/重排 API 的 RAG 检索；环境变量 BGE_M3_API_URL、RERANKER_API_URL。"""
 
 import os
+import re
 import logging
+import threading
 from typing import List, Dict, Optional
 from pathlib import Path
-import requests
+import httpx
 import numpy as np
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.pool import QueuePool
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from app.core.config import settings
+from app.core.async_bridge import run_async
+from app.core.http_client import get_http_client
 from pydantic import Field
 
 from llama_index.vector_stores.postgres import PGVectorStore
@@ -37,33 +42,41 @@ class BGEM3EmbeddingWrapper(BaseEmbedding):
             api_url = os.environ.get("BGE_M3_API_URL", "http://localhost:8000/v1/embeddings")
         
         super().__init__(api_url=api_url, timeout=timeout)
-        logger.info(f"BGE-M3 嵌入模型 API: {api_url}")
+        logger.debug(f"BGE-M3 嵌入模型 API: {api_url}")
 
-    def _get_text_embedding(self, text: str) -> List[float]:
-        """POST 解析多种 JSON 嵌套格式。"""
-        try:
-            response = requests.post(
+    def _parse_embedding_response(self, result: dict) -> List[float]:
+        if "data" in result and isinstance(result["data"], list) and len(result["data"]) > 0:
+            return result["data"][0]["embedding"]
+        if "embedding" in result:
+            return result["embedding"]
+        if "embeddings" in result:
+            return result["embeddings"][0] if isinstance(result["embeddings"][0], list) else result["embeddings"]
+        logger.error(f"未知的响应格式: {result}")
+        raise ValueError(f"无法解析嵌入向量响应: {result}")
+
+    async def _fetch_embedding(self, text: str) -> List[float]:
+        client = await get_http_client()
+        response = await client.post(
+            self.api_url,
+            json={"input": text, "model": "BAAI/bge-m3"},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return self._parse_embedding_response(response.json())
+
+    def _fetch_embedding_sync(self, text: str) -> List[float]:
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
                 self.api_url,
-                json={
-                    "input": text,
-                    "model": "BAAI/bge-m3"
-                },
-                timeout=self.timeout
+                json={"input": text, "model": "BAAI/bge-m3"},
             )
             response.raise_for_status()
-            result = response.json()
-            
-            if "data" in result and isinstance(result["data"], list) and len(result["data"]) > 0:
-                return result["data"][0]["embedding"]
-            elif "embedding" in result:
-                return result["embedding"]
-            elif "embeddings" in result:
-                return result["embeddings"][0] if isinstance(result["embeddings"][0], list) else result["embeddings"]
-            else:
-                logger.error(f"未知的响应格式: {result}")
-                raise ValueError(f"无法解析嵌入向量响应: {result}")
-                
-        except requests.exceptions.RequestException as e:
+            return self._parse_embedding_response(response.json())
+
+    def _get_text_embedding(self, text: str) -> List[float]:
+        try:
+            return self._fetch_embedding_sync(text)
+        except httpx.HTTPError as e:
             logger.error(f"调用嵌入模型 API 失败: {e}")
             raise
         except (KeyError, IndexError, ValueError) as e:
@@ -74,12 +87,15 @@ class BGEM3EmbeddingWrapper(BaseEmbedding):
         return self._get_text_embedding(query)
 
     async def _aget_query_embedding(self, query: str) -> List[float]:
-        return self._get_query_embedding(query)
+        return await self._fetch_embedding(query)
+
+    async def _aget_text_embedding(self, text: str) -> List[float]:
+        return await self._fetch_embedding(text)
 
     @classmethod
     def cleanup_all_instances(cls):
         """HTTP 客户端无状态，占位。"""
-        logger.info("HTTP API 模式无需清理资源")
+        logger.debug("HTTP API 模式无需清理资源")
 
 
 class HTTPReranker(BaseNodePostprocessor):
@@ -95,7 +111,34 @@ class HTTPReranker(BaseNodePostprocessor):
             api_url = os.environ.get("RERANKER_API_URL", "http://localhost:8001/v1/rerank")
         
         super().__init__(api_url=api_url, top_n=top_n, timeout=timeout)
-        logger.info(f"重排序模型 API: {api_url}")
+        logger.debug(f"重排序模型 API: {api_url}")
+
+    def _rerank_payload(self, query_str: str, documents: List[str]) -> dict:
+        return {
+            "query": query_str,
+            "documents": documents,
+            "top_n": self.top_n,
+            "model": "BAAI/bge-reranker-v2-m3",
+        }
+
+    async def _rerank_request(self, query_str: str, documents: List[str]) -> dict:
+        client = await get_http_client()
+        response = await client.post(
+            self.api_url,
+            json=self._rerank_payload(query_str, documents),
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def _rerank_request_sync(self, query_str: str, documents: List[str]) -> dict:
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
+                self.api_url,
+                json=self._rerank_payload(query_str, documents),
+            )
+            response.raise_for_status()
+            return response.json()
     
     def _postprocess_nodes(
         self, nodes: List[NodeWithScore], query_bundle: Optional[QueryBundle] = None
@@ -106,28 +149,16 @@ class HTTPReranker(BaseNodePostprocessor):
         
         query_str = query_bundle.query_str
         
-        logger.info(f"[debug] Reranker 输入: {len(nodes)} 个节点, top_n={self.top_n}")
+        logger.debug(f"[debug] Reranker 输入: {len(nodes)} 个节点, top_n={self.top_n}")
         
         try:
             documents = [node.node.get_content() for node in nodes]
-            
-            response = requests.post(
-                self.api_url,
-                json={
-                    "query": query_str,
-                    "documents": documents,
-                    "top_n": self.top_n,
-                    "model": "BAAI/bge-reranker-v2-m3"
-                },
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            result = response.json()
+            result = self._rerank_request_sync(query_str, documents)
             
             if "results" in result:
-                logger.info(f"[debug] Reranker API 返回了 {len(result['results'])} 个结果")
+                logger.debug(f"[debug] Reranker API 返回了 {len(result['results'])} 个结果")
             elif "rankings" in result:
-                logger.info(f"[debug] Reranker API 返回了 {len(result['rankings'])} 个结果")
+                logger.debug(f"[debug] Reranker API 返回了 {len(result['rankings'])} 个结果")
             
             if "results" in result:
                 ranked_results = result["results"]
@@ -138,7 +169,7 @@ class HTTPReranker(BaseNodePostprocessor):
                     node = nodes[idx]
                     node.score = score
                     reranked_nodes.append(node)
-                logger.info(f"[debug] Reranker 输出: {len(reranked_nodes)} 个节点")
+                logger.debug(f"[debug] Reranker 输出: {len(reranked_nodes)} 个节点")
                 return reranked_nodes
             elif "rankings" in result:
                 ranked_results = result["rankings"]
@@ -149,13 +180,13 @@ class HTTPReranker(BaseNodePostprocessor):
                     node = nodes[idx]
                     node.score = score
                     reranked_nodes.append(node)
-                logger.info(f"[debug] Reranker 输出: {len(reranked_nodes)} 个节点")
+                logger.debug(f"[debug] Reranker 输出: {len(reranked_nodes)} 个节点")
                 return reranked_nodes
             else:
                 logger.warning(f"未知的重排序响应格式: {result}，返回原始节点")
                 return nodes[:self.top_n]
                 
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"调用重排序 API 失败: {e}，返回原始节点")
             return nodes[:self.top_n]
         except (KeyError, IndexError, ValueError) as e:
@@ -166,12 +197,13 @@ class HTTPReranker(BaseNodePostprocessor):
 class VectorStoreManager:
     """PGVector 表 + 可选本地 persist 目录。"""
 
-    def __init__(self, db_config: Dict, table_prefix: str = "doc_collection", engine=None):
+    def __init__(self, db_config: Dict, table_prefix: str = "doc_collection", async_engine=None):
         self.db_config = db_config
         self.table_prefix = table_prefix
         self.persist_base_dir = Path("./index_storage")
-        self.vector_stores = {}
-        self.engine = engine
+        self.vector_stores: Dict[str, PGVectorStore] = {}
+        self.async_engine = async_engine
+        self._stores_lock = threading.Lock()
 
     def get_persist_dir(self, instance_id: int) -> Path:
         """index_storage 下按 collection 分子目录。"""
@@ -188,7 +220,7 @@ class VectorStoreManager:
         return all((persist_dir / file_name).exists() for file_name in required_files)
 
     def create_vector_store(self, instance_id: int) -> PGVectorStore:
-        """单例缓存 PGVectorStore.from_params。"""
+        """线程安全的 PGVectorStore 单例缓存。"""
         collection_name = f"{self.table_prefix}_{instance_id}"
 
         if collection_name in self.vector_stores:
@@ -204,8 +236,12 @@ class VectorStoreManager:
             embed_dim=1024,
         )
 
-        self.vector_stores[collection_name] = vector_store
-        return vector_store
+        with self._stores_lock:
+            if collection_name in self.vector_stores:
+                return self.vector_stores[collection_name]
+
+            self.vector_stores[collection_name] = vector_store
+            return vector_store
 
     def create_index(self, instance_id: int, embed_model) -> VectorStoreIndex:
         """有 persist 则 load，否则 from_vector_store。"""
@@ -214,7 +250,7 @@ class VectorStoreManager:
 
         try:
             if self.check_persist_exists(persist_dir):
-                logger.info(f"从持久化存储加载索引: 实例 {instance_id}")
+                logger.debug(f"从持久化存储加载索引: 实例 {instance_id}")
                 storage_context = StorageContext.from_defaults(
                     vector_store=vector_store,
                     persist_dir=persist_dir
@@ -222,7 +258,7 @@ class VectorStoreManager:
                 Settings.embed_model = embed_model
                 return load_index_from_storage(storage_context, embed_model=embed_model)
             else:
-                logger.info(f"创建新索引: 实例 {instance_id}")
+                logger.debug(f"创建新索引: 实例 {instance_id}")
                 storage_context = StorageContext.from_defaults(vector_store=vector_store)
                 return VectorStoreIndex.from_vector_store(
                     vector_store,
@@ -245,7 +281,7 @@ class VectorStoreManager:
         persist_dir = self.get_persist_dir(instance_id)
         try:
             index.storage_context.persist(persist_dir=persist_dir)
-            logger.info(f"索引已持久化: 实例 {instance_id} -> {persist_dir}")
+            logger.debug(f"索引已持久化: 实例 {instance_id} -> {persist_dir}")
         except Exception as e:
             logger.error(f"持久化失败: 实例 {instance_id}, 错误: {e}")
             raise
@@ -267,7 +303,31 @@ class VectorStoreManager:
 
         return sorted(persisted_instances)
 
-    def list_available_collections(self) -> List[str]:
+    def list_available_collections_sync(self) -> List[str]:
+        """information_schema 里 data_{prefix}_% 表（同步，供 worker/线程池）。"""
+        from app.core.database import engine
+
+        try:
+            query = text(
+                """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_name LIKE :pattern
+            """
+            )
+            with engine.connect() as conn:
+                result = conn.execute(
+                    query, {"pattern": f"data_{self.table_prefix}_%"}
+                )
+                tables = [row[0] for row in result.fetchall()]
+            logger.debug(f"找到 {len(tables)} 个向量存储表")
+            return tables
+        except Exception as e:
+            logger.error(f"获取向量存储表列表失败: {e}")
+            return []
+
+    async def list_available_collections(self) -> List[str]:
         """information_schema 里 data_{prefix}_% 表。"""
         try:
             query = """
@@ -276,23 +336,38 @@ class VectorStoreManager:
             WHERE table_schema = 'public' 
             AND table_name LIKE :pattern
             """
-            with self.engine.connect() as conn:
-                result = conn.execute(text(query), {"pattern": f"data_{self.table_prefix}_%"})
+            async with self.async_engine.connect() as conn:
+                result = await conn.execute(
+                    text(query), {"pattern": f"data_{self.table_prefix}_%"}
+                )
                 tables = [row[0] for row in result.fetchall()]
-            logger.info(f"找到 {len(tables)} 个向量存储表")
+            logger.debug(f"找到 {len(tables)} 个向量存储表")
             return tables
         except Exception as e:
             logger.error(f"获取向量存储表列表失败: {e}")
             return []
 
-    def drop_vector_store(self, instance_id: int):
+    def close_all_vector_stores(self):
+        """Close cached PGVectorStore instances and clear cache."""
+        with self._stores_lock:
+            for collection_name, vector_store in list(self.vector_stores.items()):
+                try:
+                    close_fn = getattr(vector_store, "close", None)
+                    if callable(close_fn):
+                        close_fn()
+                except Exception as e:
+                    logger.warning(f"关闭向量存储 {collection_name} 失败: {e}")
+            self.vector_stores.clear()
+
+    async def drop_vector_store(self, instance_id: int):
         """DROP TABLE IF EXISTS data_..."""
-        collection_name = f"data_{self.table_prefix}_{instance_id}"
-        logger.info(f"删除向量存储表: {collection_name}")
-        sql = f'DROP TABLE IF EXISTS {collection_name}'
+        name = f"data_{self.table_prefix}_{instance_id}"
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+            raise ValueError(f"Invalid table name: {name}")
+        logger.debug(f"删除向量存储表: {name}")
         try:
-            with self.engine.begin() as conn:
-                conn.execute(text(sql))
+            async with self.async_engine.begin() as conn:
+                await conn.execute(text(f'DROP TABLE IF EXISTS {name}'))
         except Exception as e:
             logger.error(f"删除向量表时出错: {e}", exc_info=True)
 
@@ -330,24 +405,25 @@ class RAGRetrieverSystem:
         
         self.default_top_k = default_top_k
         self.default_top_n = default_top_n
-        logger.info(f"检索参数配置 - top_k: {default_top_k}, top_n: {default_top_n}")
+        logger.debug(f"检索参数配置 - top_k: {default_top_k}, top_n: {default_top_n}")
 
         Settings.llm = None
         Settings.context_window = 8192
         Settings.num_output = 512
-        logger.info("已配置检索模式（禁用 LLM，仅做向量检索）")
+        logger.debug("已配置检索模式（禁用 LLM，仅做向量检索）")
 
         self.embedding_model = self._init_embedding_model()
         self.reranker = self._init_reranker()
         self._init_database()
-        self.vector_store_manager = VectorStoreManager(self.db_config, table_prefix, engine=self.engine)
+        self.vector_store_manager = VectorStoreManager(
+            self.db_config, table_prefix, async_engine=self.async_engine
+        )
 
     def _init_embedding_model(self) -> BGEM3EmbeddingWrapper:
         """构造 BGEM3EmbeddingWrapper。"""
-        logger.info("正在初始化 BGE-M3 嵌入模型 API 连接...")
         try:
             embedding_model = BGEM3EmbeddingWrapper(api_url=self.bge_m3_api_url)
-            logger.info(f"BGE-M3 API 连接初始化完成: {self.bge_m3_api_url}")
+            logger.debug(f"BGE-M3 API 连接初始化完成: {self.bge_m3_api_url}")
             return embedding_model
         except Exception as e:
             logger.error(f"嵌入模型 API 初始化失败: {e}")
@@ -355,31 +431,29 @@ class RAGRetrieverSystem:
 
     def _init_reranker(self) -> HTTPReranker:
         """构造 HTTPReranker。"""
-        logger.info("正在初始化重排序器 API 连接...")
         try:
             reranker = HTTPReranker(
                 api_url=self.reranker_api_url,
                 top_n=self.default_top_n,
                 timeout=30
             )
-            logger.info(f"重排序器 API 连接初始化完成: {self.reranker_api_url}")
+            logger.debug(f"重排序器 API 连接初始化完成: {self.reranker_api_url}")
             return reranker
         except Exception as e:
             logger.error(f"重排序器 API 初始化失败: {e}")
             raise
 
     def _init_database(self):
-        """SQLAlchemy engine + QueuePool。"""
-        connection_string = (
-            f"postgresql://{self.db_config['user']}:{self.db_config['password']}"
+        """SQLAlchemy async engine for metadata queries."""
+        async_connection_string = (
+            f"postgresql+asyncpg://{self.db_config['user']}:{self.db_config['password']}"
             f"@{self.db_config['host']}:{self.db_config['port']}/{self.db_config['database']}"
         )
-        self.engine = create_engine(
-            connection_string,
-            poolclass=QueuePool,
+        self.async_engine = create_async_engine(
+            async_connection_string,
             pool_size=10,
             max_overflow=5,
-            pool_timeout=30
+            pool_timeout=30,
         )
 
     def get_retriever_for_collection(self, collection_name: str, embedding_model=None, top_k: int = None):
@@ -396,17 +470,19 @@ class RAGRetrieverSystem:
                 logger.warning(f"无法从表名 {collection_name} 提取实例ID")
                 instance_id = None
 
-            vector_store = PGVectorStore.from_params(
-                database=self.db_config["database"],
-                host=self.db_config["host"],
-                password=self.db_config["password"],
-                port=self.db_config["port"],
-                user=self.db_config["user"],
-                table_name=collection_name,
-                embed_dim=1024,
-            )
+            if instance_id is not None:
+                vector_store = self.vector_store_manager.create_vector_store(instance_id)
+            else:
+                vector_store = PGVectorStore.from_params(
+                    database=self.db_config["database"],
+                    host=self.db_config["host"],
+                    password=self.db_config["password"],
+                    port=self.db_config["port"],
+                    user=self.db_config["user"],
+                    table_name=collection_name,
+                    embed_dim=1024,
+                )
 
-            logger.info(f"从 PGVector 创建索引: {collection_name}")
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             index = VectorStoreIndex.from_vector_store(
                 vector_store,
@@ -416,7 +492,7 @@ class RAGRetrieverSystem:
             )
 
             retriever = index.as_retriever(similarity_top_k=top_k)
-            logger.info(f"成功创建检索器，表名: {collection_name}")
+            logger.debug(f"成功创建检索器，表名: {collection_name}")
             return retriever
 
         except Exception as e:
@@ -468,9 +544,9 @@ class RAGRetrieverSystem:
             logger.error(f"创建Query Engine失败: {e}")
             raise
 
-    def list_available_collections(self) -> List[str]:
+    async def list_available_collections(self) -> List[str]:
         """委托 VectorStoreManager。"""
-        return self.vector_store_manager.list_available_collections()
+        return await self.vector_store_manager.list_available_collections()
 
     def list_persisted_collections(self) -> List[str]:
         """persist 实例 id 转成表名前缀形式。"""
@@ -486,7 +562,9 @@ class RAGRetrieverSystem:
             if top_k is None:
                 top_k = self.default_top_k
 
-            collection_names = self.vector_store_manager.list_available_collections()
+            collection_names = (
+                self.vector_store_manager.list_available_collections_sync()
+            )
             retrievers = {}
 
             for collection_name in collection_names:
@@ -494,53 +572,55 @@ class RAGRetrieverSystem:
                 try:
                     retriever = self.get_retriever_for_collection(clean_name, embedding_model, top_k)
                     retrievers[clean_name] = retriever
-                    logger.info(f"成功创建检索器: {clean_name}")
                 except Exception as e:
                     logger.warning(f"为表 {clean_name} 创建检索器失败: {e}")
 
+            logger.debug("批量创建检索器完成: %s 个", len(retrievers))
             return retrievers
 
         except Exception as e:
             logger.error(f"创建统一检索器失败: {e}")
             raise
 
-    def cleanup(self, silent=False):
-        """dispose engine；silent 供 __del__ 使用。"""
+    async def cleanup(self, silent=False):
+        """Dispose async engine and cached PGVectorStore instances."""
         try:
             if not silent:
-                logger.info("开始清理RAG系统资源...")
+                logger.debug("开始清理RAG系统资源...")
 
-            if hasattr(self, 'engine') and self.engine:
-                self.engine.dispose()
+            if hasattr(self, "vector_store_manager") and self.vector_store_manager:
+                self.vector_store_manager.close_all_vector_stores()
                 if not silent:
-                    logger.info("数据库连接已清理")
+                    logger.debug("PGVectorStore 缓存已清理")
+
+            try:
+                from app.ragsystem.retriever_for_yamato import ModelManager
+
+                ModelManager().clear_cache()
+            except Exception as e:
+                if not silent:
+                    logger.warning(f"清理 ModelManager 缓存时出错: {e}")
+
+            if hasattr(self, "async_engine") and self.async_engine:
+                await self.async_engine.dispose()
+                if not silent:
+                    logger.debug("数据库连接已清理")
 
             if not silent:
-                logger.info("RAG系统资源清理完成")
+                logger.debug("RAG系统资源清理完成")
 
         except Exception as e:
             if not silent:
                 try:
                     logger.warning(f"清理资源时出错: {e}")
-                except:
+                except Exception:
                     pass
-
-    def __del__(self):
-        """解释器退出时避免再打日志。"""
-        try:
-            import sys
-            if sys is None or sys.meta_path is None:
-                return
-            
-            self.cleanup(silent=True)
-        except:
-            pass
 
 
 def create_rag_retriever_system(
         host: str = "localhost",
         user: str = "postgres",
-        password: str = "change_me_pg_password",
+        password: str = "",
         database: str = "postgres",
         port: int = 5432,
         table_prefix: str = "doc_collection",
@@ -554,7 +634,7 @@ def create_rag_retriever_system(
     return RAGRetrieverSystem(
         POSTGRES_SERVER=host,
         POSTGRES_USER=user,
-        POSTGRES_PASSWORD=password,
+        POSTGRES_PASSWORD=password or settings.POSTGRES_PASSWORD,
         POSTGRES_DB=database,
         POSTGRES_PORT=port,
         table_prefix=table_prefix,
@@ -572,7 +652,7 @@ if __name__ == "__main__":
     rag_system = create_rag_retriever_system(
         host="localhost",
         user="postgres",
-        password="change_me_pg_password",
+        password=settings.POSTGRES_PASSWORD,
         database="postgres",
         port=5432,
         table_prefix="doc_collection",
@@ -606,12 +686,12 @@ if __name__ == "__main__":
         response_custom = query_engine_custom.query("你的查询问题")
         print("自定义查询响应:", response_custom)
 
-        collections = rag_system.list_available_collections()
+        collections = run_async(rag_system.list_available_collections())
         print("可用的collections:", collections)
 
         all_retrievers = rag_system.get_all_retrievers()
         print("所有检索器:", all_retrievers.keys())
 
     finally:
-        rag_system.cleanup()
+        run_async(rag_system.cleanup())
 

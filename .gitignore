@@ -22,6 +22,7 @@ nginx/nginx.conf
 .env.local
 .env.*.local
 .env.bak.*
+.env.backup
 
 # Charts output
 charts1/
@@ -31,7 +32,7 @@ logs/
 # Local test exports (e.g. U8 CSV adapter)
 tests/output/
 
-.kilo
-.github
-.cursor
-.claude
+.kilo/
+.github/
+.cursor/
+.claude/

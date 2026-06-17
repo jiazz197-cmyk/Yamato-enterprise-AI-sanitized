@@ -6,5 +6,5 @@ from typing import Any, Protocol
 
 
 class ContextCompressorPort(Protocol):
-    def compress(self, context_data: dict) -> Any:
+    async def compress(self, context_data: dict) -> Any:
         ...

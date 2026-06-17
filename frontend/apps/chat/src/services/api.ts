@@ -76,7 +76,7 @@ export const createAuthHeaders = (options?: { jsonContentType?: boolean }): Head
   }
 
   if (options?.jsonContentType !== false) {
-    ;(headers as Record<string, string>)['Content-Type'] = 'application/json'
+    (headers as Record<string, string>)['Content-Type'] = 'application/json'
   }
 
   return headers

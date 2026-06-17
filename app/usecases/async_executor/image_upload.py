@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.core.exceptions import APIException
-from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserPort
 from app.ports.domains.ocr_async import ImageUploadJobPort
 
 SUPPORTED_IMAGE_TYPES = frozenset(
@@ -22,7 +22,7 @@ SUPPORTED_IMAGE_TYPES = frozenset(
 
 @dataclass
 class SubmitImageUploadCommand:
-    current_user: User
+    current_user: CurrentUserPort
     file_data: bytes
     content_type: Optional[str]
     original_filename: Optional[str]
@@ -48,7 +48,7 @@ class SubmitImageUploadUseCase:
                 error_code="INVALID_FILE_TYPE",
             )
         task_id = self._jobs.enqueue_image_upload(
-            owner_id=str(cmd.current_user.id),
+            owner_id=cmd.current_user.id,
             file_data=cmd.file_data,
             original_filename=cmd.original_filename,
             content_type=cmd.content_type or "application/octet-stream",

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from app.domain.quotation.exceptions import QuotationPipelineCancelledError
-from app.integrations.Quotation_Generation.SpecificationMapping import SpecificationMapping
+from app.domain.quotation.specification_mapping import SpecificationMapping
 from app.ports.domains.quotation import CancelChecker, KeywordPayloadMappingPort
 
 

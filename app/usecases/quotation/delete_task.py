@@ -31,7 +31,7 @@ class DeleteQuotationTaskUseCase:
         self._task_repo = task_repo
 
     async def execute(self, cmd: DeleteQuotationTaskCommand) -> DeleteQuotationTaskResult:
-        task = self._task_repo.get_task(cmd.task_id)
+        task = await self._task_repo.get_task(cmd.task_id)
         if task is None:
             raise APIException("任务不存在", status_code=404, error_code="NOT_FOUND")
 

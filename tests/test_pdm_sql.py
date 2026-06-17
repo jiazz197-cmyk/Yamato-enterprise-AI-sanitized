@@ -1,6 +1,6 @@
 import json
-from app.integrations.keyword.normalizer import normalize_pdm_keywords
-from app.integrations.keyword.mapping import detect_product_type, expand_keyword_mapping
+from app.domain.quotation.keyword_normalizer import normalize_pdm_keywords
+from app.domain.quotation.keyword_mapping import detect_product_type, expand_keyword_mapping
 from app.integrations.sqlserver.pdm_bom import build_pdm_and_where_clause
 
 def test_pdm_query_sql(test_payload):

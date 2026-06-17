@@ -1,5 +1,6 @@
 """Quotation domain: pure logic and shared exceptions."""
 
+from app.domain.quotation.entities import QuotationTaskEntity, QuotationTaskStatus
 from app.domain.quotation.exceptions import QuotationPipelineCancelledError, QuotationPipelineError
 from app.domain.quotation.partid_mapping import convert_partids_to_u8_codes, map_parent_inv_code
 from app.domain.quotation.pdm_result import (
@@ -10,11 +11,29 @@ from app.domain.quotation.pdm_result import (
 from app.domain.quotation.results import Phase1Result, Phase2Result
 from app.domain.quotation.summary_selection import build_summary_selection_items
 from app.domain.quotation.u8_grouping import group_u8_result_by_type
+from app.domain.quotation.value_objects import (
+    QuotationDetailSheet,
+    QuotationFixedChargeRow,
+    QuotationSummaryMeta,
+    QuotationSummaryRow,
+    QuotationSummarySelectionItem,
+    QuotationWorkbookData,
+    QuotationWorkbookExport,
+)
 from app.domain.quotation.workbook import build_quotation_workbook_data
 
 __all__ = [
     "QuotationPipelineCancelledError",
     "QuotationPipelineError",
+    "QuotationTaskEntity",
+    "QuotationTaskStatus",
+    "QuotationDetailSheet",
+    "QuotationFixedChargeRow",
+    "QuotationSummaryMeta",
+    "QuotationSummaryRow",
+    "QuotationSummarySelectionItem",
+    "QuotationWorkbookData",
+    "QuotationWorkbookExport",
     "Phase1Result",
     "Phase2Result",
     "map_parent_inv_code",

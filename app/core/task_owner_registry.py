@@ -14,11 +14,12 @@ are async to avoid blocking the event loop on DB/Redis I/O.
 """
 from __future__ import annotations
 
-import asyncio
 import threading
 from typing import Dict, List, Optional, Protocol
 
-from app.core.database import SessionLocal
+from sqlalchemy import select
+
+from app.core.database import AsyncSessionLocal
 from app.core.logging import get_logger
 from app.core.task_manager import task_manager
 from app.models.orm.quotation_task import QuotationTask
@@ -43,18 +44,14 @@ class _QuotationOwnerLookup:
         return task_id.startswith(self.PREFIX)
 
     async def get_owner_id(self, task_id: str) -> Optional[str]:
-        # SQLAlchemy session is sync; run in a worker thread.
-        return await asyncio.to_thread(self._sync_lookup, task_id)
-
-    @staticmethod
-    def _sync_lookup(task_id: str) -> Optional[str]:
-        db = SessionLocal()
         try:
-            row = (
-                db.query(QuotationTask.owner_id)
-                .filter(QuotationTask.task_id == task_id)
-                .scalar()
-            )
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(QuotationTask.owner_id).where(
+                        QuotationTask.task_id == task_id
+                    )
+                )
+                row = result.scalar()
             value = str(row or "").strip()
             return value or None
         except Exception as exc:
@@ -64,8 +61,6 @@ class _QuotationOwnerLookup:
                 exc,
             )
             return None
-        finally:
-            db.close()
 
 
 class _DocProcessingOwnerLookup:

@@ -7,10 +7,8 @@ import logging
 from datetime import datetime
 from typing import Dict, Any
 
-from sqlalchemy import text
-
 from app.core.cache import redis_manager
-from app.core.database import SessionLocal
+from app.core.database import check_db_connection_async
 from app.core.logging import get_logger
 
 logger = get_logger("health_check")
@@ -118,24 +116,16 @@ class HealthCheckService:
     
     async def _check_postgresql_async(self) -> Dict[str, Any]:
         """异步检查 PostgreSQL 连接（带超时）"""
-        def _sync_check() -> float:
-            """同步数据库检查，返回延迟毫秒数"""
-            db = SessionLocal()
-            try:
-                start = datetime.now()
-                db.execute(text("SELECT 1"))
-                return (datetime.now() - start).total_seconds() * 1000
-            finally:
-                db.close()
-        
         try:
-            # 在线程池中执行同步数据库操作，添加超时
-            loop = asyncio.get_event_loop()
-            latency = await asyncio.wait_for(
-                loop.run_in_executor(None, _sync_check),
-                timeout=self.check_timeout
+            start = datetime.now()
+            ok = await asyncio.wait_for(
+                check_db_connection_async(),
+                timeout=self.check_timeout,
             )
-            return self._success_result(latency)
+            latency = (datetime.now() - start).total_seconds() * 1000
+            if ok:
+                return self._success_result(latency)
+            return self._error_result("connection check failed")
         except asyncio.TimeoutError:
             logger.warning(f"PostgreSQL 健康检查超时 (>{self.check_timeout}s)")
             return self._error_result(f"timeout after {self.check_timeout}s")

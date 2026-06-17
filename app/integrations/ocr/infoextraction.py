@@ -1,32 +1,14 @@
-import requests
 import json
+import httpx
 from typing import Dict, Any, Optional, List, Callable
 import re
 import time
 
 from app.core.config import settings
+from app.core.http_client import get_http_client
 
 
-def extract_layout_info(
-    image_url: str,
-    api_url: str = "http://localhost:80/ocr/dotsocr/v1/chat/completions",
-    cancel_checker: Optional[Callable[[], bool]] = None,
-    connect_timeout: Optional[float] = None,
-    read_timeout: Optional[float] = None,
-) -> List[Dict[str, Any]]:
-    """POST chat/completions; parse message content JSON to layout list. Uses HTTP timeouts; cancel_checker runs before the request only."""
-    if cancel_checker and cancel_checker():
-        from app.domain.quotation.exceptions import QuotationPipelineCancelledError
-
-        raise QuotationPipelineCancelledError("任务已取消")
-
-    ct = connect_timeout if connect_timeout is not None else settings.OCR_HTTP_CONNECT_TIMEOUT
-    rt = read_timeout if read_timeout is not None else settings.OCR_HTTP_READ_TIMEOUT
-
-    headers = {
-        "Content-Type": "application/json"
-    }
-    
+def _ocr_payload(image_url: str) -> dict:
     prompt_text = (
         "Please output the layout information from the PDF image, including each layout element's bbox, "
         "its category, and the corresponding text content within the bbox.\n\n"
@@ -43,43 +25,90 @@ def extract_layout_info(
         "    - All layout elements must be sorted according to human reading order.\n\n"
         "5. Final Output: The entire output must be a single JSON object.\n"
     )
-    
-    payload = {
+    return {
         "model": "rednote-hilab/dots.ocr",
         "messages": [
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "text",
-                        "text": prompt_text
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": image_url
-                        }
-                    }
-                ]
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
             }
-        ]
+        ],
     }
-    
-    try:
-        response = requests.post(api_url, headers=headers, json=payload, timeout=(ct, rt))
-    except requests.Timeout as e:
-        raise RuntimeError(
-            f"OCR API request timed out (connect={ct}s, read={rt}s): {e}"
-        ) from e
-    if not response.ok:
+
+
+def _parse_ocr_response(response: httpx.Response) -> List[Dict[str, Any]]:
+    if not response.is_success:
         detail = (response.text or "").strip()
         if len(detail) > 600:
             detail = detail[:600] + "..."
         raise RuntimeError(f"OCR API {response.status_code} error: {detail}")
     result = response.json()
     content_str = result["choices"][0]["message"]["content"]
-    content = json.loads(content_str)
-    return content
+    return json.loads(content_str)
+
+
+async def async_extract_layout_info(
+    image_url: str,
+    api_url: str = "http://localhost:80/ocr/dotsocr/v1/chat/completions",
+    cancel_checker: Optional[Callable[[], bool]] = None,
+    connect_timeout: Optional[float] = None,
+    read_timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """POST chat/completions; parse message content JSON to layout list. Uses HTTP timeouts; cancel_checker runs before the request only."""
+    if cancel_checker and cancel_checker():
+        from app.domain.quotation.exceptions import QuotationPipelineCancelledError
+
+        raise QuotationPipelineCancelledError("任务已取消")
+
+    ct = connect_timeout if connect_timeout is not None else settings.OCR_HTTP_CONNECT_TIMEOUT
+    rt = read_timeout if read_timeout is not None else settings.OCR_HTTP_READ_TIMEOUT
+
+    headers = {"Content-Type": "application/json"}
+    payload = _ocr_payload(image_url)
+
+    try:
+        client = await get_http_client()
+        response = await client.post(
+            api_url, headers=headers, json=payload, timeout=httpx.Timeout(rt, connect=ct)
+        )
+    except httpx.TimeoutException as e:
+        raise RuntimeError(
+            f"OCR API request timed out (connect={ct}s, read={rt}s): {e}"
+        ) from e
+    return _parse_ocr_response(response)
+
+
+def extract_layout_info(
+    image_url: str,
+    api_url: str = "http://localhost:80/ocr/dotsocr/v1/chat/completions",
+    cancel_checker: Optional[Callable[[], bool]] = None,
+    connect_timeout: Optional[float] = None,
+    read_timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Sync wrapper for worker threads — uses sync httpx.Client to avoid cross-loop issues."""
+    if cancel_checker and cancel_checker():
+        from app.domain.quotation.exceptions import QuotationPipelineCancelledError
+
+        raise QuotationPipelineCancelledError("任务已取消")
+
+    ct = connect_timeout if connect_timeout is not None else settings.OCR_HTTP_CONNECT_TIMEOUT
+    rt = read_timeout if read_timeout is not None else settings.OCR_HTTP_READ_TIMEOUT
+
+    headers = {"Content-Type": "application/json"}
+    payload = _ocr_payload(image_url)
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(rt, connect=ct)) as client:
+            response = client.post(api_url, headers=headers, json=payload)
+    except httpx.TimeoutException as e:
+        raise RuntimeError(
+            f"OCR API request timed out (connect={ct}s, read={rt}s): {e}"
+        ) from e
+    return _parse_ocr_response(response)
+
 
 def extract_info(content: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Parse first Table HTML into meta/documents/spec and scrape non-table blocks."""

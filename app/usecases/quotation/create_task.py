@@ -11,7 +11,7 @@ from uuid import uuid4
 from app.core.exceptions import APIException
 from app.core.logging import get_logger
 from app.ports.contracts.tasking import TaskDispatchPort, TaskExecutionPort, TaskStatePort
-from app.ports.domains.quotation import FileStoragePort, QuotationTaskRepoPort
+from app.ports.domains.quotation import FileStoragePort, QuotationTaskRepoPort, QuotationTaskRetentionPort
 
 logger = get_logger("quotation.create_task")
 
@@ -47,12 +47,14 @@ class CreateQuotationTaskUseCase:
         file_storage: FileStoragePort,
         task_execution: TaskExecutionPort,
         task_dispatch: TaskDispatchPort,
+        retention: QuotationTaskRetentionPort,
     ):
         self._task_state = task_state
         self._task_repo = task_repo
         self._file_storage = file_storage
         self._task_execution = task_execution
         self._task_dispatch = task_dispatch
+        self._retention = retention
 
     async def execute(self, cmd: CreateQuotationTaskCommand) -> CreateQuotationTaskResult:
         content_type = (cmd.content_type or "application/pdf").strip()
@@ -68,13 +70,13 @@ class CreateQuotationTaskUseCase:
         minio_path = f"quotation/uploads/{unique_name}"
         display_name = str(cmd.task_name or "").strip() or (cmd.file_name or unique_name)
 
-        self._file_storage.upload_pdf(
+        await self._file_storage.upload_pdf(
             object_path=minio_path,
             file_bytes=cmd.file_bytes,
             content_type=content_type,
         )
 
-        stored_file_id = self._task_repo.create_file_record(
+        stored_file_id = await self._task_repo.create_file_record(
             file_name=cmd.file_name or unique_name,
             unique_name=unique_name,
             minio_path=minio_path,
@@ -98,7 +100,7 @@ class CreateQuotationTaskUseCase:
             },
         )
 
-        task = self._task_repo.create_task(
+        task = await self._task_repo.create_task(
             task_id=task_id,
             owner_id=cmd.owner_id,
             owner_username=cmd.owner_username,
@@ -114,26 +116,19 @@ class CreateQuotationTaskUseCase:
 
         self._task_execution.set_task_owner(task_id, cmd.owner_id)
         self._task_dispatch.dispatch_owner_queue(cmd.owner_id)
-        task = self._task_repo.get_task(task_id) or task
+        task = await self._task_repo.get_task(task_id) or task
 
         queue_position = 0
         if task.status == "queued":
-            queue_position = self._task_repo.count_owner_queued_before(cmd.owner_id, task.created_at)
+            queue_position = await self._task_repo.count_owner_queued_before(cmd.owner_id, task.created_at)
 
         try:
             from app.core.config import settings
-            from app.core.database import SessionLocal
-            from app.usecases.quotation.retention import purge_old_terminal_tasks_global
 
-            db = SessionLocal()
-            try:
-                await purge_old_terminal_tasks_global(
-                    db,
-                    max_total=settings.QUOTATION_RETENTION_MAX_TOTAL,
-                    target=settings.QUOTATION_RETENTION_TARGET,
-                )
-            finally:
-                db.close()
+            await self._retention.purge_old_terminal_tasks_global(
+                max_total=settings.QUOTATION_RETENTION_MAX_TOTAL,
+                target=settings.QUOTATION_RETENTION_TARGET,
+            )
         except Exception as exc:
             logger.warning("Retention after create failed: %s", exc)
 

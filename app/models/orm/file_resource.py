@@ -7,7 +7,7 @@ from typing import Optional
 
 from sqlalchemy import Column, Integer, String, DateTime
 
-from app.core.database import Base
+from app.models.orm.platform.base import Base
 
 
 class FileResource(Base):

@@ -7,7 +7,7 @@ from typing import Any, Dict
 
 from app.core.exceptions import APIException, PermissionDeniedError
 from app.core.logging import get_logger
-from app.models.orm.platform.user import User, UserRole
+from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER
 from app.ports.contracts.executor_async import ExecutorAsyncTaskPort
 from app.usecases.async_executor.task_access import (
     ensure_executor_task_exists,
@@ -20,7 +20,7 @@ logger = get_logger("executor_task_query")
 @dataclass
 class ExecutorTaskCommandBase:
     task_id: str
-    current_user: User
+    current_user: CurrentUserPort
 
 
 @dataclass
@@ -174,7 +174,7 @@ class CancelExecutorTaskUseCase:
 
 @dataclass
 class ExecutorTaskStatsQuery:
-    current_user: User
+    current_user: CurrentUserPort
 
 
 @dataclass
@@ -190,7 +190,7 @@ class GetExecutorTaskStatsUseCase:
         self._executor = executor
 
     def execute(self, query: ExecutorTaskStatsQuery) -> ExecutorTaskStatsResult:
-        if query.current_user.role != UserRole.superuser:
+        if not query.current_user.is_superuser():
             raise PermissionDeniedError("仅超级管理员可查看任务统计")
         active_count = self._executor.get_active_task_count()
         running_count = self._executor.get_running_task_count()

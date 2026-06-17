@@ -8,11 +8,13 @@ import json
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
 from app.adapters.quotation import (
@@ -21,18 +23,19 @@ from app.adapters.quotation import (
     ResultPayloadQuotationApprovalSelectionAdapter,
     SqlAlchemyQuotationTaskRepoAdapter,
 )
+from app.adapters.quotation.purge import QuotationTaskPurgeAdapter
+from app.adapters.quotation.retention import QuotationTaskRetentionAdapter
 from app.adapters.tasking import TaskManagerStateAdapter, ThreadPoolTaskExecutionAdapter
 from app.core.config import settings
-from app.core.dependencies import get_db
+from app.core.dependencies import get_async_db
 from app.core.logging import get_logger
-from app.core.security import get_current_user
-from app.core.storage import (
-    MINIO_BUCKET_NAME,
+from app.core.security import get_current_user, require_permission
+from app.core.async_storage import (
     STREAM_CHUNK_SIZE,
-    download_object_stream,
-    get_minio_client,
+    async_download_object_stream,
+    async_stat_object,
 )
-from app.models.orm.platform.user import User, UserRole
+from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER, ROLE_ADMIN
 from app.models.orm.quotation_task import QuotationTask
 from app.usecases.quotation.approve_task import (
     ApproveQuotationTaskCommand,
@@ -48,6 +51,14 @@ diag_logger = get_logger("diag.quotation")
 
 _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+
+class QuotationApprovalData(BaseModel):
+    pdm_result: Optional[Dict[str, Any]] = None
+    keywords_payload: Optional[Dict[str, Any]] = None
+    pdm_partids: Optional[List[str]] = None
+    temp_image_url: Optional[str] = None
+
+
 class QuotationTaskItemResponse(BaseModel):
     task_id: str
     status: str
@@ -62,7 +73,7 @@ class QuotationTaskItemResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    result: Optional[Dict[str, Any]] = None
+    approval_data: Optional[QuotationApprovalData] = None
     error: Optional[str] = None
 
 
@@ -92,11 +103,41 @@ class DeleteTaskResponse(BaseModel):
     task_record_removed: bool
 
 
+class ExtraPartidEntry(BaseModel):
+    partid: str = Field(..., min_length=1, description="手动补充的 PARTID")
+    type: str = Field("", description="手动指定的产品类型（用于分组展示）")
+
+
+class DirectU8Request(BaseModel):
+    partids: List[str] = Field(
+        ...,
+        min_length=1,
+        description="用户直接输入的 U8 父级编码列表，将跳过 Phase1 直接进入 Phase2",
+    )
+    quantities: Optional[List[int]] = Field(
+        None,
+        description="与 partids 平行的数量数组（同长度）。省略时默认每个 PARTID 数量为 1。",
+    )
+    task_name: Optional[str] = Field(None, description="任务展示名称（可选）")
+    code_type: Optional[str] = Field(
+        None,
+        description="编码类型标记：'project' 表示项目编码，省略表示 U8 编码",
+    )
+
+
 class ApproveTaskRequest(BaseModel):
     approved_partids: List[str] = Field(
         ...,
         min_length=1,
         description="用户勾选的 PARTID 列表，仅这些将被送入 U8 BOM Inventory",
+    )
+    extra_partids: List[str] = Field(
+        default_factory=list,
+        description="用户手动补充的 PARTID，不受限于 Phase1 结果，与表格勾选合并后一同送入 Phase2",
+    )
+    extra_partid_entries: List[ExtraPartidEntry] = Field(
+        default_factory=list,
+        description="手动补充的 PARTID + 类型（替换 extra_partids 的增强字段），每条包含 partid 和 type",
     )
 
 
@@ -108,8 +149,8 @@ class ApproveTaskResponse(BaseModel):
     approved_count: int
 
 
-def _is_admin_like(user: User) -> bool:
-    return user.role in (UserRole.admin, UserRole.superuser)
+def _is_admin_like(user: CurrentUserPort) -> bool:
+    return user.is_admin_like()
 
 
 def _build_trusted_proxy_networks() -> list[Any]:
@@ -170,43 +211,7 @@ def _build_content_disposition(filename: str) -> str:
     return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8_encoded}"
 
 
-def _compact_query_result(value: Any) -> Any:
-    if not isinstance(value, dict):
-        return value
 
-    compact = {key: item for key, item in value.items() if key != "items"}
-    items = value.get("items")
-    if isinstance(items, list):
-        compact["items_count"] = len(items)
-    return compact
-
-
-def _compact_u8_result_by_type(value: Any) -> Any:
-    if not isinstance(value, dict):
-        return value
-
-    compact = {key: item for key, item in value.items() if key != "items"}
-    groups = value.get("items")
-    if isinstance(groups, list):
-        compact["items_count"] = len(groups)
-        compact["items"] = [_compact_query_result(group) for group in groups]
-    return compact
-
-
-def _compact_result_payload(payload: Any, *, include_pdm_items: bool) -> Any:
-    if not isinstance(payload, dict):
-        return payload
-
-    compact = dict(payload)
-    compact["__result_compact"] = True
-    compact["pdm_result"] = (
-        payload.get("pdm_result")
-        if include_pdm_items
-        else _compact_query_result(payload.get("pdm_result"))
-    )
-    compact["u8_result"] = _compact_query_result(payload.get("u8_result"))
-    compact["u8_result_by_type"] = _compact_u8_result_by_type(payload.get("u8_result_by_type"))
-    return compact
 
 
 def _safe_json_size(value: Any) -> Optional[int]:
@@ -229,25 +234,20 @@ def _count_statuses(tasks: List[QuotationTask]) -> Dict[str, int]:
 
 
 def _log_list_tasks_diag(**details: Any) -> None:
-    diag_logger.info("[quotation_tasks_diag] list_tasks | %s", details)
+    diag_logger.debug("[quotation_tasks_diag] list_tasks | %s", details)
 
 
-def _serialize_task(
-    task: QuotationTask,
-    *,
-    full_result: bool = False,
-    load_result_payload: bool = True,
-) -> QuotationTaskItemResponse:
-    if load_result_payload:
-        result_payload = task.result_payload
-    else:
-        result_payload = {"__result_compact": True, "__result_omitted": True}
-
-    if not full_result and load_result_payload:
-        result_payload = _compact_result_payload(
-            result_payload,
-            include_pdm_items=task.status == "awaiting_approval",
-        )
+def _serialize_task(task: QuotationTask) -> QuotationTaskItemResponse:
+    approval_data: Optional[QuotationApprovalData] = None
+    if task.status == "awaiting_approval":
+        payload = task.result_payload
+        if isinstance(payload, dict):
+            approval_data = QuotationApprovalData(
+                pdm_result=payload.get("pdm_result"),
+                keywords_payload=payload.get("keywords_payload"),
+                pdm_partids=payload.get("pdm_partids"),
+                temp_image_url=payload.get("temp_image_url"),
+            )
 
     return QuotationTaskItemResponse(
         task_id=task.task_id,
@@ -263,22 +263,23 @@ def _serialize_task(
         created_at=task.created_at,
         started_at=task.started_at,
         completed_at=task.completed_at,
-        result=result_payload,
+        approval_data=approval_data,
         error=task.error,
     )
 
 
-def _get_task_or_404(db: Session, task_id: str, *, defer_result: bool = False) -> QuotationTask:
-    query = db.query(QuotationTask)
+async def _get_task_or_404(db: AsyncSession, task_id: str, *, defer_result: bool = False) -> QuotationTask:
+    stmt = select(QuotationTask)
     if defer_result:
-        query = query.options(defer(QuotationTask.result_payload))
-    task = query.filter(QuotationTask.task_id == task_id).first()
+        stmt = stmt.options(defer(QuotationTask.result_payload))
+    result = await db.execute(stmt.where(QuotationTask.task_id == task_id))
+    task = result.scalars().first()
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     return task
 
 
-def _check_task_permission(task: QuotationTask, current_user: User) -> None:
+def _check_task_permission(task: QuotationTask, current_user: CurrentUserPort) -> None:
     if _is_admin_like(current_user):
         return
     if task.owner_id != str(current_user.id):
@@ -290,8 +291,8 @@ async def create_quotation_task(
     request: Request,
     file: UploadFile = File(..., description="仅支持 PDF 文件"),
     task_name: Optional[str] = Form(None, description="任务展示名称（可选）"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> QuotationTaskSubmitResponse:
     file_data = await file.read()
     usecase = CreateQuotationTaskUseCase(
@@ -300,6 +301,7 @@ async def create_quotation_task(
         file_storage=MinioFileStorageAdapter(),
         task_execution=ThreadPoolTaskExecutionAdapter(),
         task_dispatch=QuotationDispatchAdapter(),
+        retention=QuotationTaskRetentionAdapter(QuotationTaskPurgeAdapter()),
     )
     result = await usecase.execute(
         CreateQuotationTaskCommand(
@@ -311,10 +313,135 @@ async def create_quotation_task(
             owner_id=str(current_user.id),
             owner_username=current_user.username,
             owner_ip=_extract_request_client_ip(request),
-            role_snapshot=current_user.role.value,
+            role_snapshot=current_user.role,
         )
     )
-    return QuotationTaskSubmitResponse(**result.__dict__)
+    return QuotationTaskSubmitResponse(
+        task_id=result.task_id,
+        status=result.status,
+        message=result.message,
+        queue_position=result.queue_position,
+    )
+
+
+@router.post("/tasks/direct-u8", response_model=QuotationTaskSubmitResponse, summary="直接进行 U8 查询")
+async def create_direct_u8_task(
+    request: Request,
+    body: DirectU8Request,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
+) -> QuotationTaskSubmitResponse:
+    if body.quantities is not None and len(body.quantities) != len(body.partids):
+        raise HTTPException(
+            status_code=400,
+            detail="quantities 长度必须与 partids 一致",
+        )
+    if body.code_type is not None and body.code_type != "project":
+        raise HTTPException(
+            status_code=400,
+            detail="code_type 仅支持 'project'，省略表示 U8 编码",
+        )
+
+    seen: set[str] = set()
+    partids: list[str] = []
+    manual_partid_quantities: dict[str, int] = {}
+    for idx, raw in enumerate(body.partids):
+        value = str(raw).strip()
+        if not value or value in seen:
+            continue
+        if body.quantities is not None:
+            qty = body.quantities[idx]
+            if qty < 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"quantities[{idx}] 必须 >= 1",
+                )
+        else:
+            qty = 1
+        seen.add(value)
+        partids.append(value)
+        manual_partid_quantities[value] = qty
+    if not partids:
+        raise HTTPException(status_code=400, detail="至少需要提供一个 PARTID")
+    if len(partids) > 500:
+        raise HTTPException(status_code=400, detail="最多支持 500 个 PARTID")
+
+    unique_name = f"direct_u8_{uuid4().hex}.pdf"
+    minio_path = f"quotation/uploads/{unique_name}"
+    file_storage = MinioFileStorageAdapter()
+    await file_storage.upload_pdf(
+        object_path=minio_path,
+        file_bytes=b"\x00",
+        content_type="application/pdf",
+    )
+
+    task_repo = SqlAlchemyQuotationTaskRepoAdapter(db)
+    file_id = await task_repo.create_file_record(
+        file_name=unique_name,
+        unique_name=unique_name,
+        minio_path=minio_path,
+        content_type="application/pdf",
+        file_size=1,
+        uploader=current_user.username,
+    )
+
+    task_state = TaskManagerStateAdapter()
+    task_name = (body.task_name or "").strip() or "直接U8查询"
+    task_id = await task_state.create_task(
+        task_type="quotation_generation",
+        metadata={
+            "owner_username": current_user.username,
+            "owner_ip": _extract_request_client_ip(request),
+            "file_id": file_id,
+            "file_name": unique_name,
+            "task_name": task_name,
+        },
+    )
+
+    task = await task_repo.create_task(
+        task_id=task_id,
+        owner_id=str(current_user.id),
+        owner_username=current_user.username,
+        owner_ip=_extract_request_client_ip(request),
+        role_snapshot=current_user.role,
+        uploaded_file_id=file_id,
+        uploaded_file_name=unique_name,
+        display_name=task_name,
+        uploaded_file_minio_path=minio_path,
+        uploaded_file_content_type="application/pdf",
+        uploaded_file_size=1,
+    )
+
+    task_execution = ThreadPoolTaskExecutionAdapter()
+    task_execution.set_task_owner(task_id, str(current_user.id))
+
+    manual_partid_types: dict[str, str] = {p: p for p in partids}
+
+    await task_repo.patch_task(
+        task_id,
+        {
+            "status": "running",
+            "progress": 55,
+            "message": "开始 U8 BOM Inventory 查询",
+            "result_payload": {
+                "approved_partids": partids,
+                "manual_partid_types": manual_partid_types,
+                "manual_partid_quantities": manual_partid_quantities,
+                "code_type": body.code_type,
+            },
+            "error": None,
+        },
+    )
+
+    task_dispatch = QuotationDispatchAdapter()
+    task_dispatch.dispatch_phase2(task_id, str(current_user.id))
+
+    return QuotationTaskSubmitResponse(
+        task_id=task_id,
+        status="running",
+        message="直接 U8 查询已创建",
+        queue_position=0,
+    )
 
 
 @router.get("/tasks", response_model=QuotationTaskListResponse, summary="查询报价任务列表")
@@ -322,43 +449,32 @@ async def list_quotation_tasks(
     status_filter: Optional[str] = Query(None, alias="status", description="按状态过滤"),
     owner_username: Optional[str] = Query(None, description="管理员可按用户名过滤"),
     limit: int = Query(100, ge=1, le=500),
-    full_result: bool = Query(False, description="是否返回完整任务结果；默认仅返回摘要，避免大 U8 结果卡住前端"),
-    active_only: bool = Query(False, description="仅返回活动任务(queued/running/awaiting_approval)，不含大结果"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    active_only: bool = Query(False, description="仅返回活动任务(queued/running/awaiting_approval)"),
+    db: AsyncSession = Depends(get_async_db),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> QuotationTaskListResponse:
     started_at = time.perf_counter()
-    query = db.query(QuotationTask)
-    if not full_result and not active_only:
-        query = query.options(defer(QuotationTask.result_payload))
-    elif active_only:
-        query = query.options(defer(QuotationTask.result_payload))
+    stmt = select(QuotationTask).options(defer(QuotationTask.result_payload))
     if not _is_admin_like(current_user):
-        query = query.filter(QuotationTask.owner_id == str(current_user.id))
+        stmt = stmt.where(QuotationTask.owner_id == str(current_user.id))
     elif owner_username:
-        query = query.filter(QuotationTask.owner_username == owner_username)
+        stmt = stmt.where(QuotationTask.owner_username == owner_username)
     if active_only:
-        query = query.filter(
+        stmt = stmt.where(
             QuotationTask.status.in_(["queued", "running", "awaiting_approval"])
         )
     elif status_filter:
-        query = query.filter(QuotationTask.status == status_filter)
+        stmt = stmt.where(QuotationTask.status == status_filter)
+    stmt = stmt.order_by(QuotationTask.created_at.desc()).limit(limit)
     query_started_at = time.perf_counter()
-    tasks = query.order_by(QuotationTask.created_at.desc()).limit(limit).all()
+    result = await db.execute(stmt)
+    tasks = list(result.scalars().all())
     query_done_at = time.perf_counter()
+    for task in tasks:
+        if task.status == "awaiting_approval":
+            await db.refresh(task, ["result_payload"])
     status_counts = _count_statuses(tasks)
-    included_result_payload_count = sum(
-        1 for task in tasks if (full_result or task.status == "awaiting_approval") and not active_only
-    )
-    load_payload_for_approval = not active_only
-    serialized_items = [
-        _serialize_task(
-            task,
-            full_result=full_result,
-            load_result_payload=full_result or (task.status == "awaiting_approval" and load_payload_for_approval),
-        )
-        for task in tasks
-    ]
+    serialized_items = [_serialize_task(task) for task in tasks]
     serialize_done_at = time.perf_counter()
     response = QuotationTaskListResponse(
         total=len(tasks),
@@ -368,17 +484,15 @@ async def list_quotation_tasks(
     approx_payload_chars = _safe_json_size(response.model_dump(mode="json"))
     _log_list_tasks_diag(
         limit=limit,
-        full_result=full_result,
         active_only=active_only,
         status_filter=status_filter,
         owner_username=owner_username,
         current_user=current_user.username,
-        current_role=current_user.role.value,
+        current_role=current_user.role,
         tasks_count=len(tasks),
         awaiting_approval_count=status_counts["awaiting_approval"],
         active_count=status_counts["active"],
         completed_count=status_counts["completed"],
-        included_result_payload_count=included_result_payload_count,
         query_ms=round((query_done_at - query_started_at) * 1000, 2),
         serialize_ms=round((serialize_done_at - query_done_at) * 1000, 2),
         response_build_ms=round((response_ready_at - serialize_done_at) * 1000, 2),
@@ -391,26 +505,23 @@ async def list_quotation_tasks(
 @router.get("/tasks/{task_id}", response_model=QuotationTaskItemResponse, summary="查询报价任务详情")
 async def get_quotation_task(
     task_id: str,
-    full_result: bool = Query(False, description="是否返回完整任务结果；默认仅返回摘要，避免大 U8 结果卡住前端"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> QuotationTaskItemResponse:
-    task = _get_task_or_404(db, task_id, defer_result=not full_result)
+    task = await _get_task_or_404(db, task_id, defer_result=True)
     _check_task_permission(task, current_user)
-    return _serialize_task(
-        task,
-        full_result=full_result,
-        load_result_payload=full_result or task.status == "awaiting_approval",
-    )
+    if task.status == "awaiting_approval":
+        await db.refresh(task, ["result_payload"])
+    return _serialize_task(task)
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=CancelTaskResponse, summary="取消报价任务")
 async def cancel_quotation_task(
     task_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> CancelTaskResponse:
-    task = _get_task_or_404(db, task_id)
+    task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
     usecase = CancelQuotationTaskUseCase(
         task_repo=SqlAlchemyQuotationTaskRepoAdapter(db),
@@ -419,22 +530,32 @@ async def cancel_quotation_task(
         task_dispatch=QuotationDispatchAdapter(),
     )
     result = await usecase.execute(CancelQuotationTaskCommand(task_id=task_id))
-    return CancelTaskResponse(**result.__dict__)
+    return CancelTaskResponse(
+        success=result.success,
+        message=result.message,
+        task_id=result.task_id,
+    )
 
 
 @router.delete("/tasks/{task_id}", response_model=DeleteTaskResponse, summary="删除已结束报价任务")
 async def delete_quotation_task(
     task_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> DeleteTaskResponse:
-    task = _get_task_or_404(db, task_id)
+    task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
     usecase = DeleteQuotationTaskUseCase(
         task_repo=SqlAlchemyQuotationTaskRepoAdapter(db),
     )
     result = await usecase.execute(DeleteQuotationTaskCommand(task_id=task_id))
-    return DeleteTaskResponse(**result.__dict__)
+    return DeleteTaskResponse(
+        success=result.success,
+        message=result.message,
+        task_id=result.task_id,
+        cleanup=result.cleanup,
+        task_record_removed=result.task_record_removed,
+    )
 
 
 @router.post(
@@ -445,10 +566,17 @@ async def delete_quotation_task(
 async def approve_quotation_task(
     task_id: str,
     request: ApproveTaskRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> ApproveTaskResponse:
-    task = _get_task_or_404(db, task_id)
+    diag_logger.debug(
+        "[diag_approve] 收到审批请求 task_id=%s approved_count=%s extra_count=%s extra_entries=%s",
+        task_id,
+        len(request.approved_partids),
+        len(request.extra_partids),
+        [(e.partid, e.type) for e in request.extra_partid_entries],
+    )
+    task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
     usecase = ApproveQuotationTaskUseCase(
         task_repo=SqlAlchemyQuotationTaskRepoAdapter(db),
@@ -457,31 +585,49 @@ async def approve_quotation_task(
         task_dispatch=QuotationDispatchAdapter(),
     )
     result = await usecase.execute(
-        ApproveQuotationTaskCommand(task_id=task_id, approved_partids=request.approved_partids)
+        ApproveQuotationTaskCommand(
+            task_id=task_id,
+            approved_partids=request.approved_partids,
+            extra_partids=request.extra_partids,
+            extra_partid_entries=[
+                {"partid": e.partid, "type": e.type} for e in request.extra_partid_entries
+            ],
+        )
     )
-    return ApproveTaskResponse(**result.__dict__)
+    return ApproveTaskResponse(
+        success=result.success,
+        message=result.message,
+        task_id=result.task_id,
+        status=result.status,
+        approved_count=result.approved_count,
+    )
 
 
 @router.get("/tasks/{task_id}/file", summary="查看或下载任务上传文件")
 async def get_quotation_task_file(
     task_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ):
-    task = _get_task_or_404(db, task_id)
+    task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
     try:
-        client = get_minio_client()
-        client.stat_object(MINIO_BUCKET_NAME, task.uploaded_file_minio_path)
+        await async_stat_object(task.uploaded_file_minio_path)
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_410_GONE, detail="文件已清理，当前不可查看"
         ) from None
 
-    def stream_file():
-        with download_object_stream(task.uploaded_file_minio_path) as response:
-            for chunk in response.stream(STREAM_CHUNK_SIZE):
+    async def stream_file():
+        response = await async_download_object_stream(task.uploaded_file_minio_path)
+        try:
+            async for chunk in response.content.iter_chunked(STREAM_CHUNK_SIZE):
                 yield chunk
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
 
     return StreamingResponse(
         stream_file(),
@@ -496,10 +642,10 @@ async def get_quotation_task_file(
 )
 async def get_quotation_task_u8_by_type_workbook(
     task_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+    current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ):
-    task = _get_task_or_404(db, task_id)
+    task = await _get_task_or_404(db, task_id)
     _check_task_permission(task, current_user)
     payload = task.result_payload if isinstance(task.result_payload, dict) else {}
     minio_path = payload.get("u8_result_by_type_xlsx_minio_path")
@@ -510,18 +656,23 @@ async def get_quotation_task_u8_by_type_workbook(
             detail="U8 分组 Excel 未生成或不可用",
         )
     try:
-        client = get_minio_client()
-        client.stat_object(MINIO_BUCKET_NAME, minio_path)
+        await async_stat_object(minio_path)
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail="Excel 已不可用",
         ) from None
 
-    def stream_xlsx():
-        with download_object_stream(minio_path) as response:
-            for chunk in response.stream(STREAM_CHUNK_SIZE):
+    async def stream_xlsx():
+        response = await async_download_object_stream(minio_path)
+        try:
+            async for chunk in response.content.iter_chunked(STREAM_CHUNK_SIZE):
                 yield chunk
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
 
     safe_name = str(filename).replace('"', "")
     return StreamingResponse(

@@ -39,7 +39,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from app.core.config import settings  # noqa: E402
-from app.integrations.Quotation_Generation.SpecificationMapping import (  # noqa: E402
+from app.domain.quotation.specification_mapping import (  # noqa: E402
     KEYWORD_RULES,
     SpecificationMapping,
 )

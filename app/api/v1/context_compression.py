@@ -7,7 +7,7 @@ from app.adapters.context_compression import IntegrationContextCompressorAdapter
 from app.core.exceptions import APIException, ExternalServiceError
 from app.core.security import get_current_user
 from app.core.validators.conversation_id import validate_conversation_id
-from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserPort
 from app.schemas.base import FormatJSONResponse
 from app.usecases.context_compression.compress import CompressContextCommand, CompressContextUseCase
 
@@ -33,15 +33,15 @@ class ContextCompressionRequest(BaseModel):
 
 
 @router.post("/compress")
-def compress_chat_context(
+async def compress_chat_context(
     request: ContextCompressionRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     """
     Compress chat context based on Dify conversation ID.
     """
     try:
-        result = CompressContextUseCase(IntegrationContextCompressorAdapter()).execute(
+        result = await CompressContextUseCase(IntegrationContextCompressorAdapter()).execute(
             CompressContextCommand(
                 user_id=request.user_id,
                 conversation_id=request.conversation_id,

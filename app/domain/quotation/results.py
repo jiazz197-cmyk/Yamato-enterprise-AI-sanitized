@@ -34,11 +34,9 @@ class Phase2Result:
 
     u8_result: Dict[str, Any]
     u8_result_by_type: Dict[str, Any] = field(default_factory=dict)
-    u8_result_type_summary: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "u8_result": self.u8_result,
             "u8_result_by_type": self.u8_result_by_type,
-            "u8_result_type_summary": self.u8_result_type_summary,
         }

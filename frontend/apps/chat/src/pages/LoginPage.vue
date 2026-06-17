@@ -48,7 +48,7 @@ import { ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { Input, useToast } from '@yamato/components'
 import { config } from '../config'
-import { login, getMe, saveUserRole } from '../services/auth'
+import { login, getMe, saveUserRole, saveUserPermissions } from '../services/auth'
 import { setAuthTokenToStorage } from '../services/token_storage'
 
 const router = useRouter()
@@ -90,6 +90,7 @@ const handleSubmit = async () => {
         })
       )
       saveUserRole(me.role || '')
+      saveUserPermissions(me.permissions || [])
     } catch {
       // /me 失败不阻塞登录
     }

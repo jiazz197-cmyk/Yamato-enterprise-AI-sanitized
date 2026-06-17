@@ -16,11 +16,11 @@
         <RouterLink class="sidebar-nav__item" active-class="is-active" to="/chat">
           AI聊天
         </RouterLink>
-        <RouterLink class="sidebar-nav__item" active-class="is-active" to="/files">
+        <RouterLink v-if="showQuotation" class="sidebar-nav__item" active-class="is-active" to="/files">
           报价生成
         </RouterLink>
-        <RouterLink class="sidebar-nav__item" active-class="is-active" to="/closing-form">
-          报单填写
+        <RouterLink v-if="showClosingForm" class="sidebar-nav__item" active-class="is-active" to="/closing-form">
+          营业订单信息
         </RouterLink>
         <RouterLink v-if="isAdminOrSuperuser" class="sidebar-nav__item" active-class="is-active" to="/collection2">
           知识库管理
@@ -66,6 +66,7 @@ import { clearAuthTokenFromStorage } from './services/token_storage'
 const sidebarUserId = ref('')
 const sidebarUserName = ref('')
 const userRole = ref('')
+const userPermissions = ref<string[]>([])
 
 const readSidebarState = () => {
   try {
@@ -74,6 +75,7 @@ const readSidebarState = () => {
       sidebarUserId.value = ''
       sidebarUserName.value = ''
       userRole.value = ''
+      userPermissions.value = []
       return
     }
 
@@ -83,10 +85,12 @@ const readSidebarState = () => {
       userName?: unknown
       username?: unknown
       role?: unknown
+      permissions?: unknown
     }
     sidebarUserId.value = String(parsed.userId ?? '').trim()
     sidebarUserName.value = String(parsed.userName ?? parsed.user ?? parsed.username ?? '').trim()
     userRole.value = String(parsed.role ?? '').trim()
+    userPermissions.value = Array.isArray(parsed.permissions) ? parsed.permissions as string[] : []
   } catch {
     sidebarUserId.value = ''
     sidebarUserName.value = ''
@@ -98,6 +102,8 @@ const userName = computed(() => sidebarUserName.value || sidebarUserId.value || 
 const userAvatarUrl = computed(() => config.userAvatarUrl || '')
 const isSuperuser = computed(() => userRole.value === 'superuser')
 const isAdminOrSuperuser = computed(() => userRole.value === 'admin' || userRole.value === 'superuser')
+const showQuotation = computed(() => isAdminOrSuperuser.value || userPermissions.value.includes('view_quotation'))
+const showClosingForm = computed(() => isAdminOrSuperuser.value || userPermissions.value.includes('view_closing_form'))
 
 const route = useRoute()
 const router = useRouter()

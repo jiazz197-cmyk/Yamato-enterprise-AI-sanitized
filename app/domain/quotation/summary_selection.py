@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any, Dict, List, Optional
 
 from app.domain.quotation.partid_mapping import map_parent_inv_code
-from app.ports.dto.quotation import QuotationSummarySelectionItem
+from app.domain.quotation.value_objects import QuotationSummarySelectionItem
 
 
 def _normalized_keywords(keywords_payload: Dict[str, Any]) -> List[Dict[str, Any]]:

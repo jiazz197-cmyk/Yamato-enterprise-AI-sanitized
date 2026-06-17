@@ -8,11 +8,17 @@ import jwt
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.security.api_key import APIKeyHeader
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.database import SessionLocal
-from app.core.dependencies import get_db
+from app.core.database import AsyncSessionLocal
+from app.core.dependencies import get_async_db
+from app.core.rbac_queries import load_user_permissions
+from app.ports.contracts.identity import CurrentUserDTO
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
+
 
 def hash_password(password: str) -> str:
     """bcrypt 哈希明文密码。"""
@@ -24,9 +30,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
 
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
-
-
 def create_access_token(subject: str, expires_delta: timedelta | None = None) -> str:
     """签发 JWT，sub 为 UUID 字符串。"""
     expire = datetime.now(timezone.utc) + (
@@ -36,11 +39,22 @@ def create_access_token(subject: str, expires_delta: timedelta | None = None) ->
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def get_current_user(
+def _orm_to_dto(user, permissions: list[str] | None = None) -> CurrentUserDTO:
+    """Map SQLAlchemy User ORM to CurrentUserDTO."""
+    return CurrentUserDTO(
+        id=str(user.id),
+        username=str(user.username or ""),
+        name=str(user.name or ""),
+        role=str(user.role.value if hasattr(user.role, "value") else user.role),
+        permissions=permissions or [],
+    )
+
+
+async def get_current_user(
     token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
-):
-    """解析 Bearer，返回 User ORM；无效则 401。"""
+    db: AsyncSession = Depends(get_async_db),
+) -> CurrentUserDTO:
+    """解析 Bearer，返回 CurrentUserDTO；无效则 401。"""
     from app.models.orm.platform.user import User
 
     credentials_exception = HTTPException(
@@ -59,13 +73,15 @@ def get_current_user(
     except (jwt.PyJWTError, ValueError):
         raise credentials_exception
 
-    user = db.query(User).filter(User.id == user_uuid).first()
+    result = await db.execute(select(User).filter(User.id == user_uuid))
+    user = result.scalars().first()
     if user is None or not user.is_active:
         raise credentials_exception
-    return user
+    perms = await load_user_permissions(db, user.id)
+    return _orm_to_dto(user, perms)
 
 
-def get_current_user_detached(token: str = Depends(oauth2_scheme)):
+async def get_current_user_detached(token: str = Depends(oauth2_scheme)) -> CurrentUserDTO:
     """解析 Bearer 并立即关闭 DB session；适合慢接口避免长时间占用连接。"""
     from app.models.orm.platform.user import User
 
@@ -85,15 +101,14 @@ def get_current_user_detached(token: str = Depends(oauth2_scheme)):
     except (jwt.PyJWTError, ValueError):
         raise credentials_exception
 
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.id == user_uuid).first()
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).filter(User.id == user_uuid))
+        user = result.scalars().first()
         if user is None or not user.is_active:
             raise credentials_exception
+        perms = await load_user_permissions(db, user.id)
         db.expunge(user)
-        return user
-    finally:
-        db.close()
+        return _orm_to_dto(user, perms)
 
 
 def _normalize_identifier(value: object) -> str:
@@ -144,12 +159,25 @@ def normalize_self_uploader(raw_uploader: str, current_user: object) -> str:
     return username
 
 
-def require_roles(*roles: "UserRole") -> Callable:
+def require_roles(*roles: str) -> Callable:
     """要求当前用户角色在指定集合内。"""
-    from app.models.orm.platform.user import UserRole
 
     def dependency(current_user=Depends(get_current_user)):
         if current_user.role not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions",
+            )
+        return current_user
+
+    return dependency
+
+
+def require_permission(perm: str) -> Callable:
+    """要求当前用户拥有指定权限（admin/superuser 自动放行）。"""
+
+    def dependency(current_user=Depends(get_current_user)):
+        if not current_user.has_permission(perm):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Insufficient permissions",

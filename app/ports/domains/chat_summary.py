@@ -11,7 +11,9 @@ from app.ports.dto.chat_summary import ChatSummaryResult
 class UserLookupPort(Protocol):
     """Resolve request user identifier into canonical user key."""
 
-    def resolve_effective_user_id(self, requested_user_id: str, current_user: CurrentUserPort) -> str:
+    async def resolve_effective_user_id(
+        self, requested_user_id: str, current_user: CurrentUserPort
+    ) -> str:
         ...
 
 
@@ -25,5 +27,5 @@ class ChatSummaryRepoPort(Protocol):
 class ChatArchivePort(Protocol):
     """Integration boundary to chat-archive extraction + LLM summarization."""
 
-    def update_user_profile(self, user_id: str, conversation_id: str, limit: int) -> ChatSummaryResult:
+    async def update_user_profile(self, user_id: str, conversation_id: str, limit: int) -> ChatSummaryResult:
         ...

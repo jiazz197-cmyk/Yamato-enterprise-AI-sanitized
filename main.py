@@ -98,7 +98,7 @@ def _startup_check_sqlserver_connectivity(app: FastAPI) -> None:
         print(f"[warning] SQLServer 连通性检查失败: {e}")
 
 
-def _startup_resume_quotation_services() -> None:
+async def _startup_resume_quotation_services() -> None:
     """
     Recover quotation task queue after process restart.
 
@@ -106,21 +106,24 @@ def _startup_resume_quotation_services() -> None:
     - dispatch queued tasks for each owner
     """
     try:
+        from sqlalchemy import select
+
         from app.integrations.Quotation_Generation.quotation_task_workers import (
             dispatch_quotation_queue_for_owner,
         )
-        from app.core.database import SessionLocal
+        from app.core.database import AsyncSessionLocal
         from app.core.task_manager import task_manager
         from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
 
-        db = SessionLocal()
         stale_task_ids: list[str] = []
-        try:
-            stale_running_tasks = (
-                db.query(QuotationTask)
-                .filter(QuotationTask.status == QuotationTaskStatus.running.value)
-                .all()
+        owner_ids: list[str] = []
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(QuotationTask).where(
+                    QuotationTask.status == QuotationTaskStatus.running.value
+                )
             )
+            stale_running_tasks = result.scalars().all()
             for task in stale_running_tasks:
                 task.status = QuotationTaskStatus.queued.value
                 task.message = "服务重启后重新排队"
@@ -132,23 +135,21 @@ def _startup_resume_quotation_services() -> None:
                 stale_task_ids.append(task.task_id)
 
             if stale_running_tasks:
-                db.commit()
+                await db.commit()
                 print(f"[info] 已重置 {len(stale_running_tasks)} 个中断中的报价任务为排队状态")
 
-            owner_rows = (
-                db.query(QuotationTask.owner_id)
-                .filter(
+            owner_result = await db.execute(
+                select(QuotationTask.owner_id)
+                .where(
                     or_(
                         QuotationTask.status == QuotationTaskStatus.queued.value,
                         QuotationTask.status == QuotationTaskStatus.running.value,
                     )
                 )
                 .distinct()
-                .all()
             )
+            owner_rows = owner_result.all()
             owner_ids = [str(row[0]).strip() for row in owner_rows if str(row[0]).strip()]
-        finally:
-            db.close()
 
         async def _sync_redis_status() -> None:
             for task_id in stale_task_ids:
@@ -175,7 +176,7 @@ async def lifespan(app: FastAPI):
     
     try:
         from app.core.database import init_db_tables
-        init_db_tables()
+        await asyncio.to_thread(init_db_tables)
     except Exception as e:
         print(f"[warning] 数据库表初始化失败: {e}")
     
@@ -194,7 +195,7 @@ async def lifespan(app: FastAPI):
     
     try:
         from app.core.task_manager import task_manager
-        from app.integrations.observers import (
+        from app.core.observers import (
             LoggingObserver, 
             MetricsCollector,
         )
@@ -223,7 +224,7 @@ async def lifespan(app: FastAPI):
         print(f"[warning] 注册任务观察者失败: {e}")
 
     _startup_check_sqlserver_connectivity(app)
-    _startup_resume_quotation_services()
+    await _startup_resume_quotation_services()
 
     try:
         from app.core.retention_scheduler import run_retention_once, start_retention_scheduler
@@ -241,10 +242,9 @@ async def lifespan(app: FastAPI):
         pass
     
     try:
-        from app.core.storage import get_minio_client, MINIO_BUCKET_NAME
-        client = get_minio_client()
-        client.bucket_exists(MINIO_BUCKET_NAME)
-        print(f"[success] MinIO 连接成功，bucket: {MINIO_BUCKET_NAME}")
+        from app.core.async_storage import AsyncMinioClientPool, MINIO_BUCKET_NAME
+        await AsyncMinioClientPool.ensure_bucket(MINIO_BUCKET_NAME)
+        print(f"[success] MinIO 异步连接成功，bucket: {MINIO_BUCKET_NAME}")
     except Exception as e:
         print(f"[warning] MinIO 连接失败: {e}，服务将降级运行")
     
@@ -286,11 +286,24 @@ async def lifespan(app: FastAPI):
     
     try:
         try:
-            if hasattr(app.state, 'rag') and app.state.rag:
-                app.state.rag.cleanup()
+            if hasattr(app.state, "rag") and app.state.rag:
+                try:
+                    from app.ragsystem.retriever_for_yamato import ModelManager
+
+                    ModelManager().clear_cache()
+                except Exception as mm_exc:
+                    print(f"[warning] 清理 ModelManager 时出错: {mm_exc}")
+                await app.state.rag.cleanup()
             print("[success] RAG 系统清理完成")
         except Exception as e:
             print(f"[warning] 清理 RAG 时出错: {e}")
+
+        try:
+            from app.core.database import dispose_async_engine
+            await dispose_async_engine()
+            print("[success] 异步数据库连接池已释放")
+        except Exception as e:
+            print(f"[warning] 释放异步数据库连接池时出错: {e}")
         
         try:
             from app.core.executor import executor_manager
@@ -331,6 +344,20 @@ async def lifespan(app: FastAPI):
             print("[warning] Redis 关闭超时，跳过")
         except Exception as e:
             print(f"[warning] 关闭 Redis 时出错: {e}")
+
+        try:
+            from app.core.http_client import HttpClientManager
+            await HttpClientManager.close()
+            print("[success] HTTP 客户端已关闭")
+        except Exception as e:
+            print(f"[warning] 关闭 HTTP 客户端时出错: {e}")
+
+        try:
+            from app.core.async_storage import AsyncMinioClientPool
+            await AsyncMinioClientPool.close()
+            print("[success] 异步 MinIO 客户端已关闭")
+        except Exception as e:
+            print(f"[warning] 关闭异步 MinIO 时出错: {e}")
         
     finally:
         signal.alarm(0)
@@ -412,4 +439,6 @@ if __name__ == "__main__":
         host=settings.HOST,
         port=settings.PORT,
         reload=settings.RELOAD,
+        ws_ping_interval=30.0,
+        ws_ping_timeout=60.0,
     )

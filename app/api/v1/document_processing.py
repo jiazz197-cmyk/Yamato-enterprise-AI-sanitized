@@ -3,16 +3,16 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.document_processing import DocumentProcessWorkerAdapter, SqlAlchemyDocumentRegistrationAdapter
 from app.adapters.ocr_executor_jobs import ExecutorManagerAsyncTaskAdapter
 from app.adapters.tasking import TaskManagerStateAdapter, ThreadPoolTaskExecutionAdapter
-from app.core.dependencies import get_db
+from app.core.dependencies import get_async_db
 from app.core.exceptions import APIException, NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.core.security import get_current_user, normalize_self_uploader
-from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserPort
 from app.usecases.document_processing.lifecycle import (
     CancelDocumentTaskCommand,
     CancelDocumentTaskUseCase,
@@ -69,7 +69,7 @@ class TaskListResponse(BaseModel):
     total: int
 
 
-def _submit_usecase(db: Session):
+def _submit_usecase(db: AsyncSession):
     return SubmitDocumentProcessingUseCase(
         registration=SqlAlchemyDocumentRegistrationAdapter(db),
         task_state=TaskManagerStateAdapter(),
@@ -85,8 +85,8 @@ async def submit_document_processing(
     chunk_size: int = Query(500, ge=100, le=2000, description="文本块大小"),
     chunk_overlap: int = Query(50, ge=0, le=500, description="文本块重叠大小"),
     uploader: str = Query("anonymous", description="上传者标识（仅允许传本人信息）"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
         normalized_uploader = normalize_self_uploader(uploader, current_user)
@@ -105,16 +105,18 @@ async def submit_document_processing(
         raise
     except APIException:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("提交文档处理任务失败: %s", e, exc_info=True)
-        db.rollback()
+        await db.rollback()
         raise HTTPException(status_code=500, detail="提交任务失败") from e
 
 
 @router.get("/status/{task_id}", response_model=TaskStatusResponse, summary="查询任务状态")
 async def get_task_status(
     task_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
         dto = await GetDocumentTaskStatusUseCase(TaskManagerStateAdapter()).execute(
@@ -124,6 +126,8 @@ async def get_task_status(
     except NotFoundError:
         raise
     except APIException:
+        raise
+    except HTTPException:
         raise
     except Exception as e:
         logger.error("查询任务状态失败 %s: %s", task_id, e, exc_info=True)
@@ -136,7 +140,7 @@ async def list_tasks(
         None, description="按状态筛选 (pending/running/completed/failed)"
     ),
     limit: int = Query(10, ge=1, le=100, description="返回数量限制"),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
         out = await ListDocumentTasksUseCase(TaskManagerStateAdapter()).execute(
@@ -148,6 +152,8 @@ async def list_tasks(
         )
     except APIException:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("获取任务列表失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="获取任务列表失败") from e
@@ -156,7 +162,7 @@ async def list_tasks(
 @router.post("/tasks/{task_id}/cancel", summary="取消任务")
 async def cancel_task_endpoint(
     task_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
         return await CancelDocumentTaskUseCase(
@@ -167,6 +173,8 @@ async def cancel_task_endpoint(
         raise
     except APIException:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("取消任务失败 %s: %s", task_id, e, exc_info=True)
         raise HTTPException(status_code=500, detail="取消任务失败") from e
@@ -176,7 +184,7 @@ async def cancel_task_endpoint(
 async def delete_task_endpoint(
     task_id: str,
     cancel_if_running: bool = Query(True, description="是否取消正在运行的任务"),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ):
     try:
         return await DeleteDocumentTaskUseCase(
@@ -192,6 +200,8 @@ async def delete_task_endpoint(
     except NotFoundError:
         raise
     except APIException:
+        raise
+    except HTTPException:
         raise
     except Exception as e:
         logger.error("删除任务失败 %s: %s", task_id, e, exc_info=True)

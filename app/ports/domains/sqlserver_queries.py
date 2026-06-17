@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional, Protocol
 
+from app.domain.exceptions import QueryCancelledError  # noqa: F401
+
 CancelChecker = Optional[Callable[[], bool]]
-
-
-class QueryCancelledError(RuntimeError):
-    """Raised when an outbound SQL-backed query is aborted via cancel_checker."""
 
 
 class U8BomInventoryQueryPort(Protocol):
@@ -17,5 +15,10 @@ class U8BomInventoryQueryPort(Protocol):
 
 
 class PdmBomQueryPort(Protocol):
+    def run(self, payload: Any, *, cancel_checker: CancelChecker = None) -> Any:
+        ...
+
+
+class PdmMatchQueryPort(Protocol):
     def run(self, payload: Any, *, cancel_checker: CancelChecker = None) -> Any:
         ...

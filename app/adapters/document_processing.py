@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, List
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.executor import executor_manager
 from app.integrations.doc_processing.document_task_runner import (
@@ -15,11 +15,11 @@ from app.ports.domains.document_processing import DocumentProcessWorkerPort, Doc
 
 
 class SqlAlchemyDocumentRegistrationAdapter(DocumentRegistrationPort):
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self._db = db
 
-    def register_uploaded_files(self, files: Any, normalized_uploader: str) -> List[int]:
-        return upload_and_register_documents(self._db, files, normalized_uploader)
+    async def register_uploaded_files(self, files: Any, normalized_uploader: str) -> List[int]:
+        return await upload_and_register_documents(self._db, files, normalized_uploader)
 
 
 class DocumentProcessWorkerAdapter(DocumentProcessWorkerPort):

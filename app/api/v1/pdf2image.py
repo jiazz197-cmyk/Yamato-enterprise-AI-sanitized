@@ -11,7 +11,7 @@ from app.adapters.ocr_executor_jobs import (
 )
 from app.core.exceptions import APIException
 from app.core.security import get_current_user
-from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserPort
 from app.usecases.async_executor.executor_task_query import (
     CancelExecutorTaskCommand,
     CancelExecutorTaskUseCase,
@@ -58,7 +58,7 @@ async def convert_pdf_to_images(
     file: UploadFile = File(...),
     request: PdfConvertRequest = PdfConvertRequest(),
     uploader: str = Query(default="anonymous", description="上传者标识（仅允许传本人信息）"),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> PdfConvertResponse:
     _, jobs, _ = _executor_adapters()
     file_data = await file.read()
@@ -92,7 +92,7 @@ async def convert_pdf_to_images(
 @router.get("/pdf/task/{task_id}")
 async def get_pdf_convert_task_status(
     task_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> Dict[str, Any]:
     ex, _, _ = _executor_adapters()
     try:
@@ -115,7 +115,7 @@ async def get_pdf_convert_task_status(
 @router.get("/pdf/task/{task_id}/result")
 async def get_pdf_convert_task_result(
     task_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> Dict[str, Any]:
     ex, _, _ = _executor_adapters()
     try:
@@ -138,7 +138,7 @@ async def get_pdf_convert_task_result(
 @router.delete("/pdf/task/{task_id}")
 async def cancel_pdf_convert_task(
     task_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUserPort = Depends(get_current_user),
 ) -> Dict[str, Any]:
     ex, _, _ = _executor_adapters()
     try:
@@ -163,7 +163,7 @@ async def cancel_pdf_convert_task(
 @router.post("/pdf/page-count")
 async def get_pdf_pages(
     file: UploadFile = File(...),
-    _: User = Depends(get_current_user),
+    _: CurrentUserPort = Depends(get_current_user),
 ) -> Dict[str, Any]:
     _, _, pages = _executor_adapters()
     file_data = await file.read()

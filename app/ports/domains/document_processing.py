@@ -6,7 +6,7 @@ from typing import Any, List, Protocol
 
 
 class DocumentRegistrationPort(Protocol):
-    def register_uploaded_files(self, files: Any, normalized_uploader: str) -> List[int]:
+    async def register_uploaded_files(self, files: Any, normalized_uploader: str) -> List[int]:
         ...
 
 

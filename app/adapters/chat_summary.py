@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import uuid
-from sqlalchemy.orm import Session
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import normalize_self_user_identifier
 from app.integrations.Chat_message_archive.message_extractor import (
     UserProfileDB,
     update_user_profile_with_new_queries,
 )
-from app.models.orm.platform.user import User, UserRole
-from app.ports.contracts.identity import CurrentUserPort
+from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER, ROLE_ADMIN
 from app.ports.domains.chat_summary import ChatArchivePort, ChatSummaryRepoPort, UserLookupPort
 from app.ports.dto.chat_summary import ChatSummaryResult
 
@@ -19,10 +21,12 @@ from app.ports.dto.chat_summary import ChatSummaryResult
 class SqlAlchemyUserLookupAdapter(UserLookupPort):
     """Resolve effective user identifier with current RBAC rules."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self._db = db
 
-    def resolve_effective_user_id(self, requested_user_id: str, current_user: CurrentUserPort) -> str:
+    async def resolve_effective_user_id(
+        self, requested_user_id: str, current_user: CurrentUserPort
+    ) -> str:
         candidate = (requested_user_id or "").strip()
         current_aliases = {
             str(current_user.id).strip(),
@@ -34,7 +38,7 @@ class SqlAlchemyUserLookupAdapter(UserLookupPort):
         if candidate in current_aliases:
             return (current_user.username or "").strip() or str(current_user.id)
 
-        if current_user.role not in (UserRole.admin, UserRole.superuser):
+        if not current_user.is_admin_like():
             normalize_self_user_identifier(candidate, current_user)
             return (current_user.username or "").strip() or str(current_user.id)
 
@@ -43,7 +47,8 @@ class SqlAlchemyUserLookupAdapter(UserLookupPort):
         except ValueError:
             return candidate
 
-        target_user = self._db.query(User).filter(User.id == lookup_uuid).first()
+        result = await self._db.execute(select(User).filter(User.id == lookup_uuid))
+        target_user = result.scalars().first()
         if not target_user:
             return candidate
         return (target_user.username or "").strip() or str(target_user.id)
@@ -65,8 +70,8 @@ class MessageExtractorChatArchiveAdapter(ChatArchivePort):
     def __init__(self, api_key: str):
         self._api_key = api_key
 
-    def update_user_profile(self, user_id: str, conversation_id: str, limit: int) -> ChatSummaryResult:
-        result = update_user_profile_with_new_queries(
+    async def update_user_profile(self, user_id: str, conversation_id: str, limit: int) -> ChatSummaryResult:
+        result = await update_user_profile_with_new_queries(
             api_key=self._api_key,
             user_id=user_id,
             conversation_id=conversation_id,

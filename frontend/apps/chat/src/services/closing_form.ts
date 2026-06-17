@@ -44,6 +44,14 @@ export const deleteRejectedClosingForm = async (formId: string): Promise<void> =
   await apiRequest(`/closing-form/rejected/${formId}`, { method: 'DELETE' })
 }
 
+export const reviseClosingForm = async (formId: string, payload: Record<string, unknown>): Promise<void> => {
+  await apiRequest(`/closing-form/revise/${formId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export const listCollection2Records = async (): Promise<ClosingFormRecord[]> => {
   const data = await apiRequest<ClosingFormListResponse>('/closing-form/collection2/list')
   return data.records ?? []

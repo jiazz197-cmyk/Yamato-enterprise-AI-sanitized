@@ -11,10 +11,13 @@ import jwt
 from fastapi import WebSocket, WebSocketException, status
 
 from app.core.config import settings
-from app.core.database import SessionLocal
+from sqlalchemy import select
+
+from app.core.database import AsyncSessionLocal
 from app.core.logging import get_logger
 from app.core.observer import TaskEvent, TaskObserver
 from app.models.orm.platform.user import User
+from app.ports.contracts.identity import CurrentUserDTO
 
 logger = get_logger("websocket_task_manager")
 
@@ -62,7 +65,7 @@ class WebSocketConnectionManager:
                         self.ip_connections.pop(client_ip, None)
                     else:
                         self.ip_connections[client_ip] = next_count
-        logger.info("[error] WebSocket client disconnected: task_id=%s", task_id)
+        logger.debug("WebSocket client disconnected: task_id=%s", task_id)
 
     def _trim_message_counters_if_needed(self) -> None:
         """必须在持锁下调用。"""
@@ -93,17 +96,21 @@ class WebSocketConnectionManager:
             subscribers = list(self.active_connections.get(task_id, set()))
         message_text = json.dumps(message, ensure_ascii=False)
         disconnected = []
+        failed = 0
         for ws in subscribers:
             try:
                 await ws.send_text(message_text)
-                logger.debug(
-                    "[event] Message pushed: task_id=%s, event=%s",
-                    task_id,
-                    message.get("event_type"),
-                )
             except Exception as e:
                 logger.warning("Push failed: %s", e)
                 disconnected.append(ws)
+                failed += 1
+        logger.debug(
+            "Message pushed: task_id=%s, subscribers=%s, event=%s, failed=%s",
+            task_id,
+            len(subscribers),
+            message.get("event_type"),
+            failed,
+        )
         for ws in disconnected:
             self.disconnect(ws, task_id)
 
@@ -117,9 +124,9 @@ class WebSocketConnectionManager:
         with self._lock:
             total_count = sum(len(conns) for conns in self.active_connections.values())
         if total_count == 0:
-            logger.info("没有活跃的 WebSocket 连接需要关闭")
+            logger.debug("没有活跃的 WebSocket 连接需要关闭")
             return
-        logger.info("正在关闭 %s 个 WebSocket 连接...", total_count)
+        logger.debug("正在关闭 %s 个 WebSocket 连接...", total_count)
         with self._lock:
             snapshot = list(self.active_connections.items())
         for _tid, websockets in snapshot:
@@ -130,7 +137,7 @@ class WebSocketConnectionManager:
                     logger.debug("关闭 WebSocket 时出错: %s", e)
         with self._lock:
             self.active_connections.clear()
-        logger.info("[success] 所有 WebSocket 连接已关闭")
+        logger.debug("所有 WebSocket 连接已关闭")
 
 
 def decode_ws_bearer_user_id(token: str) -> str:
@@ -144,15 +151,24 @@ def decode_ws_bearer_user_id(token: str) -> str:
     return user_id
 
 
-def load_user_for_websocket(user_id: str) -> User | None:
-    db = SessionLocal()
+async def load_user_for_websocket(user_id: str) -> CurrentUserDTO | None:
     try:
-        return db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(User).filter(User.id == uuid.UUID(user_id))
+            )
+            user = result.scalars().first()
+        if user is None:
+            return None
+        return CurrentUserDTO(
+            id=str(user.id),
+            username=str(user.username or ""),
+            name=str(user.name or ""),
+            role=str(user.role.value if hasattr(user.role, "value") else user.role),
+        )
     except Exception as exc:
         logger.warning("加载 WebSocket 用户失败: %s", exc)
         return None
-    finally:
-        db.close()
 
 
 ws_manager = WebSocketConnectionManager()

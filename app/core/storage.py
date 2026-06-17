@@ -165,13 +165,15 @@ def upload_to_minio(file_path: str, file_name: str) -> str:
 
 
 def upload_buffer_to_minio(
-    buffer: IO[bytes], 
+    buffer: IO[bytes],
     file_name: str,
-    content_type: str = "application/octet-stream"
+    content_type: str = "application/octet-stream",
+    bucket: Optional[str] = None,
 ) -> str:
     """能 seek 则带 length 直传，否则分块；不要用 read 全长估大小。"""
+    target_bucket = bucket or MINIO_BUCKET_NAME
     try:
-        if not _minio_pool.ensure_bucket():
+        if not _minio_pool.ensure_bucket(target_bucket):
             return "Error: MinIO service unavailable"
         
         size = -1
@@ -187,7 +189,7 @@ def upload_buffer_to_minio(
         
         if size > 0:
             client.put_object(
-                bucket_name=MINIO_BUCKET_NAME,
+                bucket_name=target_bucket,
                 object_name=file_name,
                 data=buffer,
                 length=size,
@@ -195,7 +197,7 @@ def upload_buffer_to_minio(
             )
         else:
             client.put_object(
-                bucket_name=MINIO_BUCKET_NAME,
+                bucket_name=target_bucket,
                 object_name=file_name,
                 data=buffer,
                 length=-1,
@@ -215,21 +217,23 @@ def upload_buffer_to_minio(
 
 
 def upload_stream_to_minio(
-    file_stream: IO[bytes], 
-    file_name: str, 
+    file_stream: IO[bytes],
+    file_name: str,
     file_size: int = -1,
-    content_type: str = "application/octet-stream"
+    content_type: str = "application/octet-stream",
+    bucket: Optional[str] = None,
 ) -> str:
     """file_size>0 直传；否则分块。"""
+    target_bucket = bucket or MINIO_BUCKET_NAME
     try:
-        if not _minio_pool.ensure_bucket():
+        if not _minio_pool.ensure_bucket(target_bucket):
             return "Error: MinIO service unavailable"
         
         client = get_minio_client()
         
         if file_size > 0:
             client.put_object(
-                bucket_name=MINIO_BUCKET_NAME,
+                bucket_name=target_bucket,
                 object_name=file_name,
                 data=file_stream,
                 length=file_size,
@@ -237,7 +241,7 @@ def upload_stream_to_minio(
             )
         else:
             client.put_object(
-                bucket_name=MINIO_BUCKET_NAME,
+                bucket_name=target_bucket,
                 object_name=file_name,
                 data=file_stream,
                 length=-1,

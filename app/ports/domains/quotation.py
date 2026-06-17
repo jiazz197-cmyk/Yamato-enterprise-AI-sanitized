@@ -12,6 +12,30 @@ CancelChecker = Optional[Callable[[], bool]]
 ProgressCallback = Optional[Callable[[int, str], None]]
 
 
+# ── OCR 纯文本提取 ──────────────────────────────────────────
+
+@dataclass
+class OcrTextExtractionResult:
+    text: str
+    extract_method: str  # "pdftotext" | "dotsocr" | "failed"
+    pdftotext_chars: int = 0
+    dotsocr_chars: int = 0
+
+
+class OcrPlainTextPort(Protocol):
+    def extract_text(
+        self, *, pdf_bytes: bytes, cancel_checker: CancelChecker = None, ocr_dpi: int = 200,
+    ) -> OcrTextExtractionResult: ...
+
+
+# ── Spec 解析 + 转换 ──────────────────────────────────────
+
+class SpecParseAndConvertPort(Protocol):
+    def parse_and_convert(
+        self, *, ocr_text: str, cancel_checker: CancelChecker = None,
+    ) -> Dict[str, Any]: ...
+
+
 @dataclass
 class RasterPageResult:
     """First-page rasterization output."""
@@ -31,7 +55,7 @@ class TempObjectUploadResult:
 class FileStoragePort(Protocol):
     """Object storage abstraction for quotation files."""
 
-    def upload_pdf(
+    async def upload_pdf(
         self,
         *,
         object_path: str,
@@ -44,7 +68,7 @@ class FileStoragePort(Protocol):
 class QuotationTaskRepoPort(Protocol):
     """Persistence boundary for quotation task + file metadata."""
 
-    def create_file_record(
+    async def create_file_record(
         self,
         *,
         file_name: str,
@@ -56,7 +80,7 @@ class QuotationTaskRepoPort(Protocol):
     ) -> int:
         ...
 
-    def create_task(
+    async def create_task(
         self,
         *,
         task_id: str,
@@ -73,26 +97,26 @@ class QuotationTaskRepoPort(Protocol):
     ) -> QuotationTaskSnapshot:
         ...
 
-    def get_task(self, task_id: str) -> Optional[QuotationTaskSnapshot]:
+    async def get_task(self, task_id: str) -> Optional[QuotationTaskSnapshot]:
         ...
 
-    def patch_task(self, task_id: str, updates: Dict[str, Any]) -> QuotationTaskSnapshot:
+    async def patch_task(self, task_id: str, updates: Dict[str, Any]) -> QuotationTaskSnapshot:
         ...
 
-    def count_owner_queued_before(self, owner_id: str, created_at: datetime) -> int:
+    async def count_owner_queued_before(self, owner_id: str, created_at: datetime) -> int:
         ...
 
-    def cleanup_task_files(self, task_id: str) -> Dict[str, Any]:
+    async def cleanup_task_files(self, task_id: str) -> Dict[str, Any]:
         ...
 
-    def delete_task(self, task_id: str) -> None:
+    async def delete_task(self, task_id: str) -> None:
         ...
 
 
 class QuotationApprovalSelectionPort(Protocol):
     """Persistence boundary for approval-driven summary selection snapshots."""
 
-    def save_approved_selection(
+    async def save_approved_selection(
         self,
         *,
         task_id: str,
@@ -101,7 +125,7 @@ class QuotationApprovalSelectionPort(Protocol):
     ) -> None:
         ...
 
-    def load_summary_selection_items(self, task_id: str) -> list[QuotationSummarySelectionItem]:
+    async def load_summary_selection_items(self, task_id: str) -> list[QuotationSummarySelectionItem]:
         ...
 
 
@@ -154,4 +178,36 @@ class KeywordPayloadMappingPort(Protocol):
         max_retries: int,
         cancel_checker: CancelChecker = None,
     ) -> Dict[str, Any]:
+        ...
+
+
+@dataclass
+class DispatchCandidate:
+    """Task payload required by executor submission."""
+
+    task_id: str
+    owner_id: str
+
+
+class QuotationDispatchPort(Protocol):
+    """Abstraction for dispatching queued quotation tasks to running state."""
+
+    async def dequeue_for_owner(self, owner_id: str) -> list[DispatchCandidate]:
+        ...
+
+
+class QuotationTaskPurgePort(Protocol):
+    """Abstraction for purging quotation task records and associated resources."""
+
+    async def purge_task(self, task_id: str, *, allow_non_terminal: bool = False) -> dict:
+        ...
+
+
+class QuotationTaskRetentionPort(Protocol):
+    """Abstraction for quota-driven retention of quotation tasks."""
+
+    async def purge_old_terminal_tasks_global(self, max_total: int = 100, target: int = 50) -> int:
+        ...
+
+    async def expire_awaiting_approval_tasks(self, ttl_hours: int = 24) -> int:
         ...
