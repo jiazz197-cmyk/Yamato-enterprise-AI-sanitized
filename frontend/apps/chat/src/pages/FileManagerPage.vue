@@ -147,16 +147,28 @@
           maxlength="120"
         />
       </label>
-      <label class="task-name-field" style="margin-top: 12px">
-        <span class="task-name-field__label">PARTID（每行一条，格式 "PARTID,数量"，数量可省略默认为 1，支持从 Excel 两列粘贴，最多 500 个）</span>
-        <textarea
-          v-model="directU8PartidsText"
-          class="task-name-field__input task-name-field__textarea"
-          rows="8"
-          maxlength="10000"
-          placeholder="每行格式：PARTID,数量&#10;例如：010101,5"
-        />
-      </label>
+      <div class="direct-u8-input-grid">
+        <label class="task-name-field">
+          <span class="task-name-field__label">编码（每行一条，最多 500 个）</span>
+          <textarea
+            v-model="directU8PartidsText"
+            class="task-name-field__input task-name-field__textarea"
+            rows="8"
+            maxlength="10000"
+            placeholder="每行一个编码&#10;例如：010101"
+          />
+        </label>
+        <label class="task-name-field">
+          <span class="task-name-field__label">数量（每行一条，可留空默认为 1）</span>
+          <textarea
+            v-model="directU8QuantitiesText"
+            class="task-name-field__input task-name-field__textarea"
+            rows="8"
+            maxlength="10000"
+            placeholder="按左侧编码行号对齐&#10;例如：5"
+          />
+        </label>
+      </div>
     </ConfirmDialog>
 
     <ConfirmDialog
@@ -184,7 +196,7 @@
           class="task-name-field__input task-name-field__textarea"
           rows="8"
           maxlength="10000"
-          placeholder="每行一个项目编码&#10;例如：WG250746"
+          placeholder="每行一个项目编码&#10;例如：60334P542"
         />
       </label>
     </ConfirmDialog>
@@ -224,6 +236,7 @@ const pendingTaskName = ref('')
 const pendingUploadId = ref(0)
 const showDirectU8Dialog = ref(false)
 const directU8PartidsText = ref('')
+const directU8QuantitiesText = ref('')
 const directU8TaskName = ref('')
 const directU8Submitting = ref(false)
 
@@ -1898,6 +1911,7 @@ const handleDownloadU8Xlsx = async (taskId: string): Promise<void> => {
 
 const openDirectU8Dialog = (): void => {
   directU8PartidsText.value = ''
+  directU8QuantitiesText.value = ''
   directU8TaskName.value = ''
   directU8Submitting.value = false
   showDirectU8Dialog.value = true
@@ -1906,23 +1920,34 @@ const openDirectU8Dialog = (): void => {
 const cancelDirectU8Dialog = (): void => {
   showDirectU8Dialog.value = false
   directU8PartidsText.value = ''
+  directU8QuantitiesText.value = ''
   directU8TaskName.value = ''
 }
 
-const parseDirectU8Partids = (text: string): { partids: string[]; quantities: number[]; errors: string[] } => {
+const parseDirectU8Partids = (
+  partidsText: string,
+  quantitiesText: string
+): { partids: string[]; quantities: number[]; errors: string[] } => {
   const seen = new Set<string>()
   const partids: string[] = []
   const quantities: number[] = []
   const errors: string[] = []
-  const lines = text.split(/\r?\n/)
-  for (let i = 0; i < lines.length; i++) {
-    const parts = lines[i].split(/[,;\t]+/).map(s => s.trim()).filter(Boolean)
-    if (parts.length === 0) continue
-    const partid = parts[0]
+  const partidLines = partidsText.split(/\r?\n/)
+  const quantityLines = quantitiesText.split(/\r?\n/)
+  const lineCount = Math.max(partidLines.length, quantityLines.length)
+
+  for (let i = 0; i < lineCount; i++) {
+    const partid = (partidLines[i] ?? '').trim()
+    const qtyRaw = (quantityLines[i] ?? '').trim()
+    if (!partid) {
+      if (qtyRaw) {
+        errors.push(`第 ${i + 1} 行数量已填写但缺少编码`)
+      }
+      continue
+    }
     if (seen.has(partid)) continue
     let qty = 1
-    const qtyRaw = parts[1]
-    if (qtyRaw !== undefined) {
+    if (qtyRaw) {
       if (!/^\d+$/.test(qtyRaw)) {
         errors.push(`第 ${i + 1} 行数量 "${qtyRaw}" 格式错误（必须为正整数）`)
         continue
@@ -1942,7 +1967,7 @@ const parseDirectU8Partids = (text: string): { partids: string[]; quantities: nu
 }
 
 const confirmDirectU8Submit = async (): Promise<void> => {
-  const { partids, quantities, errors } = parseDirectU8Partids(directU8PartidsText.value)
+  const { partids, quantities, errors } = parseDirectU8Partids(directU8PartidsText.value, directU8QuantitiesText.value)
   if (errors.length > 0) {
     errorMessage.value = errors.join('；')
     return
@@ -1963,6 +1988,7 @@ const confirmDirectU8Submit = async (): Promise<void> => {
   try {
     await createDirectU8Task(partids, quantities, directU8TaskName.value.trim() || undefined)
     directU8PartidsText.value = ''
+    directU8QuantitiesText.value = ''
     directU8TaskName.value = ''
     await loadTasks()
   } catch (error) {
@@ -3562,6 +3588,19 @@ const TaskItemCard = defineComponent({
   resize: vertical;
   line-height: 1.5;
   font-family: inherit;
+}
+
+.direct-u8-input-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+@media (max-width: 640px) {
+  .direct-u8-input-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 1200px) {

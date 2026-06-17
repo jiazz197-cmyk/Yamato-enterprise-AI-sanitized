@@ -134,7 +134,7 @@ const parseFileNameFromDisposition = (
     return decodeURIComponent(utf8Match[1])
   }
 
-  const plainMatch = contentDisposition.match(/filename=\"?([^\";]+)\"?/i)
+  const plainMatch = contentDisposition.match(/filename="?([^";]+)"?/i)
   if (plainMatch?.[1]) {
     return plainMatch[1]
   }

@@ -1073,9 +1073,9 @@ const startRevise = (record: FormRecord) => {
       if (formKey) {
         const numKeys: (keyof FormData)[] = ['quantity', 'speed', 'price_excluding_tax']
         if (numKeys.includes(formKey)) {
-          ;(newForm as any)[formKey] = field.value === '' ? null : Number(field.value)
+          (newForm as any)[formKey] = field.value === '' ? null : Number(field.value)
         } else {
-          ;(newForm as any)[formKey] = field.value
+          (newForm as any)[formKey] = field.value
         }
       }
     }
