@@ -73,8 +73,8 @@ def test_summary_uses_detail_sheet_price_column_last_row_when_no_total_column():
             QuotationDetailSheet(
                 sheet_name="机架",
                 rows=[
-                    {"累计用量": 2, "单价": 10},
-                    {"累计用量": "", "单价": 88},
+                    {"根父件名称": "机架", "累计用量": 2, "单价": 10, "__root_inv_name": "机架"},
+                    {"根父件名称": "机架", "累计用量": "", "单价": 88, "__root_inv_name": "机架"},
                 ],
                 total_amount=88,
             )
@@ -90,4 +90,6 @@ def test_summary_uses_detail_sheet_price_column_last_row_when_no_total_column():
     assert summary_ws["E12"].value == "='机架'!B3"
     assert summary_ws["F12"].value == "=E12*D12"
     assert summary_ws["F10"].value == "=SUM(F12:F12)"
-    assert "__root_inv_name" not in [cell.value for cell in detail_ws[1]]
+    headers = [cell.value for cell in detail_ws[1]]
+    assert "根父件名称" not in headers
+    assert "__root_inv_name" not in headers

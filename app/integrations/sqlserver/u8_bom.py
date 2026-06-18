@@ -7,6 +7,7 @@ literals. Parent codes are normalized from trusted API input, not ad-hoc SQL.
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from app.core.config import settings
@@ -16,6 +17,48 @@ from app.integrations.sqlserver.client import close_sql_client, get_sql_client
 from app.integrations.sqlserver.exceptions import raise_if_cancelled
 
 logger = get_logger("database.sqlserver")
+
+_DEADLOCK_RETRY_DELAYS_SEC: tuple[float, ...] = (0.3, 0.8, 1.5)
+
+
+def _is_sqlserver_deadlock_error(exc: BaseException) -> bool:
+    for arg in getattr(exc, "args", ()):  # pymssql usually exposes 1205 in args[0]
+        if arg == 1205:
+            return True
+        if isinstance(arg, bytes) and b"1205" in arg:
+            return True
+        if isinstance(arg, str) and "1205" in arg:
+            return True
+    text = str(exc)
+    return "1205" in text and "deadlock" in text.lower()
+
+
+def _query_with_deadlock_retry(
+    client: Any,
+    sql: str,
+    *,
+    log_label: str,
+    cancel_checker: Optional[Callable[[], bool]] = None,
+) -> List[Dict[str, Any]]:
+    attempt = 0
+    while True:
+        try:
+            return client.query(sql)
+        except Exception as exc:
+            if not _is_sqlserver_deadlock_error(exc) or attempt >= len(_DEADLOCK_RETRY_DELAYS_SEC):
+                raise
+            delay = _DEADLOCK_RETRY_DELAYS_SEC[attempt]
+            attempt += 1
+            logger.warning(
+                "U8 SQLServer deadlock 1205，sleep 后重试: label=%s, attempt=%s/%s, delay=%.1fs",
+                log_label,
+                attempt,
+                len(_DEADLOCK_RETRY_DELAYS_SEC),
+                delay,
+            )
+            raise_if_cancelled(cancel_checker)
+            time.sleep(delay)
+            raise_if_cancelled(cancel_checker)
 
 
 def _is_price_missing(value: Any) -> bool:
@@ -67,7 +110,11 @@ def _query_recordoutlist_prices(
             WHERE rn = 1
         """
         try:
-            rows = client.query(sql)
+            rows = _query_with_deadlock_retry(
+                client,
+                sql,
+                log_label=f"recordoutlist_prices:{order_by}",
+            )
             result: Dict[str, float] = {}
             for row in rows:
                 code = str(row.get("cinvcode", "")).strip()
@@ -180,7 +227,11 @@ def _fetch_root_inv_names(client: SqlServerClient, codes: List[str]) -> Dict[str
         FROM Inventory
         WHERE cInvCode IN ({code_list})
     """
-    rows = client.query(sql)
+    rows = _query_with_deadlock_retry(
+        client,
+        sql,
+        log_label="root_inv_names",
+    )
 
     result: Dict[str, str] = {}
     for row in rows:
@@ -230,7 +281,11 @@ def _fill_inventory_only_rows(
         WHERE cInvCode IN ({safe_codes})
     """
     try:
-        inv_rows = client.query(sql)
+        inv_rows = _query_with_deadlock_retry(
+            client,
+            sql,
+            log_label="inventory_only_rows",
+        )
     except Exception as exc:
         logger.warning("Inventory 采购件回退查询失败: %s", exc)
         return
@@ -339,7 +394,12 @@ def _query_u8_bom_inventory(
             FROM v_bas_part vp
         """
         try:
-            rows = client.query(probe_sql)
+            rows = _query_with_deadlock_retry(
+                client,
+                probe_sql,
+                log_label=f"partmap_probe:{code}",
+                cancel_checker=cancel_checker,
+            )
             first = rows[0] if rows else {}
             inv_hits_raw = first.get("InvCodeHits") if isinstance(first, dict) else None
             part_hits_raw = first.get("PartIdHits") if isinstance(first, dict) else None
@@ -408,7 +468,12 @@ def _query_u8_bom_inventory(
             WHERE rn = 1
             ORDER BY SortSeq, ChildInvCode
         """
-        rows = client.query(sql)
+        rows = _query_with_deadlock_retry(
+            client,
+            sql,
+            log_label=f"fetch_children:{parent_inv_code}",
+            cancel_checker=cancel_checker,
+        )
         if not rows and parent_inv_code in root_codes_set:
             probe = _probe_partmap_hits(parent_inv_code)
             logger.warning(

@@ -20,7 +20,7 @@ from app.ports.dto.sqlserver_queries import U8BomInventoryCommand
 
 logger = get_logger("quotation.execute_phase2")
 
-_U8_MAX_DEPTH = 3
+_U8_MAX_DEPTH = 20
 
 
 def _response_to_dict(response: Any) -> Dict[str, Any]:

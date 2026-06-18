@@ -14,6 +14,57 @@ LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
+CATEGORY_FILES: Dict[str, str] = {
+    "app": "app.log",
+    "quotation": "quotation.log",
+    "task": "task.log",
+    "security": "security.log",
+    "database": "database.log",
+    "requests": "requests.log",
+    "diag": "diag.log",
+    "websocket": "websocket.log",
+    "cache": "cache.log",
+    "closing_form": "closing_form.log",
+    "document_processing": "document_processing.log",
+    "file_manager": "file_manager.log",
+    "context_compression": "context_compression.log",
+}
+
+# key = logger 名去掉 "app." 前缀；value = category
+LOGGER_ROUTES: Dict[str, str] = {
+    "quotation": "quotation",
+    "quotation_generation": "quotation",
+    "quotation_dispatcher": "quotation",
+    "u8_grouping": "quotation",
+    "adapters.quotation": "quotation",
+    "task_manager": "task",
+    "task_observers": "task",
+    "task_owner_registry": "task",
+    "executor": "task",
+    "executor_task_query": "task",
+    "observer": "task",
+    "auth": "security",
+    "security": "security",
+    "database": "database",
+    "integrations.sqlserver": "database",
+    "diag": "diag",
+    "requests": "requests",
+    "websocket_notifier": "websocket",
+    "websocket_task_manager": "websocket",
+    "cache": "cache",
+    "closing_form": "closing_form",
+    "document_processing": "document_processing",
+    "document_processing_uc": "document_processing",
+    "integrations.doc_processing": "document_processing",
+    "file_manager": "file_manager",
+    "file_manager_uc": "file_manager",
+    "adapters.file_manager": "file_manager",
+    "context_compression_uc": "context_compression",
+    "integrations.context_compression": "context_compression",
+    "api.v1.context_compression": "context_compression",
+}
+
+
 def _file_handler(filename: str) -> Dict[str, Any]:
     target = LOG_DIR / filename
     return {
@@ -63,11 +114,11 @@ def _build_logging_config() -> Dict[str, Any]:
             },
         },
         "loggers": {
-            "app": {"handlers": ["default"], "level": LOG_LEVEL, "propagate": False},
-            "app.database": {"handlers": ["plain"], "level": LOG_LEVEL, "propagate": False},
-            "app.diag": {"handlers": ["plain"], "level": LOG_LEVEL, "propagate": False},
-            "app.requests": {"handlers": ["plain"], "level": LOG_LEVEL, "propagate": False},
-            "app.security": {"handlers": ["plain"], "level": LOG_LEVEL, "propagate": False},
+            "app": {
+                "handlers": ["default", "app_file"],
+                "level": LOG_LEVEL,
+                "propagate": False,
+            },
             "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
             "uvicorn.error": {"handlers": ["default"], "level": "INFO", "propagate": False},
             "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
@@ -77,17 +128,16 @@ def _build_logging_config() -> Dict[str, Any]:
             "matplotlib": {"handlers": ["default"], "level": "ERROR", "propagate": False},
         },
     }
-    config["handlers"]["app_file"] = _file_handler("app.log")
-    config["handlers"]["database_file"] = _file_handler("database.log")
-    config["handlers"]["diag_file"] = _file_handler("diag.log")
-    config["handlers"]["requests_file"] = _file_handler("requests.log")
-    config["handlers"]["security_file"] = _file_handler("security.log")
 
-    config["loggers"]["app"]["handlers"].append("app_file")
-    config["loggers"]["app.database"]["handlers"].append("database_file")
-    config["loggers"]["app.diag"]["handlers"].append("diag_file")
-    config["loggers"]["app.requests"]["handlers"].append("requests_file")
-    config["loggers"]["app.security"]["handlers"].append("security_file")
+    for category, filename in CATEGORY_FILES.items():
+        config["handlers"][f"{category}_file"] = _file_handler(filename)
+
+    for name, category in LOGGER_ROUTES.items():
+        config["loggers"][f"app.{name}"] = {
+            "handlers": [f"{category}_file"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        }
 
     return config
 

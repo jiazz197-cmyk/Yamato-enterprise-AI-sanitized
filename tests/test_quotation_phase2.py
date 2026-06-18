@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.usecases.quotation.execute_phase2 import (
+    _U8_MAX_DEPTH,
     ExecuteQuotationPhase2Command,
     ExecuteQuotationPhase2UseCase,
 )
@@ -94,7 +95,7 @@ def test_project_code_type_uses_shallow_then_deep_virtual_children():
     assert fake_query.commands[0].parent_inv_codes == "60334P542"
     assert fake_query.commands[0].max_depth == 1
     assert fake_query.commands[1].parent_inv_codes == "VA001"
-    assert fake_query.commands[1].max_depth == 3
+    assert fake_query.commands[1].max_depth == _U8_MAX_DEPTH
 
     assert result.u8_result_by_type["total"] == 2
     groups = {g["type"]: g for g in result.u8_result_by_type["items"]}

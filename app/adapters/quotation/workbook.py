@@ -13,6 +13,7 @@ _EXCLUDED_ROW_KEYS: frozenset[str] = frozenset({
     "__parent_inv_code",
     "基本用量",
     "供应类型",
+    "根父件名称",
     "仓库编码",
     "领料部门",
     "__root_inv_name",
