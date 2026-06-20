@@ -46,10 +46,7 @@ async def upload_and_register_documents(
             minio_path = f"documents/{unique_name}"
             file_size = getattr(file, "size", None) or -1
             content_type = file.content_type or "application/octet-stream"
-            result = await async_upload_stream_to_minio(file.file, minio_path, file_size, content_type)
-            if result.startswith("Error"):
-                logger.error("上传文件失败: %s - %s", file.filename, result)
-                continue
+            await async_upload_stream_to_minio(file.file, minio_path, file_size, content_type)
             if file_size == -1:
                 try:
                     stat = await async_stat_object(minio_path)

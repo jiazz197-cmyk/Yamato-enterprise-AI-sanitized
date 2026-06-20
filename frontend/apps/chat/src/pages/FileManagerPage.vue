@@ -206,7 +206,7 @@
 <script setup lang="ts">
 import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ConfirmDialog } from '@yamato/components'
-import { config } from '../config'
+import { readUserRole } from '../services/storage'
 import type { QuotationPdmItem, QuotationTaskItem } from '../types/quotation'
 import {
   approveQuotationTask,
@@ -272,7 +272,7 @@ let listRefreshSuccessiveFailures = 0
 const ACTIVE_STATUSES: string[] = ['queued', 'running', 'awaiting_approval']
 const TERMINAL_STATUSES: string[] = ['completed', 'failed', 'cancelled']
 const ENABLE_TASK_WEBSOCKET = true
-const DEBUG_FILE_MANAGER_DIAGNOSTICS = true
+const DEBUG_FILE_MANAGER_DIAGNOSTICS = import.meta.env.DEV
 const WS_CONNECT_BATCH_SIZE = 4
 const WS_CONNECT_BATCH_INTERVAL_MS = 100
 const UPLOAD_CREATE_TASK_PENDING_WARN_MS = 20000
@@ -695,17 +695,6 @@ const handleBlur = (): void => {
   logPageEnvironment('page_focus_changed', {
     focusEvent: 'blur',
   })
-}
-
-const readUserRole = (): string => {
-  try {
-    const raw = localStorage.getItem(config.settingsStorageKey)
-    if (!raw) return ''
-    const parsed = JSON.parse(raw) as { role?: unknown }
-    return String(parsed.role ?? '').trim()
-  } catch {
-    return ''
-  }
 }
 
 const currentRole = ref(readUserRole())

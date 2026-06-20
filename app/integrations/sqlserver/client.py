@@ -48,11 +48,14 @@ def get_sql_client(config: Dict[str, Any]):
                 )
             return self._conn
 
-        def query(self, sql: str) -> List[Dict[str, Any]]:
+        def query(self, sql: str, params: Any = None) -> List[Dict[str, Any]]:
             try:
                 conn = self._ensure_conn()
                 with conn.cursor(as_dict=True) as cursor:
-                    cursor.execute(sql)
+                    if params is None:
+                        cursor.execute(sql)
+                    else:
+                        cursor.execute(sql, params)
                     rows = cursor.fetchall()
                 return [dict(row) for row in rows]
             except Exception:

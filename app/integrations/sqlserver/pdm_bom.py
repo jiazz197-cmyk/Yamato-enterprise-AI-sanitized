@@ -1,13 +1,13 @@
 """PDM BOM_027 query helpers.
 
-Text fragments embedded in CHINANAME LIKE/NOT LIKE use single-quote doubling for SQL
-Server string literals; user % / _ in keywords still act as wildcard metacharacters
-in LIKE (semantic breadth, not classic injection). Tighten at API layer if needed.
+All user-supplied text (keywords, model codes) is passed as pymssql parameters
+(`%s` placeholders); LIKE wildcards (`%`, `_`) and SQL Server character classes
+(`[a-zA-Z]`) are concatenated into the parameter *value*, not the SQL text.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -20,16 +20,17 @@ logger = get_logger("database.sqlserver.pdm_bom")
 _DEFAULT_EXCLUDE_KEYWORDS = ["停用", "暂停使用", "禁用", "作废", "废弃"]
 
 
-def build_pdm_exclude_clauses() -> List[str]:
+def build_pdm_exclude_clauses() -> Tuple[List[str], List[str]]:
     """Build default exclude clauses for CHINANAME."""
     clauses: List[str] = []
+    params: List[str] = []
     for exclude_kw in _DEFAULT_EXCLUDE_KEYWORDS:
-        safe_kw = exclude_kw.replace("'", "''")
-        clauses.append(f"a.CHINANAME NOT LIKE '%{safe_kw}%'")
-    return clauses
+        clauses.append("a.CHINANAME NOT LIKE %s")
+        params.append(f"%{exclude_kw}%")
+    return clauses, params
 
 
-def build_model_filter_clauses(model: Optional[str] = None) -> List[str]:
+def build_model_filter_clauses(model: Optional[str] = None) -> Tuple[List[str], List[str]]:
     """Build MODEL filter clauses with exact match logic.
 
     - a.MODEL LIKE '%{model}%'                 — 包含 model
@@ -40,21 +41,24 @@ def build_model_filter_clauses(model: Optional[str] = None) -> List[str]:
         model: 机型型号，如 "ADW-A-0314S"
 
     Returns:
-        List of SQL clauses for MODEL filtering
+        (clauses, params): SQL fragments with `%s` placeholders and matching param values.
+        LIKE wildcards/character classes live in the param value, not the SQL text.
     """
     if not model:
-        return []
+        return [], []
 
-    safe_model = model.replace("'", "''")
     clauses: List[str] = []
-    clauses.append(f"a.MODEL LIKE '%{safe_model}%'")
-    clauses.append(f"a.MODEL NOT LIKE '%{safe_model}[a-zA-Z]%'")
-    return clauses
+    params: List[str] = []
+    clauses.append("a.MODEL LIKE %s")
+    params.append(f"%{model}%")
+    clauses.append("a.MODEL NOT LIKE %s")
+    params.append(f"%{model}[a-zA-Z]%")
+    return clauses, params
 
 
-def build_pdm_where_clauses(condition: str | List[str]) -> List[str]:
-    """Build LIKE clauses; strings are SQL-quoted via `.replace("'", "''")` only."""
-    clauses: List[str] = build_pdm_exclude_clauses()
+def build_pdm_where_clauses(condition: str | List[str]) -> Tuple[List[str], List[str]]:
+    """Build LIKE clauses; user text is passed as parameters."""
+    clauses, params = build_pdm_exclude_clauses()
 
     if isinstance(condition, str):
         text = condition.strip()
@@ -62,12 +66,12 @@ def build_pdm_where_clauses(condition: str | List[str]) -> List[str]:
             negated = text.startswith("!")
             payload = text[1:].strip() if negated else text
             if payload:
-                safe_text = payload.replace("'", "''")
                 if negated:
-                    clauses.append(f"a.CHINANAME NOT LIKE '%{safe_text}%'")
+                    clauses.append("a.CHINANAME NOT LIKE %s")
                 else:
-                    clauses.append(f"a.CHINANAME LIKE '%{safe_text}%'")
-        return clauses
+                    clauses.append("a.CHINANAME LIKE %s")
+                params.append(f"%{payload}%")
+        return clauses, params
 
     for item in condition:
         text = str(item).strip()
@@ -77,13 +81,13 @@ def build_pdm_where_clauses(condition: str | List[str]) -> List[str]:
         payload = text[1:].strip() if negated else text
         if not payload:
             continue
-        safe_text = payload.replace("'", "''")
         if negated:
-            clauses.append(f"a.CHINANAME NOT LIKE '%{safe_text}%'")
+            clauses.append("a.CHINANAME NOT LIKE %s")
         else:
-            clauses.append(f"a.CHINANAME LIKE '%{safe_text}%'")
+            clauses.append("a.CHINANAME LIKE %s")
+        params.append(f"%{payload}%")
 
-    return clauses
+    return clauses, params
 
 
 def deduplicate_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -123,22 +127,27 @@ def _pdm_client_config() -> dict:
 def build_pdm_and_where_clause(
     alternatives_per_keyword: List[List[str]],
     model: Optional[str] = None,
-) -> str:
+) -> Tuple[str, List[str]]:
     """Merged WHERE fragment: OR positive-only candidates, AND if any candidate is negated.
 
     Args:
         alternatives_per_keyword: 关键词列表，每组内的关键词用 OR 连接
         model: 机型型号，用于精确匹配 MODEL 字段
+
+    Returns:
+        (where_sql, params): WHERE fragment with `%s` placeholders and matching params.
     """
     # 先添加默认排除条件
-    outer_parts: List[str] = build_pdm_exclude_clauses()
+    outer_parts, params = build_pdm_exclude_clauses()
 
     # 添加 MODEL 过滤条件
-    model_clauses = build_model_filter_clauses(model)
+    model_clauses, model_params = build_model_filter_clauses(model)
     outer_parts.extend(model_clauses)
+    params.extend(model_params)
 
     for alts in alternatives_per_keyword:
         inner: List[str] = []
+        inner_params: List[str] = []
         has_negated = False
         seen_inner: set = set()
         for candidate in alts:
@@ -150,28 +159,27 @@ def build_pdm_and_where_clause(
             payload = text[1:].strip() if negated else text
             if not payload:
                 continue
-            safe_text = payload.replace("'", "''")
-            clause = (
-                f"a.CHINANAME NOT LIKE '%{safe_text}%'"
-                if negated
-                else f"a.CHINANAME LIKE '%{safe_text}%'"
-            )
+            clause = "a.CHINANAME NOT LIKE %s" if negated else "a.CHINANAME LIKE %s"
             if clause in seen_inner:
                 continue
             seen_inner.add(clause)
             inner.append(clause)
+            inner_params.append(f"%{payload}%")
         if not inner:
             continue
         if len(inner) == 1:
             outer_parts.append(inner[0])
+            params.append(inner_params[0])
         elif has_negated:
             outer_parts.append("(" + " AND ".join(inner) + ")")
+            params.extend(inner_params)
         else:
             outer_parts.append("(" + " AND ".join(inner) + ")")
-    return "\n            AND ".join(outer_parts)
+            params.extend(inner_params)
+    return "\n            AND ".join(outer_parts), params
 
 
-def build_pdm_or_where_clause(alternatives_per_keyword: List[List[str]]) -> str:
+def build_pdm_or_where_clause(alternatives_per_keyword: List[List[str]]) -> Tuple[str, List[str]]:
     """Backward-compatible wrapper for merged PDM WHERE construction."""
     return build_pdm_and_where_clause(alternatives_per_keyword)
 
@@ -203,7 +211,7 @@ def query_pdm_bom_merged(
     if client is None:
         client = get_sql_client(_pdm_client_config())
 
-    def _run(where_clause: str, tag: str) -> List[Dict[str, Any]]:
+    def _run(where_clause: str, params: List[str], tag: str) -> List[Dict[str, Any]]:
         query_sql = f"""
             SELECT DISTINCT
                 a.PARTID AS PARTID,
@@ -215,23 +223,27 @@ def query_pdm_bom_merged(
             AND {where_clause}
             ORDER BY a.PARTID
         """
-        rows = client.query(query_sql)
+        rows = client.query(query_sql, params)
         logger.debug("PDM BOM_027 查询 (%s) 命中 %d 条", tag, len(rows))
         return rows
 
     # 优先尝试带 MODEL（如有）的查询
-    where_with_model = build_pdm_and_where_clause(alternatives_per_keyword, model=model)
+    where_with_model, params_with_model = build_pdm_and_where_clause(
+        alternatives_per_keyword, model=model
+    )
     if not where_with_model:
         return []
 
-    rows = _run(where_with_model, "带 MODEL" if model else "无 MODEL")
+    rows = _run(where_with_model, params_with_model, "带 MODEL" if model else "无 MODEL")
 
     # 命中 0 行且存在 MODEL 时，静默回退到无 MODEL 查询（业务侧故意行为）
     if not rows and model:
-        where_no_model = build_pdm_and_where_clause(alternatives_per_keyword, model=None)
+        where_no_model, params_no_model = build_pdm_and_where_clause(
+            alternatives_per_keyword, model=None
+        )
         if where_no_model:
             logger.debug("PDM BOM_027 MODEL 命中 0 行，回退到无 MODEL 查询")
-            rows = _run(where_no_model, "MODEL 回退")
+            rows = _run(where_no_model, params_no_model, "MODEL 回退")
 
     return deduplicate_rows(rows)
 
@@ -276,11 +288,12 @@ def query_pdm_bom(
     Returns:
         Deduplicated list of rows with PARTID and CHINANAME
     """
-    where_clauses = build_pdm_where_clauses(condition)
+    where_clauses, params = build_pdm_where_clauses(condition)
 
     # 添加 MODEL 过滤条件
-    model_clauses = build_model_filter_clauses(model)
+    model_clauses, model_params = build_model_filter_clauses(model)
     where_clauses.extend(model_clauses)
+    params.extend(model_params)
 
     if not where_clauses:
         return []
@@ -302,5 +315,5 @@ def query_pdm_bom(
         ORDER BY a.PARTID
     """
 
-    rows = client.query(query_sql)
+    rows = client.query(query_sql, params)
     return deduplicate_rows(rows)

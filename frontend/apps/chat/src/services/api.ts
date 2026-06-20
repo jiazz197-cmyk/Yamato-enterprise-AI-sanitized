@@ -2,7 +2,7 @@ import { config } from '../config'
 import type { ApiError } from '../types/chat'
 import { clearAuthTokenFromStorage, getAuthTokenFromStorage } from './token_storage'
 
-const DEBUG_API_DIAGNOSTICS = true
+const DEBUG_API_DIAGNOSTICS = import.meta.env.DEV
 const FETCH_PENDING_WARN_MS = 20000
 let authorizedFetchSeq = 0
 

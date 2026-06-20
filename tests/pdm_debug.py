@@ -15,6 +15,15 @@ from app.domain.quotation.keyword_normalizer import normalize_pdm_keywords
 from app.integrations.sqlserver.pdm_bom import build_pdm_and_where_clause
 
 
+def _inline_params(sql: str, params) -> str:
+    """Render a parameterized SQL fragment into a runnable display string (debug only)."""
+    rendered = sql
+    for value in params:
+        literal = "N'" + str(value).replace("'", "''") + "'"
+        rendered = rendered.replace("%s", literal, 1)
+    return rendered
+
+
 async def get_keywords_payload(task_id: int):
     """从数据库获取 keywords_payload"""
     async with AsyncSessionLocal() as db:
@@ -42,9 +51,13 @@ def generate_sql(item: dict) -> str:
         if mapped:
             alts_per_keyword.append(mapped)
 
-    base_conditions = build_pdm_and_where_clause(alts_per_keyword, model=None)
-    if not base_conditions:
+    base_conditions_sql, base_conditions_params = build_pdm_and_where_clause(
+        alts_per_keyword, model=None
+    )
+    if not base_conditions_sql:
         return None
+
+    base_conditions = _inline_params(base_conditions_sql, base_conditions_params)
 
     if model:
         safe_model = model.replace("'", "''")

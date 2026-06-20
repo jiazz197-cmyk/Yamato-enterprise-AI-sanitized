@@ -1,7 +1,7 @@
 """U8 BOM + Inventory recursive walk.
 
-`InvCode` / PartId style codes use `.replace(\"'\", \"''\")` before embedding in N'...' SQL
-literals. Parent codes are normalized from trusted API input, not ad-hoc SQL.
+`InvCode` / PartId style codes are passed as pymssql parameters (`%s` placeholders);
+parent codes are normalized from trusted API input, not ad-hoc SQL.
 """
 
 from __future__ import annotations
@@ -39,11 +39,12 @@ def _query_with_deadlock_retry(
     *,
     log_label: str,
     cancel_checker: Optional[Callable[[], bool]] = None,
+    params: Any = None,
 ) -> List[Dict[str, Any]]:
     attempt = 0
     while True:
         try:
-            return client.query(sql)
+            return client.query(sql, params)
         except Exception as exc:
             if not _is_sqlserver_deadlock_error(exc) or attempt >= len(_DEADLOCK_RETRY_DELAYS_SEC):
                 raise
@@ -86,9 +87,8 @@ def _query_recordoutlist_prices(
     if not missing_codes:
         return {}
 
-    safe_codes = ", ".join(
-        f"N'{code.replace(chr(39), chr(39) + chr(39))}'" for code in sorted(missing_codes)
-    )
+    codes = sorted(missing_codes)
+    placeholders = ", ".join(["%s"] * len(codes))
 
     # Try with ddate first (standard U8 date column), fallback to autoid only
     for order_by in ("ddate DESC, autoid DESC", "autoid DESC"):
@@ -103,7 +103,7 @@ def _query_recordoutlist_prices(
                         ORDER BY {order_by}
                     ) AS rn
                 FROM UFDATA_CHANGE_ME.dbo.recordoutlist
-                WHERE cinvcode IN ({safe_codes})
+                WHERE cinvcode IN ({placeholders})
                   AND iunitcost IS NOT NULL
                   AND iunitcost <> 0
             ) t
@@ -114,6 +114,7 @@ def _query_recordoutlist_prices(
                 client,
                 sql,
                 log_label=f"recordoutlist_prices:{order_by}",
+                params=codes,
             )
             result: Dict[str, float] = {}
             for row in rows:
@@ -221,16 +222,17 @@ def _fetch_root_inv_names(client: SqlServerClient, codes: List[str]) -> Dict[str
         return {}
 
     # 构建 IN 条件
-    code_list = ", ".join(f"N'{code.replace(chr(39), chr(39)+chr(39))}'" for code in codes)
+    placeholders = ", ".join(["%s"] * len(codes))
     sql = f"""
         SELECT cInvCode, cInvName
         FROM Inventory
-        WHERE cInvCode IN ({code_list})
+        WHERE cInvCode IN ({placeholders})
     """
     rows = _query_with_deadlock_retry(
         client,
         sql,
         log_label="root_inv_names",
+        params=codes,
     )
 
     result: Dict[str, str] = {}
@@ -263,9 +265,7 @@ def _fill_inventory_only_rows(
     if not no_bom_codes:
         return
 
-    safe_codes = ", ".join(
-        f"N'{code.replace(chr(39), chr(39) + chr(39))}'" for code in no_bom_codes
-    )
+    placeholders = ", ".join(["%s"] * len(no_bom_codes))
     sql = f"""
         SELECT
             cInvCode,
@@ -278,13 +278,14 @@ def _fill_inventory_only_rows(
             bForeExpland,
             iSupplyType
         FROM Inventory
-        WHERE cInvCode IN ({safe_codes})
+        WHERE cInvCode IN ({placeholders})
     """
     try:
         inv_rows = _query_with_deadlock_retry(
             client,
             sql,
             log_label="inventory_only_rows",
+            params=no_bom_codes,
         )
     except Exception as exc:
         logger.warning("Inventory 采购件回退查询失败: %s", exc)
@@ -383,14 +384,13 @@ def _query_u8_bom_inventory(
             return default
 
     def _probe_partmap_hits(code: str) -> Dict[str, Optional[int]]:
-        safe_code = code.replace("'", "''")
-        probe_sql = f"""
+        probe_sql = """
             SELECT
                 SUM(CASE WHEN COALESCE(
                     NULLIF(LTRIM(RTRIM(vp.InvCode)), ''),
                     NULLIF(LTRIM(RTRIM(vp.cInvCode)), '')
-                ) = N'{safe_code}' THEN 1 ELSE 0 END) AS InvCodeHits,
-                SUM(CASE WHEN CAST(vp.PartId AS NVARCHAR(100)) = N'{safe_code}' THEN 1 ELSE 0 END) AS PartIdHits
+                ) = %s THEN 1 ELSE 0 END) AS InvCodeHits,
+                SUM(CASE WHEN CAST(vp.PartId AS NVARCHAR(100)) = %s THEN 1 ELSE 0 END) AS PartIdHits
             FROM v_bas_part vp
         """
         try:
@@ -399,6 +399,7 @@ def _query_u8_bom_inventory(
                 probe_sql,
                 log_label=f"partmap_probe:{code}",
                 cancel_checker=cancel_checker,
+                params=(code, code),
             )
             first = rows[0] if rows else {}
             inv_hits_raw = first.get("InvCodeHits") if isinstance(first, dict) else None
@@ -416,8 +417,7 @@ def _query_u8_bom_inventory(
             return children_cache[parent_inv_code]
 
         raise_if_cancelled(cancel_checker)
-        safe_code = parent_inv_code.replace("'", "''")
-        sql = f"""
+        sql = """
             ;WITH PartMap AS (
                 SELECT
                     vp.PartId,
@@ -457,9 +457,9 @@ def _query_u8_bom_inventory(
                 JOIN bom_opcomponent oc ON oc.BomId = bp.BomId
                 JOIN bom_bom b ON b.BomId = bp.BomId AND b.Status = 3
                 JOIN PartMap child ON child.PartId = oc.ComponentId
-                LEFT JOIN Inventory ic ON ic.cInvCode = child.PartInvCode
-                WHERE parent.PartInvCode = N'{safe_code}'
-            )
+                    LEFT JOIN Inventory ic ON ic.cInvCode = child.PartInvCode
+                    WHERE parent.PartInvCode = %s
+                )
             SELECT
                 ParentInvCode, ChildInvCode, BomId, ModifyDate, ModifyTime,
                 SortSeq, BaseQtyN, BaseQtyD, CompScrap, QtyPer,
@@ -473,6 +473,7 @@ def _query_u8_bom_inventory(
             sql,
             log_label=f"fetch_children:{parent_inv_code}",
             cancel_checker=cancel_checker,
+            params=(parent_inv_code,),
         )
         if not rows and parent_inv_code in root_codes_set:
             probe = _probe_partmap_hits(parent_inv_code)

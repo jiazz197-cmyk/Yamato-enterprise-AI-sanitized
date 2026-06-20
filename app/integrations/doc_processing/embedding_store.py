@@ -1,6 +1,6 @@
 import logging
 import math
-from pathlib import Path
+import time
 from typing import Dict, List, Optional
 import threading
 
@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 _EMBEDDING_INSTANCES: Dict[str, "BGEM3EmbeddingWrapper"] = {}
 _EMBEDDING_LOCK = threading.Lock()
+
+_EMBEDDING_MAX_RETRIES = 3
+_EMBEDDING_RETRY_DELAY_SEC = 3
 
 
 class BGEM3EmbeddingWrapper(BaseEmbedding):
@@ -71,6 +74,26 @@ class BGEM3EmbeddingWrapper(BaseEmbedding):
 
         return embedding
 
+    def _parse_embeddings_batch(self, data: dict) -> List[List[float]]:
+        """解析批量嵌入响应，按 index 排序返回，NaN/Inf 项回退零向量。"""
+        items = []
+        if isinstance(data, dict) and isinstance(data.get("data"), list):
+            items = list(data["data"])
+        else:
+            raise ValueError(f"远程接口批量返回格式不符合预期: {data}")
+
+        ordered = sorted(items, key=lambda it: it.get("index", 0))
+        embeddings: List[List[float]] = []
+        for item in ordered:
+            vec = item.get("embedding") or item.get("vector")
+            if not isinstance(vec, list):
+                raise ValueError(f"远程接口批量返回项格式不符合预期: {item}")
+            if any(math.isnan(x) or math.isinf(x) for x in vec):
+                logger.warning("批量嵌入检测到 NaN/Inf，该项回退零向量")
+                vec = [0.0] * len(vec)
+            embeddings.append(vec)
+        return embeddings
+
     async def _fetch_embedding(self, text: str) -> List[float]:
         if not text or not text.strip():
             return [0.0] * 1024
@@ -79,10 +102,23 @@ class BGEM3EmbeddingWrapper(BaseEmbedding):
             "model": self.model_name,
             "input": [text],
         }
-        client = await get_http_client()
-        response = await client.post(self.api_url, json=payload, timeout=30)
-        response.raise_for_status()
-        return self._parse_embedding(response.json())
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, _EMBEDDING_MAX_RETRIES + 1):
+            try:
+                client = await get_http_client()
+                response = await client.post(self.api_url, json=payload, timeout=30)
+                response.raise_for_status()
+                return self._parse_embedding(response.json())
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= _EMBEDDING_MAX_RETRIES:
+                    break
+                logger.warning(
+                    "BGE-M3 异步嵌入第 %s/%s 次失败，%ss 后重试: %s",
+                    attempt, _EMBEDDING_MAX_RETRIES, _EMBEDDING_RETRY_DELAY_SEC, exc,
+                )
+                time.sleep(_EMBEDDING_RETRY_DELAY_SEC)
+        raise EmbeddingError(f"异步调用远程 BGE-M3 接口失败（重试 {_EMBEDDING_MAX_RETRIES} 次）: {last_exc}") from last_exc
 
     def _fetch_embedding_sync(self, text: str) -> List[float]:
         if not text or not text.strip():
@@ -92,10 +128,64 @@ class BGEM3EmbeddingWrapper(BaseEmbedding):
             "model": self.model_name,
             "input": [text],
         }
-        with httpx.Client(timeout=30) as client:
-            response = client.post(self.api_url, json=payload)
-            response.raise_for_status()
-            return self._parse_embedding(response.json())
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, _EMBEDDING_MAX_RETRIES + 1):
+            try:
+                with httpx.Client(timeout=30) as client:
+                    response = client.post(self.api_url, json=payload)
+                    response.raise_for_status()
+                    return self._parse_embedding(response.json())
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= _EMBEDDING_MAX_RETRIES:
+                    break
+                logger.warning(
+                    "BGE-M3 同步嵌入第 %s/%s 次失败，%ss 后重试: %s",
+                    attempt, _EMBEDDING_MAX_RETRIES, _EMBEDDING_RETRY_DELAY_SEC, exc,
+                )
+                time.sleep(_EMBEDDING_RETRY_DELAY_SEC)
+        raise EmbeddingError(f"同步调用远程 BGE-M3 接口失败（重试 {_EMBEDDING_MAX_RETRIES} 次）: {last_exc}") from last_exc
+
+    def _fetch_embeddings_batch_sync(self, texts: List[str]) -> List[List[float]]:
+        """单次批量请求；空文本回退零向量，保持输入顺序。"""
+        results: List[Optional[List[float]]] = []
+        non_empty_idx: List[int] = []
+        non_empty_texts: List[str] = []
+        for i, t in enumerate(texts):
+            if not t or not t.strip():
+                results.append([0.0] * 1024)
+            else:
+                results.append(None)
+                non_empty_idx.append(i)
+                non_empty_texts.append(t)
+
+        if non_empty_texts:
+            payload = {"model": self.model_name, "input": non_empty_texts}
+            last_exc: Optional[Exception] = None
+            embeddings: Optional[List[List[float]]] = None
+            for attempt in range(1, _EMBEDDING_MAX_RETRIES + 1):
+                try:
+                    with httpx.Client(timeout=30) as client:
+                        response = client.post(self.api_url, json=payload)
+                        response.raise_for_status()
+                        embeddings = self._parse_embeddings_batch(response.json())
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt >= _EMBEDDING_MAX_RETRIES:
+                        break
+                    logger.warning(
+                        "BGE-M3 批量嵌入第 %s/%s 次失败，%ss 后重试: %s",
+                        attempt, _EMBEDDING_MAX_RETRIES, _EMBEDDING_RETRY_DELAY_SEC, exc,
+                    )
+                    time.sleep(_EMBEDDING_RETRY_DELAY_SEC)
+            if embeddings is None:
+                raise EmbeddingError(
+                    f"批量调用远程 BGE-M3 接口失败（重试 {_EMBEDDING_MAX_RETRIES} 次）: {last_exc}"
+                ) from last_exc
+            for slot, vec in zip(non_empty_idx, embeddings):
+                results[slot] = vec
+        return [r for r in results if r is not None]
 
     def _get_text_embedding(self, text: str) -> List[float]:
         try:
@@ -118,8 +208,14 @@ class BGEM3EmbeddingWrapper(BaseEmbedding):
         return self._get_text_embedding(text)
 
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        """批量向量化文本（逐条调用远程接口）"""
-        return [self._get_text_embedding(text) for text in texts]
+        """批量向量化文本（单次批量请求，批量失败时回退逐条）"""
+        if not texts:
+            return []
+        try:
+            return self._fetch_embeddings_batch_sync(texts)
+        except Exception as batch_exc:
+            logger.warning("批量嵌入失败，回退逐条请求: %s", batch_exc)
+            return [self._get_text_embedding(text) for text in texts]
 
     @classmethod
     def cleanup_all_instances(cls):
@@ -157,9 +253,6 @@ class VectorStoreManager:
     def __init__(self, db_config: Dict, table_prefix: str = "doc_collection"):
         self.db_config = db_config
         self.table_prefix = table_prefix
-        # 注意：PGVector 数据存储在 PostgreSQL 中，不需要本地持久化
-        # 如果需要使用本地存储（例如 FAISS），可以取消下面的注释：
-        # self.persist_base_dir = Path("./index_storage")
 
     def _build_vector_store(self, instance_id: int) -> PGVectorStore:
         collection_name = f"{self.table_prefix}_{instance_id}"
@@ -176,27 +269,18 @@ class VectorStoreManager:
         except Exception as exc:
             raise VectorStoreError(f"创建 PGVectorStore 失败: {exc}") from exc
 
-    # 注意：PGVector 不需要本地持久化目录，数据存储在 PostgreSQL 中
-    # 如果使用本地存储（例如 FAISS），可以取消下面的注释：
-    # def get_persist_dir(self, instance_id: int) -> Path:
-    #     persist_dir = self.persist_base_dir / f"index_storage_{self.table_prefix}_{instance_id}"
-    #     persist_dir.mkdir(parents=True, exist_ok=True)
-    #     return persist_dir
-
     def upsert_chunks(self, chunks: List[TextNode], instance_id: int, embedding_model: BGEM3EmbeddingWrapper):
         """
         将文档块写入向量存储
-        
+
         当前实现：使用 PGVector（PostgreSQL），数据直接存储在数据库中
         """
         try:
             vector_store = self._build_vector_store(instance_id)
-            
-            # [note] 对于 PGVector：不需要本地持久化存储，直接创建新的 StorageContext
-            # 数据已经存储在 PostgreSQL 中，不需要 docstore.json
+
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             Settings.embed_model = embedding_model
-            
+
             index = VectorStoreIndex.from_vector_store(
                 vector_store,
                 storage_context=storage_context,
@@ -204,34 +288,8 @@ class VectorStoreManager:
                 show_progress=False,
             )
             index.insert_nodes(chunks)
-            
+
             logger.info("成功写入 PGVector: %s 条 (instance_id=%s)", len(chunks), instance_id)
-            
+
         except Exception as exc:
             raise VectorStoreError(f"写入 PGVector 失败: {exc}") from exc
-        
-        # ==================== 原本地存储实现（已废弃，仅供参考）====================
-        # 如果需要使用本地持久化存储（例如 FAISS），可以参考以下代码：
-        # 
-        # try:
-        #     vector_store = self._build_vector_store(instance_id)
-        #     persist_dir = self.get_persist_dir(instance_id)
-        #
-        #     storage_context = StorageContext.from_defaults(
-        #         vector_store=vector_store, 
-        #         persist_dir=persist_dir
-        #     )
-        #     Settings.embed_model = embedding_model
-        #     index = VectorStoreIndex.from_vector_store(
-        #         vector_store,
-        #         storage_context=storage_context,
-        #         embed_model=embedding_model,
-        #         show_progress=False,
-        #     )
-        #     index.insert_nodes(chunks)
-        #     index.storage_context.persist(persist_dir=persist_dir)
-        #     logger.info("成功写入向量存储: %s 条", len(chunks))
-        # except Exception as exc:
-        #     raise VectorStoreError(f"写入向量存储失败: {exc}") from exc
-        # ====================================================================
-

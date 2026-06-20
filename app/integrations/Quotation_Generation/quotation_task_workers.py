@@ -101,15 +101,12 @@ def _upload_u8_result_by_type_xlsx_to_minio(
     download_name = f"{safe_stem}_u8_by_type.xlsx"
 
     try:
-        result = upload_stream_to_minio(
+        upload_stream_to_minio(
             file_stream=BytesIO(xlsx_export.content),
             file_name=object_path,
             file_size=len(xlsx_export.content),
             content_type=_XLSX_CONTENT_TYPE,
         )
-        if isinstance(result, str) and result.startswith("Error"):
-            logger.warning("Phase2 u8_by_type xlsx MinIO upload failed task_id=%s: %s", task_id, result)
-            return None, None
     except Exception as exc:
         logger.warning(
             "Phase2 u8_by_type xlsx upload error task_id=%s: %s",

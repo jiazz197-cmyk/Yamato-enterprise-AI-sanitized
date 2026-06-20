@@ -7,8 +7,6 @@ import ipaddress
 import json
 import time
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
@@ -28,6 +26,7 @@ from app.adapters.quotation.retention import QuotationTaskRetentionAdapter
 from app.adapters.tasking import TaskManagerStateAdapter, ThreadPoolTaskExecutionAdapter
 from app.core.config import settings
 from app.core.dependencies import get_async_db
+from app.core.http_headers import build_content_disposition
 from app.core.logging import get_logger
 from app.core.security import get_current_user, require_permission
 from app.core.async_storage import (
@@ -43,6 +42,10 @@ from app.usecases.quotation.approve_task import (
 )
 from app.usecases.quotation.cancel_task import CancelQuotationTaskCommand, CancelQuotationTaskUseCase
 from app.usecases.quotation.create_task import CreateQuotationTaskCommand, CreateQuotationTaskUseCase
+from app.usecases.quotation.create_direct_u8_task import (
+    CreateDirectU8TaskCommand,
+    CreateDirectU8TaskUseCase,
+)
 from app.usecases.quotation.delete_task import DeleteQuotationTaskCommand, DeleteQuotationTaskUseCase
 
 router = APIRouter()
@@ -204,13 +207,6 @@ def _extract_request_client_ip(request: Request) -> str:
     return first_hop
 
 
-def _build_content_disposition(filename: str) -> str:
-    cleaned = str(filename or "download.bin").replace("\r", "").replace("\n", "").replace('"', "")
-    ascii_fallback = cleaned.encode("ascii", errors="ignore").decode("ascii").strip() or "download.bin"
-    utf8_encoded = quote(cleaned)
-    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8_encoded}"
-
-
 
 
 
@@ -331,116 +327,30 @@ async def create_direct_u8_task(
     db: AsyncSession = Depends(get_async_db),
     current_user: CurrentUserPort = Depends(require_permission("view_quotation")),
 ) -> QuotationTaskSubmitResponse:
-    if body.quantities is not None and len(body.quantities) != len(body.partids):
-        raise HTTPException(
-            status_code=400,
-            detail="quantities 长度必须与 partids 一致",
+    usecase = CreateDirectU8TaskUseCase(
+        task_state=TaskManagerStateAdapter(),
+        task_repo=SqlAlchemyQuotationTaskRepoAdapter(db),
+        file_storage=MinioFileStorageAdapter(),
+        task_execution=ThreadPoolTaskExecutionAdapter(),
+        task_dispatch=QuotationDispatchAdapter(),
+    )
+    result = await usecase.execute(
+        CreateDirectU8TaskCommand(
+            partids=body.partids,
+            quantities=body.quantities,
+            task_name=body.task_name,
+            code_type=body.code_type,
+            owner_id=str(current_user.id),
+            owner_username=current_user.username,
+            owner_ip=_extract_request_client_ip(request),
+            role_snapshot=current_user.role,
         )
-    if body.code_type is not None and body.code_type != "project":
-        raise HTTPException(
-            status_code=400,
-            detail="code_type 仅支持 'project'，省略表示 U8 编码",
-        )
-
-    seen: set[str] = set()
-    partids: list[str] = []
-    manual_partid_quantities: dict[str, int] = {}
-    for idx, raw in enumerate(body.partids):
-        value = str(raw).strip()
-        if not value or value in seen:
-            continue
-        if body.quantities is not None:
-            qty = body.quantities[idx]
-            if qty < 1:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"quantities[{idx}] 必须 >= 1",
-                )
-        else:
-            qty = 1
-        seen.add(value)
-        partids.append(value)
-        manual_partid_quantities[value] = qty
-    if not partids:
-        raise HTTPException(status_code=400, detail="至少需要提供一个 PARTID")
-    if len(partids) > 500:
-        raise HTTPException(status_code=400, detail="最多支持 500 个 PARTID")
-
-    unique_name = f"direct_u8_{uuid4().hex}.pdf"
-    minio_path = f"quotation/uploads/{unique_name}"
-    file_storage = MinioFileStorageAdapter()
-    await file_storage.upload_pdf(
-        object_path=minio_path,
-        file_bytes=b"\x00",
-        content_type="application/pdf",
     )
-
-    task_repo = SqlAlchemyQuotationTaskRepoAdapter(db)
-    file_id = await task_repo.create_file_record(
-        file_name=unique_name,
-        unique_name=unique_name,
-        minio_path=minio_path,
-        content_type="application/pdf",
-        file_size=1,
-        uploader=current_user.username,
-    )
-
-    task_state = TaskManagerStateAdapter()
-    task_name = (body.task_name or "").strip() or "直接U8查询"
-    task_id = await task_state.create_task(
-        task_type="quotation_generation",
-        metadata={
-            "owner_username": current_user.username,
-            "owner_ip": _extract_request_client_ip(request),
-            "file_id": file_id,
-            "file_name": unique_name,
-            "task_name": task_name,
-        },
-    )
-
-    task = await task_repo.create_task(
-        task_id=task_id,
-        owner_id=str(current_user.id),
-        owner_username=current_user.username,
-        owner_ip=_extract_request_client_ip(request),
-        role_snapshot=current_user.role,
-        uploaded_file_id=file_id,
-        uploaded_file_name=unique_name,
-        display_name=task_name,
-        uploaded_file_minio_path=minio_path,
-        uploaded_file_content_type="application/pdf",
-        uploaded_file_size=1,
-    )
-
-    task_execution = ThreadPoolTaskExecutionAdapter()
-    task_execution.set_task_owner(task_id, str(current_user.id))
-
-    manual_partid_types: dict[str, str] = {p: p for p in partids}
-
-    await task_repo.patch_task(
-        task_id,
-        {
-            "status": "running",
-            "progress": 55,
-            "message": "开始 U8 BOM Inventory 查询",
-            "result_payload": {
-                "approved_partids": partids,
-                "manual_partid_types": manual_partid_types,
-                "manual_partid_quantities": manual_partid_quantities,
-                "code_type": body.code_type,
-            },
-            "error": None,
-        },
-    )
-
-    task_dispatch = QuotationDispatchAdapter()
-    task_dispatch.dispatch_phase2(task_id, str(current_user.id))
-
     return QuotationTaskSubmitResponse(
-        task_id=task_id,
-        status="running",
-        message="直接 U8 查询已创建",
-        queue_position=0,
+        task_id=result.task_id,
+        status=result.status,
+        message=result.message,
+        queue_position=result.queue_position,
     )
 
 
@@ -632,7 +542,7 @@ async def get_quotation_task_file(
     return StreamingResponse(
         stream_file(),
         media_type=task.uploaded_file_content_type,
-        headers={"Content-Disposition": _build_content_disposition(task.uploaded_file_name)},
+        headers={"Content-Disposition": build_content_disposition(task.uploaded_file_name)},
     )
 
 
@@ -678,5 +588,5 @@ async def get_quotation_task_u8_by_type_workbook(
     return StreamingResponse(
         stream_xlsx(),
         media_type=_XLSX_MEDIA_TYPE,
-        headers={"Content-Disposition": _build_content_disposition(safe_name)},
+        headers={"Content-Disposition": build_content_disposition(safe_name)},
     )

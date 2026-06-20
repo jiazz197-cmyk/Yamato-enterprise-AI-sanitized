@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import uuid
-from typing import Any, Dict
 
 from app.core.config import settings
 from app.domain.quotation import (
@@ -23,13 +22,7 @@ from app.ports.domains.quotation import (
 from app.domain.exceptions import QueryCancelledError
 from app.ports.domains.sqlserver_queries import PdmMatchQueryPort
 from app.ports.dto.sqlserver_queries import PdmMatchCommand
-
-
-def _response_to_dict(response: Any) -> Dict[str, Any]:
-    dumper = getattr(response, "model_dump", None)
-    if callable(dumper):
-        return dumper()
-    return response.dict()  # type: ignore[attr-defined]
+from app.usecases.quotation._utils import response_to_dict
 
 
 @dataclass
@@ -121,7 +114,7 @@ class ExecuteQuotationPhase1UseCase:
             raise QuotationPipelineCancelledError("PDM 查询已取消") from exc
 
         self._check_cancel(cancel)
-        pdm_result = _response_to_dict(response)
+        pdm_result = response_to_dict(response)
         pdm_partids = collect_pdm_partids(pdm_result)
 
         self._emit_progress(cb, 50, "PDM 查询完成，等待用户审核")

@@ -24,6 +24,10 @@ DEFAULT_CHUNK_SIZE = 5 * 1024 * 1024
 STREAM_CHUNK_SIZE = 1 * 1024 * 1024
 
 
+class MinioUploadError(Exception):
+    """Raised when an upload to MinIO fails (service unavailable or S3/IO error)."""
+
+
 class MinioClientPool:
     """单例：每线程一个 Minio；bucket 存在性按名缓存。"""
     _instance = None
@@ -147,21 +151,23 @@ def get_minio_client_for_presign() -> Minio:
 
 
 def upload_to_minio(file_path: str, file_name: str) -> str:
-    """fput 上传本地文件；失败返回 Error 前缀字符串。"""
+    """fput 上传本地文件；失败抛 :class:`MinioUploadError`。"""
     try:
         if not _minio_pool.ensure_bucket():
-            return "Error: MinIO service unavailable"
-        
+            raise MinioUploadError("MinIO service unavailable")
+
         client = get_minio_client()
         client.fput_object(MINIO_BUCKET_NAME, file_name, file_path)
         logger.debug(f"上传文件成功: {file_name}")
         return file_name
+    except MinioUploadError:
+        raise
     except S3Error as err:
         logger.error(f"上传文件到 MinIO 失败: {err}")
-        return f"Error uploading file to MinIO: {err}"
+        raise MinioUploadError(f"上传文件到 MinIO 失败: {err}") from err
     except Exception as e:
         logger.error(f"上传文件异常: {e}")
-        return f"Error: {e}"
+        raise MinioUploadError(f"上传文件异常: {e}") from e
 
 
 def upload_buffer_to_minio(
@@ -170,12 +176,12 @@ def upload_buffer_to_minio(
     content_type: str = "application/octet-stream",
     bucket: Optional[str] = None,
 ) -> str:
-    """能 seek 则带 length 直传，否则分块；不要用 read 全长估大小。"""
+    """能 seek 则带 length 直传，否则分块；不要用 read 全长估大小。失败抛 :class:`MinioUploadError`。"""
     target_bucket = bucket or MINIO_BUCKET_NAME
     try:
         if not _minio_pool.ensure_bucket(target_bucket):
-            return "Error: MinIO service unavailable"
-        
+            raise MinioUploadError("MinIO service unavailable")
+
         size = -1
         try:
             current_pos = buffer.tell()
@@ -184,9 +190,9 @@ def upload_buffer_to_minio(
             buffer.seek(current_pos)
         except (OSError, AttributeError):
             pass
-        
+
         client = get_minio_client()
-        
+
         if size > 0:
             client.put_object(
                 bucket_name=target_bucket,
@@ -204,16 +210,18 @@ def upload_buffer_to_minio(
                 content_type=content_type,
                 part_size=DEFAULT_CHUNK_SIZE,
             )
-        
+
         logger.debug(f"上传缓冲区成功: {file_name} (size={size})")
         return file_name
-        
+
+    except MinioUploadError:
+        raise
     except S3Error as err:
         logger.error(f"上传缓冲区到 MinIO 失败: {err}")
-        return f"Error uploading buffer to MinIO: {err}"
+        raise MinioUploadError(f"上传缓冲区到 MinIO 失败: {err}") from err
     except Exception as e:
         logger.error(f"上传缓冲区异常: {e}")
-        return f"Error: {e}"
+        raise MinioUploadError(f"上传缓冲区异常: {e}") from e
 
 
 def upload_stream_to_minio(
@@ -223,14 +231,14 @@ def upload_stream_to_minio(
     content_type: str = "application/octet-stream",
     bucket: Optional[str] = None,
 ) -> str:
-    """file_size>0 直传；否则分块。"""
+    """file_size>0 直传；否则分块。失败抛 :class:`MinioUploadError`。"""
     target_bucket = bucket or MINIO_BUCKET_NAME
     try:
         if not _minio_pool.ensure_bucket(target_bucket):
-            return "Error: MinIO service unavailable"
-        
+            raise MinioUploadError("MinIO service unavailable")
+
         client = get_minio_client()
-        
+
         if file_size > 0:
             client.put_object(
                 bucket_name=target_bucket,
@@ -248,16 +256,18 @@ def upload_stream_to_minio(
                 content_type=content_type,
                 part_size=DEFAULT_CHUNK_SIZE,
             )
-        
+
         logger.debug(f"流式上传成功: {file_name} (size={file_size})")
         return file_name
-        
+
+    except MinioUploadError:
+        raise
     except S3Error as err:
         logger.error(f"流式上传到 MinIO 失败: {err}")
-        return f"Error uploading stream to MinIO: {err}"
+        raise MinioUploadError(f"流式上传到 MinIO 失败: {err}") from err
     except Exception as e:
         logger.error(f"流式上传异常: {e}")
-        return f"Error: {e}"
+        raise MinioUploadError(f"流式上传异常: {e}") from e
 
 
 def delete_from_minio(file_name: str) -> bool:

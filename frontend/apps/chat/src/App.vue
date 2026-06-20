@@ -62,6 +62,7 @@ import { Sidebar, ConfirmDialog } from '@yamato/components'
 import { config } from './config'
 import { useIdleTimer } from './composables/useIdleTimer'
 import { clearAuthTokenFromStorage } from './services/token_storage'
+import { readStored } from './services/storage'
 
 const sidebarUserId = ref('')
 const sidebarUserName = ref('')
@@ -69,33 +70,27 @@ const userRole = ref('')
 const userPermissions = ref<string[]>([])
 
 const readSidebarState = () => {
-  try {
-    const raw = localStorage.getItem(config.settingsStorageKey)
-    if (!raw) {
-      sidebarUserId.value = ''
-      sidebarUserName.value = ''
-      userRole.value = ''
-      userPermissions.value = []
-      return
-    }
+  const parsed = readStored<{
+    userId?: unknown
+    user?: unknown
+    userName?: unknown
+    username?: unknown
+    role?: unknown
+    permissions?: unknown
+  } | null>(config.settingsStorageKey, null)
 
-    const parsed = JSON.parse(raw) as {
-      userId?: unknown
-      user?: unknown
-      userName?: unknown
-      username?: unknown
-      role?: unknown
-      permissions?: unknown
-    }
-    sidebarUserId.value = String(parsed.userId ?? '').trim()
-    sidebarUserName.value = String(parsed.userName ?? parsed.user ?? parsed.username ?? '').trim()
-    userRole.value = String(parsed.role ?? '').trim()
-    userPermissions.value = Array.isArray(parsed.permissions) ? parsed.permissions as string[] : []
-  } catch {
+  if (!parsed) {
     sidebarUserId.value = ''
     sidebarUserName.value = ''
     userRole.value = ''
+    userPermissions.value = []
+    return
   }
+
+  sidebarUserId.value = String(parsed.userId ?? '').trim()
+  sidebarUserName.value = String(parsed.userName ?? parsed.user ?? parsed.username ?? '').trim()
+  userRole.value = String(parsed.role ?? '').trim()
+  userPermissions.value = Array.isArray(parsed.permissions) ? parsed.permissions as string[] : []
 }
 
 const userName = computed(() => sidebarUserName.value || sidebarUserId.value || config.userName || '')

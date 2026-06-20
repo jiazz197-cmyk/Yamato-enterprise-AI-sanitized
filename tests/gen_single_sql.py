@@ -66,9 +66,10 @@ for product_type in product_types:
         continue
 
     # 4. 构建 WHERE 子句
-    where_clause = build_pdm_and_where_clause(alts_per_keyword, model=model)
+    where_clause, where_params = build_pdm_and_where_clause(alts_per_keyword, model=model)
     print(f"\n🔹 WHERE 子句:")
     print(f"   {where_clause}")
+    print(f"   params={where_params}")
 
     if not where_clause:
         print("❌ WHERE 子句为空")

@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from app.adapters.file_manager import SqlAlchemyFileManagerAdapter
 from app.core.exceptions import APIException, NotFoundError, ValidationError
+from app.core.http_headers import build_content_disposition
 from app.core.logging import get_logger
 from app.core.security import get_current_user
 from app.core.async_storage import STREAM_CHUNK_SIZE, async_download_object_stream
@@ -161,7 +162,7 @@ async def download_file(
         return StreamingResponse(
             file_stream_generator(),
             media_type=file_record.content_type,
-            headers={"Content-Disposition": f'attachment; filename=\"{file_record.file_name}\"'},
+            headers={"Content-Disposition": build_content_disposition(file_record.file_name)},
         )
     except NotFoundError:
         raise

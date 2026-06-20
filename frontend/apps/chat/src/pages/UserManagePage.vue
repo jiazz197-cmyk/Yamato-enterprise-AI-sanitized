@@ -112,6 +112,7 @@ import { ref, onMounted } from 'vue'
 import { ConfirmDialog, useToast } from '@yamato/components'
 import { listUsers, deleteUser, updateUserRole, updateUserPagePermissions } from '../services/auth'
 import type { UserResponse } from '../services/auth'
+import { readStored, patchStored } from '../services/storage'
 import { config } from '../config'
 
 const { showSuccess, showError } = useToast()
@@ -194,13 +195,9 @@ const togglePerm = async (user: UserResponse, perm: string) => {
     const idx = users.value.findIndex((u) => u.id === user.id)
     if (idx !== -1) users.value[idx] = updated
 
-    const raw = localStorage.getItem(config.settingsStorageKey)
-    if (raw) {
-      const parsed = JSON.parse(raw) as { userId?: unknown }
-      if (String(parsed.userId ?? '').trim() === user.id) {
-        const existing = JSON.parse(raw) as Record<string, unknown>
-        localStorage.setItem(config.settingsStorageKey, JSON.stringify({ ...existing, permissions: updated.permissions }))
-      }
+    const parsed = readStored<{ userId?: unknown }>(config.settingsStorageKey, {})
+    if (String(parsed.userId ?? '').trim() === user.id) {
+      patchStored(config.settingsStorageKey, { permissions: updated.permissions })
     }
 
     showSuccess(`已更新「${user.username}」的页面权限`)

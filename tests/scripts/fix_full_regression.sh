@@ -41,69 +41,9 @@ FIX_OCR_PDF_TASK_ID=""
 FIX_DOC_TASK_ID=""
 FIX_Q_TASK_ID=""
 
-section() {
-  echo
-  echo "============================================================"
-  echo "$1"
-  echo "============================================================"
-}
-
-pass() {
-  PASS_COUNT=$((PASS_COUNT + 1))
-  echo "[PASS] $1"
-}
-
-warn() {
-  WARN_COUNT=$((WARN_COUNT + 1))
-  echo "[WARN] $1"
-}
-
-fail() {
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-  echo "[FAIL] $1"
-}
-
-need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || {
-    fail "缺少命令: $1"
-    exit 1
-  }
-}
-
-http_code() {
-  local headers="$1"
-  grep -i '^HTTP/' "$headers" | tail -n 1 | awk '{print $2}'
-}
-
-json_print() {
-  jq . 2>/dev/null || cat
-}
-
-login_user() {
-  local username="$1"
-  local password="$2"
-
-  curl -sS -X POST "$BASE/auth/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"$username\",\"password\":\"$password\"}"
-}
-
-make_png() {
-  local out="$1"
-  python - "$out" <<'PY'
-from pathlib import Path
-import base64
-import sys
-
-out = Path(sys.argv[1])
-png_b64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
-    "/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-)
-out.write_bytes(base64.b64decode(png_b64))
-print(out)
-PY
-}
+# Shared low-level helpers (section/pass/warn/fail/skip/need_cmd/http_code/
+# json_print/redact_token_json/login_user/make_png) live in _lib.sh.
+source "$PROJECT_ROOT/tests/scripts/_lib.sh"
 
 init() {
   section "0. 初始化"

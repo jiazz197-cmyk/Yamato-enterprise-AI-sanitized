@@ -247,66 +247,6 @@ class SpecificationMapping:
             outputs[type_name] = f"{type_name}（{'/'.join(part_values)}）"
         return outputs
 
-    def generate_output_list(self) -> List[str]:
-        return list(self.generate_output_mapping().values())
-
-    def generate_output_tuple(self) -> Tuple[List[Any], ...]:
-        payload = self.generate_keywords_payload(max_retries=3)
-        result: List[List[Any]] = []
-        for item in payload.get("keywords", []):
-            type_name = item.get("type")
-            attrs = item.get("attr") or {}
-            values = list(attrs.values())[:3]
-            while len(values) < 3:
-                values.append(None)
-            result.append([type_name] + values)
-        return tuple(result)
-
-    def generate_full_output(self) -> str:
-        outputs = self.generate_output_mapping()
-        lines = [
-            "=" * 60,
-            "Product Specification Output",
-            "=" * 60,
-            "",
-        ]
-        lines.extend(outputs.values())
-        lines.extend(
-            [
-                "",
-                "-" * 60,
-                "Remarks:",
-                "-" * 60,
-                self.remarks or "(No remarks)",
-                "",
-                "=" * 60,
-            ]
-        )
-        return "\n".join(lines)
-
-    def get_spec_value(self, spec_key: str) -> Optional[Any]:
-        if spec_key not in self.spec:
-            return None
-        value = self.spec[spec_key]
-        if isinstance(value, dict):
-            return value.get("value")
-        return value
-
-    def get_spec_index_mapping(self) -> Dict[int, str]:
-        if not isinstance(self.spec, dict):
-            return {}
-        return {index: key for index, key in enumerate(self.spec.keys())}
-
-    def print_spec_index_mapping(self) -> None:
-        mapping = self.get_spec_index_mapping()
-        print("=" * 60)
-        print("Spec index mapping")
-        print("=" * 60)
-        for index, key in mapping.items():
-            print(f"[{index:2d}] {key}")
-        print("=" * 60)
-        print(f"Total: {len(mapping)}")
-
     def to_dict(self) -> Dict[str, Any]:
         return {
             "meta": self.meta,

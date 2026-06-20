@@ -15,6 +15,7 @@ from app.core.async_storage import (
     async_stat_object,
     async_upload_stream_to_minio,
 )
+from app.core.storage import MinioUploadError
 from app.domain.file_manager.naming import generate_unique_filename
 from app.models.orm.file_resource import FileResource
 from app.ports.contracts.identity import CurrentUserPort
@@ -59,9 +60,10 @@ class SqlAlchemyFileManagerAdapter(FileManagerPort):
 
         unique_name = generate_unique_filename(original_filename)
         minio_path = f"uploads/{unique_name}"
-        result = await async_upload_stream_to_minio(file_stream, minio_path, file_size, content_type)
-        if result.startswith("Error"):
-            raise RuntimeError(result)
+        try:
+            await async_upload_stream_to_minio(file_stream, minio_path, file_size, content_type)
+        except MinioUploadError as exc:
+            raise RuntimeError(str(exc)) from exc
 
         if file_size == -1:
             try:

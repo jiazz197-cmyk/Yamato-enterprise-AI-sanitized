@@ -120,9 +120,7 @@ def upload_file_to_minio(file_data, file_name: str) -> str:
     pool = MinioClientPool()
     pool.ensure_bucket(bucket)
 
-    result = upload_buffer_to_minio(file_stream, file_name, bucket=bucket)
-    if result.startswith("Error"):
-        raise Exception(result)
+    upload_buffer_to_minio(file_stream, file_name, bucket=bucket)
 
     if _is_anonymous_read(bucket):
         return _public_http_url(bucket, file_name)

@@ -5,8 +5,16 @@ from __future__ import annotations
 import csv
 import re
 from io import BytesIO, StringIO
-from typing import Any, Dict, Iterable, List, Mapping, MutableSet
+from typing import Any, Dict, List, Mapping, MutableSet
 
+from app.adapters.quotation._xlsx_utils import (
+    collect_fieldnames,
+    cum_qty_column_index,
+    detail_total_column_index,
+    excel_sheet_title,
+    normalize_row,
+    unit_price_column_index,
+)
 from app.ports.domains.u8_result_by_type_csv import (
     U8ResultByTypeCsvExport,
     U8ResultByTypeCsvPort,
@@ -22,95 +30,12 @@ _EXCLUDED_ROW_KEYS: frozenset[str] = frozenset({
     "领料部门",
 })
 _SAFE_KEY_RE = re.compile(r"[^\w\u4e00-\u9fff\-]+")
-_EXCEL_TITLE_INVALID = set(':*?/\\[]')
-
-_DETAIL_TOTAL_FIELD_CANDIDATES = (
-    "\u603b\u4ef7",
-    "\u91d1\u989d",
-    "amount",
-    "total_price",
-    "totalPrice",
-)
-
-_UNIT_PRICE_FIELD_CANDIDATES = (
-    "\u5355\u4ef7",
-    "iInvNcost",
-    "unit_price",
-    "price",
-)
-
-_CUM_QTY_FIELD_CANDIDATES = (
-    "\u7d2f\u8ba1\u7528\u91cf",
-    "CUM_QTY",
-    "cum_qty",
-    "quantity",
-)
 
 
 def _sanitize_table_key(type_label: str, *, index: int) -> str:
     raw = str(type_label or "").strip() or f"type_{index}"
     cleaned = _SAFE_KEY_RE.sub("_", raw).strip("_")
     return cleaned or f"type_{index}"
-
-
-def _excel_sheet_title(raw: str, used: MutableSet[str]) -> str:
-    chars: List[str] = []
-    for c in raw[:50]:
-        if c in _EXCEL_TITLE_INVALID:
-            chars.append("_")
-        elif ord(c) < 32:
-            chars.append("_")
-        else:
-            chars.append(c)
-    base = "".join(chars).strip("_") or "Sheet"
-    base = base[:31]
-    title = base
-    n = 1
-    while title in used:
-        suffix = f"_{n}"
-        title = (base[: 31 - len(suffix)] + suffix) if len(suffix) < 31 else f"S{n}"[:31]
-        n += 1
-    used.add(title)
-    return title
-
-
-def _normalize_row(row: Mapping[str, Any]) -> Dict[str, Any]:
-    return {k: v for k, v in row.items() if k not in _EXCLUDED_ROW_KEYS}
-
-
-def _collect_fieldnames(rows: Iterable[Mapping[str, Any]]) -> List[str]:
-    ordered: List[str] = []
-    seen: MutableSet[str] = set()
-    for row in rows:
-        if not isinstance(row, Mapping):
-            continue
-        normed = _normalize_row(row)
-        for key in normed:
-            if key not in seen:
-                seen.add(key)
-                ordered.append(key)
-    return ordered
-
-
-def _detail_total_column_index(fieldnames: List[str]) -> int | None:
-    for idx, fieldname in enumerate(fieldnames):
-        if fieldname in _DETAIL_TOTAL_FIELD_CANDIDATES:
-            return idx
-    return None
-
-
-def _unit_price_column_index(fieldnames: List[str]) -> int | None:
-    for idx, name in enumerate(fieldnames):
-        if name in _UNIT_PRICE_FIELD_CANDIDATES:
-            return idx
-    return None
-
-
-def _cum_qty_column_index(fieldnames: List[str]) -> int | None:
-    for idx, name in enumerate(fieldnames):
-        if name in _CUM_QTY_FIELD_CANDIDATES:
-            return idx
-    return None
 
 
 def _group_rows_by_sheet(u8_result_by_type: Mapping[str, Any]) -> Dict[str, List[Mapping[str, Any]]]:
@@ -160,7 +85,7 @@ def group_u8_bom_rows_by_table_key(
 def _rows_to_csv(rows: List[Mapping[str, Any]]) -> str:
     if not rows:
         return ""
-    fieldnames = _collect_fieldnames(rows)
+    fieldnames = collect_fieldnames(rows, _EXCLUDED_ROW_KEYS)
     if not fieldnames:
         return ""
     buf = StringIO()
@@ -169,7 +94,7 @@ def _rows_to_csv(rows: List[Mapping[str, Any]]) -> str:
     for row in rows:
         if not isinstance(row, Mapping):
             continue
-        normed = _normalize_row(row)
+        normed = normalize_row(row, _EXCLUDED_ROW_KEYS)
         writer.writerow({k: normed.get(k) for k in fieldnames})
     return buf.getvalue()
 
@@ -183,27 +108,27 @@ def _rows_by_sheet_to_xlsx(rows_by_sheet: Dict[str, List[Mapping[str, Any]]]) ->
     used_titles: MutableSet[str] = set()
 
     if not rows_by_sheet:
-        ws = wb.create_sheet(title=_excel_sheet_title("Empty", used_titles))
+        ws = wb.create_sheet(title=excel_sheet_title("Empty", used_titles))
         ws["A1"] = "(no grouped types / rows)"
         bio = BytesIO()
         wb.save(bio)
         return bio.getvalue()
 
     for sheet_key, rows in rows_by_sheet.items():
-        title = _excel_sheet_title(sheet_key, used_titles)
+        title = excel_sheet_title(sheet_key, used_titles)
         ws = wb.create_sheet(title=title)
         if not rows:
             ws["A1"] = "(no rows)"
             continue
-        fieldnames = _collect_fieldnames(rows)
+        fieldnames = collect_fieldnames(rows, _EXCLUDED_ROW_KEYS)
         if not fieldnames:
             ws["A1"] = "(no rows)"
             continue
         ws.append(fieldnames)
 
-        price_col_idx = _unit_price_column_index(fieldnames)
-        cum_qty_col_idx = _cum_qty_column_index(fieldnames)
-        total_col_idx = _detail_total_column_index(fieldnames)
+        price_col_idx = unit_price_column_index(fieldnames)
+        cum_qty_col_idx = cum_qty_column_index(fieldnames)
+        total_col_idx = detail_total_column_index(fieldnames)
 
         data_start_row = 2
         row_num = data_start_row
@@ -211,7 +136,7 @@ def _rows_by_sheet_to_xlsx(rows_by_sheet: Dict[str, List[Mapping[str, Any]]]) ->
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
-            normed = _normalize_row(row)
+            normed = normalize_row(row, _EXCLUDED_ROW_KEYS)
             row_values = [normed.get(k) for k in fieldnames]
 
             if total_col_idx is not None and cum_qty_col_idx is not None and price_col_idx is not None:

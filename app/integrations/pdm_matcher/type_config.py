@@ -252,7 +252,7 @@ ATTR_KEYWORD_MAP = {
         "ul": ["UL"],
     },
     "detergent": {
-        "yes": ["粉体", "含洗涤剂", "洗净"],
+        "yes": ["粉", "粉体", "含洗涤剂", "洗净"],
     },
     "collating_chute": {
         "fork": ["分叉溜槽"],
@@ -280,9 +280,6 @@ ATTR_KEYWORD_MAP = {
     },
     "duck_mouth": {
         "yes": ["鸭嘴"],
-    },
-    "detergent": {
-        "yes": ["粉", "粉体"],
     },
     "silo": {
         "yes": ["silo", "Silo", "SILO"],

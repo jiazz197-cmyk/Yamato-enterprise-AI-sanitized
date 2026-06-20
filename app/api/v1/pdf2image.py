@@ -1,4 +1,3 @@
-import logging
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -10,6 +9,7 @@ from app.adapters.ocr_executor_jobs import (
     PdfPageCountAdapter,
 )
 from app.core.exceptions import APIException
+from app.core.logging import get_logger
 from app.core.security import get_current_user
 from app.ports.contracts.identity import CurrentUserPort
 from app.usecases.async_executor.executor_task_query import (
@@ -29,8 +29,7 @@ from app.usecases.async_executor.pdf_convert import (
 
 router = APIRouter()
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_logger("api.pdf2image")
 
 
 class PdfConvertRequest(BaseModel):

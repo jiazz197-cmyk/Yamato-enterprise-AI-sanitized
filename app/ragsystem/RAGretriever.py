@@ -2,100 +2,28 @@
 
 import os
 import re
-import logging
 import threading
 from typing import List, Dict, Optional
 from pathlib import Path
 import httpx
-import numpy as np
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from app.core.config import settings
 from app.core.async_bridge import run_async
 from app.core.http_client import get_http_client
+from app.core.logging import get_logger
+from app.integrations.doc_processing.embedding_store import BGEM3EmbeddingWrapper
 from pydantic import Field
 
 from llama_index.vector_stores.postgres import PGVectorStore
 from llama_index.core import VectorStoreIndex, StorageContext, load_index_from_storage
-from llama_index.core.embeddings import BaseEmbedding
 from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core.postprocessor.types import BaseNodePostprocessor
 from llama_index.core.schema import NodeWithScore, QueryBundle
 from llama_index.core import Settings
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-
-class BGEM3EmbeddingWrapper(BaseEmbedding):
-    """HTTP 调用 BGE-M3 兼容 embeddings 接口。"""
-    api_url: str = Field(description="嵌入模型 API 地址")
-    timeout: int = Field(default=30, description="请求超时时间（秒）")
-
-    def __init__(self, api_url: str = None, timeout: int = 30):
-        """api_url 默认读环境变量 BGE_M3_API_URL。"""
-        if api_url is None:
-            api_url = os.environ.get("BGE_M3_API_URL", "http://localhost:8000/v1/embeddings")
-        
-        super().__init__(api_url=api_url, timeout=timeout)
-        logger.debug(f"BGE-M3 嵌入模型 API: {api_url}")
-
-    def _parse_embedding_response(self, result: dict) -> List[float]:
-        if "data" in result and isinstance(result["data"], list) and len(result["data"]) > 0:
-            return result["data"][0]["embedding"]
-        if "embedding" in result:
-            return result["embedding"]
-        if "embeddings" in result:
-            return result["embeddings"][0] if isinstance(result["embeddings"][0], list) else result["embeddings"]
-        logger.error(f"未知的响应格式: {result}")
-        raise ValueError(f"无法解析嵌入向量响应: {result}")
-
-    async def _fetch_embedding(self, text: str) -> List[float]:
-        client = await get_http_client()
-        response = await client.post(
-            self.api_url,
-            json={"input": text, "model": "BAAI/bge-m3"},
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        return self._parse_embedding_response(response.json())
-
-    def _fetch_embedding_sync(self, text: str) -> List[float]:
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(
-                self.api_url,
-                json={"input": text, "model": "BAAI/bge-m3"},
-            )
-            response.raise_for_status()
-            return self._parse_embedding_response(response.json())
-
-    def _get_text_embedding(self, text: str) -> List[float]:
-        try:
-            return self._fetch_embedding_sync(text)
-        except httpx.HTTPError as e:
-            logger.error(f"调用嵌入模型 API 失败: {e}")
-            raise
-        except (KeyError, IndexError, ValueError) as e:
-            logger.error(f"解析嵌入向量响应失败: {e}")
-            raise
-
-    def _get_query_embedding(self, query: str) -> List[float]:
-        return self._get_text_embedding(query)
-
-    async def _aget_query_embedding(self, query: str) -> List[float]:
-        return await self._fetch_embedding(query)
-
-    async def _aget_text_embedding(self, text: str) -> List[float]:
-        return await self._fetch_embedding(text)
-
-    @classmethod
-    def cleanup_all_instances(cls):
-        """HTTP 客户端无状态，占位。"""
-        logger.debug("HTTP API 模式无需清理资源")
+logger = get_logger("ragsystem.RAGretriever")
 
 
 class HTTPReranker(BaseNodePostprocessor):

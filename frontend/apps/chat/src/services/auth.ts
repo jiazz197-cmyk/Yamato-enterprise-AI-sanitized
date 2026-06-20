@@ -117,56 +117,12 @@ export const updateUserPagePermissions = (userId: string, payload: UserPagePermi
   })
 }
 
-/** 把 role 写入设置缓存，路由切换时少打 /me。 */
-export const saveUserRole = (role: string): void => {
-  try {
-    const raw = localStorage.getItem(config.settingsStorageKey)
-    const existing = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
-    localStorage.setItem(config.settingsStorageKey, JSON.stringify({ ...existing, role }))
-  } catch {
-    // 忽略
-  }
-}
-
-export const readUserRole = (): string => {
-  try {
-    const raw = localStorage.getItem(config.settingsStorageKey)
-    if (!raw) return ''
-    const parsed = JSON.parse(raw) as { role?: unknown }
-    return String(parsed.role ?? '').trim()
-  } catch {
-    return ''
-  }
-}
-
-export const readUsername = (): string => {
-  try {
-    const raw = localStorage.getItem(config.settingsStorageKey)
-    if (!raw) return ''
-    const parsed = JSON.parse(raw) as { username?: unknown; user?: unknown }
-    return String(parsed.username ?? parsed.user ?? '').trim()
-  } catch {
-    return ''
-  }
-}
-
-export const saveUserPermissions = (permissions: string[]): void => {
-  try {
-    const raw = localStorage.getItem(config.settingsStorageKey)
-    const existing = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
-    localStorage.setItem(config.settingsStorageKey, JSON.stringify({ ...existing, permissions }))
-  } catch {
-    // 忽略
-  }
-}
-
-export const readUserPermissions = (): string[] => {
-  try {
-    const raw = localStorage.getItem(config.settingsStorageKey)
-    if (!raw) return []
-    const parsed = JSON.parse(raw) as { permissions?: unknown }
-    return Array.isArray(parsed.permissions) ? parsed.permissions as string[] : []
-  } catch {
-    return []
-  }
-}
+// role / username / permissions 的 localStorage 读写统一由 storage.ts 提供，
+// 此处仅做再导出以保持既有 `from '@/services/auth'` 引用不变。
+export {
+  saveUserRole,
+  readUserRole,
+  readUsername,
+  saveUserPermissions,
+  readUserPermissions,
+} from './storage'

@@ -35,7 +35,7 @@ def test_pdm_query_sql(test_payload):
                 continue
 
             # 第三步：拼装 WHERE 子句
-            where_conditions = build_pdm_and_where_clause(alts_per_keyword)
+            where_conditions, where_params = build_pdm_and_where_clause(alts_per_keyword)
             
             sql_query = f"""
 SELECT DISTINCT
@@ -50,6 +50,7 @@ ORDER BY CHINANAME, PARTID
 """
             print("\n【最终生成的 SQL】")
             print(sql_query)
+            print(f"  params={where_params}")
 
 if __name__ == "__main__":
     # 在这里放入你想测试的字典格式，完全模拟接口参数

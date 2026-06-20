@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -56,7 +57,7 @@ class KnowledgeResourceTagOut(BaseModel):
 # 知识库实例权限表 schema
 class KnowledgeInstancePermissionBase(BaseModel):
     instance_id: int
-    user_id: Optional[int] = None
+    user_id: Optional[UUID] = None
     role_id: Optional[int] = None
     permission: str
 

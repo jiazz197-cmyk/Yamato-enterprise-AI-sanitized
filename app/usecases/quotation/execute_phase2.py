@@ -17,17 +17,11 @@ from app.ports.domains.quotation import CancelChecker, ProgressCallback
 from app.domain.exceptions import QueryCancelledError
 from app.ports.domains.sqlserver_queries import U8BomInventoryQueryPort
 from app.ports.dto.sqlserver_queries import U8BomInventoryCommand
+from app.usecases.quotation._utils import response_to_dict
 
 logger = get_logger("quotation.execute_phase2")
 
 _U8_MAX_DEPTH = 20
-
-
-def _response_to_dict(response: Any) -> Dict[str, Any]:
-    dumper = getattr(response, "model_dump", None)
-    if callable(dumper):
-        return dumper()
-    return response.dict()  # type: ignore[attr-defined]
 
 
 @dataclass
@@ -135,7 +129,7 @@ class ExecuteQuotationPhase2UseCase:
 
         self._check_cancel(cancel)
 
-        u8_result = _response_to_dict(response)
+        u8_result = response_to_dict(response)
         total = u8_result.get("total") if isinstance(u8_result, dict) else None
         items = u8_result.get("items") if isinstance(u8_result, dict) else None
         logger.info(
@@ -201,7 +195,7 @@ class ExecuteQuotationPhase2UseCase:
             U8BomInventoryCommand(parent_inv_codes=",".join(converted_u8_codes), max_depth=1),
             cancel_checker=cancel,
         )
-        shallow_result = _response_to_dict(shallow_response)
+        shallow_result = response_to_dict(shallow_response)
 
         logger.info(
             "Phase2 项目编码浅层查询完成: total=%s",
@@ -239,7 +233,7 @@ class ExecuteQuotationPhase2UseCase:
             except QueryCancelledError as exc:
                 raise QuotationPipelineCancelledError("U8 查询已取消") from exc
 
-            child_result = _response_to_dict(child_response)
+            child_result = response_to_dict(child_response)
 
             all_query_results.append({
                 "code": child_code,

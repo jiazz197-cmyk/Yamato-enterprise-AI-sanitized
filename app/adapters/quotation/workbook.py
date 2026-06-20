@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 from io import BytesIO
-from typing import Any, Dict, Iterable, List, Mapping, MutableSet
+from typing import Any, Dict, List
 
+from app.adapters.quotation._xlsx_utils import (
+    collect_fieldnames,
+    cum_qty_column_index,
+    detail_total_column_index,
+    excel_sheet_title,
+    normalize_row,
+    unit_price_column_index,
+)
 from app.ports.domains.quotation_workbook import QuotationWorkbookRenderPort
 from app.ports.dto.quotation_workbook import QuotationWorkbookData, QuotationWorkbookExport
 
@@ -18,7 +26,6 @@ _EXCLUDED_ROW_KEYS: frozenset[str] = frozenset({
     "领料部门",
     "__root_inv_name",
 })
-_EXCEL_TITLE_INVALID = set(':*?/\\[]')
 
 _SUMMARY_HEADERS = [
     "\u90e8\u54c1\u7f16\u53f7",
@@ -28,85 +35,6 @@ _SUMMARY_HEADERS = [
     "\u91d1\u989d",
     "\u5907\u6ce8",
 ]
-_DETAIL_TOTAL_FIELD_CANDIDATES = (
-    "\u603b\u4ef7",
-    "\u91d1\u989d",
-    "amount",
-    "total_price",
-    "totalPrice",
-)
-
-_UNIT_PRICE_FIELD_CANDIDATES = (
-    "\u5355\u4ef7",
-    "iInvNcost",
-    "unit_price",
-    "price",
-)
-
-_CUM_QTY_FIELD_CANDIDATES = (
-    "\u7d2f\u8ba1\u7528\u91cf",
-    "CUM_QTY",
-    "cum_qty",
-    "quantity",
-)
-
-
-def _excel_sheet_title(raw: str, used: MutableSet[str]) -> str:
-    chars: List[str] = []
-    for c in str(raw or "")[:50]:
-        if c in _EXCEL_TITLE_INVALID or ord(c) < 32:
-            chars.append("_")
-        else:
-            chars.append(c)
-    base = "".join(chars).strip("_") or "Sheet"
-    base = base[:31]
-    title = base
-    n = 1
-    while title in used:
-        suffix = f"_{n}"
-        title = (base[: 31 - len(suffix)] + suffix) if len(suffix) < 31 else f"S{n}"[:31]
-        n += 1
-    used.add(title)
-    return title
-
-
-def _normalize_row(row: Mapping[str, Any]) -> Dict[str, Any]:
-    return {k: v for k, v in row.items() if k not in _EXCLUDED_ROW_KEYS}
-
-
-def _collect_fieldnames(rows: Iterable[Mapping[str, Any]]) -> List[str]:
-    ordered: List[str] = []
-    seen: set[str] = set()
-    for row in rows:
-        if not isinstance(row, Mapping):
-            continue
-        normed = _normalize_row(row)
-        for key in normed:
-            if key not in seen:
-                seen.add(key)
-                ordered.append(key)
-    return ordered
-
-
-def _detail_total_column_index(fieldnames: List[str]) -> int | None:
-    for idx, fieldname in enumerate(fieldnames):
-        if fieldname in _DETAIL_TOTAL_FIELD_CANDIDATES:
-            return idx
-    return None
-
-
-def _unit_price_column_index(fieldnames: List[str]) -> int | None:
-    for idx, name in enumerate(fieldnames):
-        if name in _UNIT_PRICE_FIELD_CANDIDATES:
-            return idx
-    return None
-
-
-def _cum_qty_column_index(fieldnames: List[str]) -> int | None:
-    for idx, name in enumerate(fieldnames):
-        if name in _CUM_QTY_FIELD_CANDIDATES:
-            return idx
-    return None
 
 
 def _sheet_cell_ref(sheet_title: str, col_letter: str, row_num: int) -> str:
@@ -127,13 +55,13 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
         thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
 
         summary_ws = wb.active
-        summary_ws.title = _excel_sheet_title(workbook_data.summary_sheet_name, used_titles)
+        summary_ws.title = excel_sheet_title(workbook_data.summary_sheet_name, used_titles)
 
         detail_sheet_refs: List[Dict[str, Any]] = []
         detail_sheet_refs_by_name: Dict[str, Dict[str, Any]] = {}
 
         for detail_sheet in workbook_data.detail_sheets:
-            ws = wb.create_sheet(title=_excel_sheet_title(detail_sheet.sheet_name, used_titles))
+            ws = wb.create_sheet(title=excel_sheet_title(detail_sheet.sheet_name, used_titles))
             actual_title = ws.title
             if not detail_sheet.rows:
                 ws["A1"] = "(no rows)"
@@ -141,7 +69,7 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
                 detail_sheet_refs.append(ref)
                 detail_sheet_refs_by_name[detail_sheet.sheet_name] = ref
                 continue
-            fieldnames = _collect_fieldnames(detail_sheet.rows)
+            fieldnames = collect_fieldnames(detail_sheet.rows, _EXCLUDED_ROW_KEYS)
             if not fieldnames:
                 ws["A1"] = "(no rows)"
                 ref = {"title": actual_title}
@@ -150,15 +78,15 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
                 continue
             ws.append(fieldnames)
 
-            price_col_idx = _unit_price_column_index(fieldnames)
-            cum_qty_col_idx = _cum_qty_column_index(fieldnames)
-            total_col_idx = _detail_total_column_index(fieldnames)
+            price_col_idx = unit_price_column_index(fieldnames)
+            cum_qty_col_idx = cum_qty_column_index(fieldnames)
+            total_col_idx = detail_total_column_index(fieldnames)
 
             data_start_row = 2
             row_num = data_start_row
 
             for row in detail_sheet.rows:
-                normed = _normalize_row(row)
+                normed = normalize_row(row, _EXCLUDED_ROW_KEYS)
                 row_values = [normed.get(key) for key in fieldnames]
 
                 if total_col_idx is not None and cum_qty_col_idx is not None and price_col_idx is not None:

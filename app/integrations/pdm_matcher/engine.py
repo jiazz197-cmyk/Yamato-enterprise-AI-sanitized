@@ -9,9 +9,8 @@
 
 import re
 
-import pymssql
-
 from app.core.config import settings
+from app.integrations.sqlserver.client import close_sql_client, get_sql_client
 from app.integrations.pdm_matcher.type_config import (
     TYPE_CONFIG,
     ATTR_KEYWORD_MAP,
@@ -25,17 +24,21 @@ from app.integrations.pdm_matcher.type_config import (
 from app.integrations.pdm_matcher.model_deriver import derive_models
 
 
+def _pdm_client_config() -> dict:
+    return {
+        "backend": "pymssql",
+        "server": settings.PDM_SQLSERVER_HOST,
+        "port": settings.PDM_SQLSERVER_PORT,
+        "database": settings.PDM_SQLSERVER_DATABASE,
+        "username": settings.PDM_SQLSERVER_USER,
+        "password": settings.PDM_SQLSERVER_PASSWORD,
+        "encrypt": settings.PDM_SQLSERVER_ENCRYPT,
+    }
+
+
 def _get_conn():
-    """使用主项目 Settings 配置创建数据库连接。"""
-    return pymssql.connect(
-        server=settings.PDM_SQLSERVER_HOST,
-        port=settings.PDM_SQLSERVER_PORT,
-        database=settings.PDM_SQLSERVER_DATABASE,
-        user=settings.PDM_SQLSERVER_USER,
-        password=settings.PDM_SQLSERVER_PASSWORD,
-        login_timeout=settings.SQLSERVER_LOGIN_TIMEOUT_SEC,
-        timeout=settings.SQLSERVER_QUERY_TIMEOUT_SEC,
-    )
+    """使用主项目 Settings 配置创建 SQL Server 客户端（复用工厂 + sqlserver_tools 回退）。"""
+    return get_sql_client(_pdm_client_config())
 
 
 def _model_boundary_match(short_model, text):
@@ -49,24 +52,14 @@ def _model_boundary_match(short_model, text):
 
 
 def _query(sql, conn=None):
-    """Execute SQL, returning list of dicts. Uses conn if provided, else creates new."""
+    """Execute SQL, returning list of dicts. Uses conn (client) if provided, else creates new."""
     if conn is not None:
-        cursor = conn.cursor()
-        cursor.execute(sql)
-        cols = [d[0] for d in cursor.description]
-        rows = cursor.fetchall()
-        cursor.close()
-        return [dict(zip(cols, r)) for r in rows]
-    conn = _get_conn()
+        return conn.query(sql)
+    client = _get_conn()
     try:
-        cursor = conn.cursor()
-        cursor.execute(sql)
-        cols = [d[0] for d in cursor.description]
-        rows = cursor.fetchall()
-        cursor.close()
-        return [dict(zip(cols, r)) for r in rows]
+        return client.query(sql)
     finally:
-        conn.close()
+        close_sql_client(client)
 
 
 # ---------- Parameter normalization ----------
@@ -1472,18 +1465,16 @@ def query_candidate_parts(spec_input: dict) -> dict:
 
         # Work number BOM lookup: find all child PARTIDs for this work number
         if work_no:
-            cur = conn.cursor()
-            cur.execute("""
+            rows = conn.query("""
                 SELECT DISTINCT PARTID FROM BOM_016
                 WHERE PARENTID = %s AND ASSEMBLELEVEL <= 3
             """, (work_no,))
-            work_no_children = set(r[0] for r in cur.fetchall())
-            cur.close()
+            work_no_children = set(r["PARTID"] for r in rows)
 
         all_candidates = ch1 + ch2 + ch3 + ch4
         all_candidates = _enrich_bom_info(all_candidates, conn)
     finally:
-        conn.close()
+        close_sql_client(conn)
 
     norm["work_no"] = work_no
     norm["work_no_children"] = work_no_children

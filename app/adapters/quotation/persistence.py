@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import APIException
 from app.core.async_storage import async_upload_stream_to_minio
+from app.core.storage import MinioUploadError
 from app.core.quotation_task_cleanup import (
     safe_cleanup_quotation_task_files_async,
 )
@@ -32,18 +33,19 @@ from app.ports.dto.quotation import QuotationSummarySelectionItem, QuotationTask
 
 class MinioFileStorageAdapter(FileStoragePort):
     async def upload_pdf(self, *, object_path: str, file_bytes: bytes, content_type: str) -> None:
-        upload_result = await async_upload_stream_to_minio(
-            file_stream=BytesIO(file_bytes),
-            file_name=object_path,
-            file_size=len(file_bytes),
-            content_type=content_type,
-        )
-        if isinstance(upload_result, str) and upload_result.startswith("Error"):
+        try:
+            await async_upload_stream_to_minio(
+                file_stream=BytesIO(file_bytes),
+                file_name=object_path,
+                file_size=len(file_bytes),
+                content_type=content_type,
+            )
+        except MinioUploadError as exc:
             raise APIException(
                 "上传文件到 MinIO 失败",
                 status_code=500,
                 error_code="MINIO_UPLOAD_FAILED",
-            )
+            ) from exc
 
 
 class SqlAlchemyQuotationTaskRepoAdapter(QuotationTaskRepoPort):

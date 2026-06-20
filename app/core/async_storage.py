@@ -15,6 +15,7 @@ from app.core.logging import get_logger
 from app.core.storage import (
     MINIO_BUCKET_NAME,
     STREAM_CHUNK_SIZE,
+    MinioUploadError,
     _minio_host_and_secure_for_app,
     _parse_s3_endpoint_for_presign,
 )
@@ -109,17 +110,19 @@ async def async_stat_object(object_name: str, bucket: str = MINIO_BUCKET_NAME):
 async def async_upload_to_minio(file_path: str, file_name: str) -> str:
     try:
         if not await AsyncMinioClientPool.ensure_bucket():
-            return "Error: MinIO service unavailable"
+            raise MinioUploadError("MinIO service unavailable")
         client = await AsyncMinioClientPool.get_client()
         await client.fput_object(MINIO_BUCKET_NAME, file_name, file_path)
         logger.debug("Uploaded file: %s", file_name)
         return file_name
+    except MinioUploadError:
+        raise
     except S3Error as err:
         logger.error("Upload to MinIO failed: %s", err)
-        return f"Error uploading file to MinIO: {err}"
+        raise MinioUploadError(f"上传文件到 MinIO 失败: {err}") from err
     except Exception as e:
         logger.error("Upload exception: %s", e)
-        return f"Error: {e}"
+        raise MinioUploadError(f"上传文件异常: {e}") from e
 
 
 async def async_upload_stream_to_minio(
@@ -130,7 +133,7 @@ async def async_upload_stream_to_minio(
 ) -> str:
     try:
         if not await AsyncMinioClientPool.ensure_bucket():
-            return "Error: MinIO service unavailable"
+            raise MinioUploadError("MinIO service unavailable")
         client = await AsyncMinioClientPool.get_client()
         if file_size > 0:
             await client.put_object(
@@ -151,12 +154,14 @@ async def async_upload_stream_to_minio(
             )
         logger.debug("Stream upload ok: %s (size=%s)", file_name, file_size)
         return file_name
+    except MinioUploadError:
+        raise
     except S3Error as err:
         logger.error("Stream upload to MinIO failed: %s", err)
-        return f"Error uploading stream to MinIO: {err}"
+        raise MinioUploadError(f"流式上传到 MinIO 失败: {err}") from err
     except Exception as e:
         logger.error("Stream upload exception: %s", e)
-        return f"Error: {e}"
+        raise MinioUploadError(f"流式上传异常: {e}") from e
 
 
 async def async_delete_from_minio(file_name: str) -> bool:

@@ -6,9 +6,12 @@ from typing import Optional, Dict, List
 from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core import Settings
 
+from app.core.logging import get_logger
 from app.core.storage import save_file_from_minio
 from app.ragsystem.data_analyze import excel_to_json
 from app.ragsystem.RAGretriever import create_rag_retriever_system, HTTPReranker
+
+logger = get_logger("ragsystem.retriever_for_yamato")
 
 
 def format_docs(docs):
@@ -39,15 +42,15 @@ class ModelManager:
         self._cache_lock = threading.Lock()
         self._reranker_api_url = os.environ.get("RERANKER_API_URL", "http://localhost:8001/v1/rerank")
         self._initialized = True
-        print(f"模型管理器初始化完成，使用 HTTP API 模式")
+        logger.info("模型管理器初始化完成，使用 HTTP API 模式")
     
     def set_rag_system(self, rag_system):
         """Attach shared RAGRetrieverSystem (first call wins)."""
         if self._rag_system is None:
             self._rag_system = rag_system
-            print("RAG系统已设置到模型管理器")
+            logger.info("RAG系统已设置到模型管理器")
         else:
-            print("RAG系统已存在，跳过重复设置")
+            logger.info("RAG系统已存在，跳过重复设置")
     
     def get_reranker(self):
         """Lazy-init HTTPReranker（线程安全）。"""
@@ -62,9 +65,9 @@ class ModelManager:
                     top_n=3,
                     timeout=30
                 )
-                print(f"重排序器创建完成，API: {self._reranker_api_url}")
+                logger.info("重排序器创建完成，API: %s", self._reranker_api_url)
             except Exception as e:
-                print(f"创建重排序器失败: {e}")
+                logger.error("创建重排序器失败: %s", e)
                 self._reranker = None
             return self._reranker
     
@@ -85,7 +88,7 @@ class ModelManager:
             if cache_key in self._retrievers_cache:
                 return self._retrievers_cache[cache_key]
             self._retrievers_cache[cache_key] = retriever
-            print(f"检索器缓存: {collection_name}")
+            logger.debug("检索器缓存: %s", collection_name)
             return retriever
     
     def get_query_engine(self, collection_name: str, top_k: int = 5):
@@ -111,7 +114,7 @@ class ModelManager:
             if cache_key in self._query_engines_cache:
                 return self._query_engines_cache[cache_key]
             self._query_engines_cache[cache_key] = query_engine
-            print(f"查询引擎缓存: {collection_name}")
+            logger.debug("查询引擎缓存: %s", collection_name)
             return query_engine
     
     def get_available_collections(self) -> List[str]:
@@ -125,17 +128,17 @@ class ModelManager:
             )
             return [col.replace("data_", "") for col in collections]
         except Exception as e:
-            print(f"获取collection列表失败: {e}")
+            logger.error("获取collection列表失败: %s", e)
             return []
     
     def clear_cache(self):
         """Drop retriever/query-engine caches and run gc（线程安全）。"""
-        print("开始清理模型管理器缓存...")
+        logger.info("开始清理模型管理器缓存...")
         with self._cache_lock:
             self._retrievers_cache.clear()
             self._query_engines_cache.clear()
         gc.collect()
-        print("缓存清理完成")
+        logger.info("缓存清理完成")
     
     def get_memory_info(self) -> Dict:
         """Lightweight stats (HTTP mode, cache sizes)."""
@@ -162,7 +165,7 @@ class OptimizedRetriever:
         self.model_manager.set_rag_system(rag_system)
         
         self.default_top_n = getattr(rag_system, 'default_top_n', 3)
-        print(f"OptimizedRetriever 使用 top_n={self.default_top_n}")
+        logger.info("OptimizedRetriever 使用 top_n=%s", self.default_top_n)
         
         self._initialize_query_engines()
     
@@ -170,7 +173,7 @@ class OptimizedRetriever:
         """Multi: defer engines; single: build one engine."""
         if self.collection_name is None:
             collections = self.model_manager.get_available_collections()
-            print(f"初始化全库检索，发现 {len(collections)} 个collection")
+            logger.info("初始化全库检索，发现 %d 个collection", len(collections))
             
             self.query_engines = {}
             self.available_collections = collections
@@ -179,7 +182,7 @@ class OptimizedRetriever:
             if query_engine is None:
                 raise ValueError(f"无法创建查询引擎: {self.collection_name}")
             self.query_engines = query_engine
-            print(f"单库检索模式初始化完成: {self.collection_name}")
+            logger.info("单库检索模式初始化完成: %s", self.collection_name)
     
     def get_response(self, question: str, max_collections: int = 3) -> dict:
         """Return content/source lists (top 5 each)."""
@@ -189,7 +192,7 @@ class OptimizedRetriever:
             else:
                 return self._get_single_collection_response(question)
         except Exception as e:
-            print(f"检索响应失败: {e}")
+            logger.exception("检索响应失败: %s", e)
             return {
                 "content": [f"检索失败: {str(e)}"],
                 "source": ["error"]
@@ -199,13 +202,18 @@ class OptimizedRetriever:
         raw_docs = self.query_engines.query(question)
         source_nodes = raw_docs.source_nodes
         
-        print(f"[debug] 检索到的文档块数量: {len(source_nodes)}")
+        logger.debug("检索到的文档块数量: %d", len(source_nodes))
         
         sources = []
         contents = []
         
         for i, node in enumerate(source_nodes):
-            print(f"  节点 {i+1} - Score: {node.score:.4f} - Source: {node.metadata.get('source', 'Unknown')}")
+            logger.debug(
+                "  节点 %d - Score: %.4f - Source: %s",
+                i + 1,
+                node.score or 0.0,
+                node.metadata.get('source', 'Unknown'),
+            )
             source = node.metadata.get('source', 'Unknown')
             content = node.text.strip()
             sources.append(source)
@@ -243,7 +251,7 @@ class OptimizedRetriever:
                     all_contents.append(content)
                     
             except Exception as e:
-                print(f"查询collection {collection_name} 失败: {e}")
+                logger.error("查询collection %s 失败: %s", collection_name, e)
                 continue
         
         return {
@@ -265,11 +273,11 @@ class OptimizedRetriever:
             data_source = excel_to_json(file_path)
             return data_source
         except Exception as e:
-            print(f"获取图表数据失败: {e}")
+            logger.exception("获取图表数据失败: %s", e)
             return {"error": str(e)}
     
     def cleanup(self):
-        print("开始清理retriever资源...")
+        logger.info("开始清理retriever资源...")
         if hasattr(self, 'query_engines'):
             if isinstance(self.query_engines, dict):
                 self.query_engines.clear()
@@ -278,7 +286,7 @@ class OptimizedRetriever:
         
         self.model_manager.clear_cache()
         
-        print("Retriever资源清理完成")
+        logger.info("Retriever资源清理完成")
     
     def get_memory_info(self) -> Dict:
         return self.model_manager.get_memory_info()
@@ -286,7 +294,7 @@ class OptimizedRetriever:
     def __del__(self):
         try:
             import sys
-            if sys is None or sys.meta_path is None:
+            if sys is None or sys.meta.path is None:
                 return
             
             self.cleanup()
@@ -303,9 +311,9 @@ def cleanup_all_resources():
     try:
         manager = ModelManager()
         manager.clear_cache()
-        print("全局资源清理完成")
+        logger.info("全局资源清理完成")
     except Exception as e:
-        print(f"全局资源清理失败: {e}")
+        logger.error("全局资源清理失败: %s", e)
 
 
 if __name__ == '__main__':
@@ -313,26 +321,25 @@ if __name__ == '__main__':
         Settings.llm = None
         
         rag_system = create_rag_retriever_system(
-            host="localhost",
-            user="postgres",
-            password="change_me_pg_password",
-            database="postgres",
-            port=5432,
-            table_prefix="doc_collection",
+            host=os.getenv("RAG_DB_HOST", "localhost"),
+            user=os.getenv("RAG_DB_USER", "postgres"),
+            password=os.getenv("RAG_DB_PASSWORD", ""),
+            database=os.getenv("RAG_DB_NAME", "postgres"),
+            port=int(os.getenv("RAG_DB_PORT", "5432")),
+            table_prefix=os.getenv("RAG_DB_TABLE_PREFIX", "doc_collection"),
             instance_id=1,
             default_top_k=20,
             default_top_n=3
         )
         retriever_instance = OptimizedRetriever(rag_system=rag_system)
         responses = retriever_instance.get_response("北部湾")
-        print(responses)
+        logger.info("检索结果: %s", responses)
         
-        print("内存使用情况:", retriever_instance.get_memory_info())
+        logger.info("内存使用情况: %s", retriever_instance.get_memory_info())
         
-        print("请确保传入有效的rag_system实例")
+        logger.info("请确保传入有效的rag_system实例")
         
     except Exception as e:
-        print(f"执行失败: {e}")
+        logger.exception("执行失败: %s", e)
     finally:
         cleanup_all_resources()
-

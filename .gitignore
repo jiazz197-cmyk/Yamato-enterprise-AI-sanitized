@@ -33,6 +33,5 @@ logs/
 tests/output/
 
 .kilo/
-.github/
 .cursor/
 .claude/

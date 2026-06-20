@@ -220,6 +220,7 @@ import {
 import { config } from '../config'
 import { sendChatMessage, getConversations, getMessages, stopChatMessage, compressContext } from '../services/chat'
 import { getAuthTokenFromStorage } from '../services/token_storage'
+import { readStored, patchStored } from '../services/storage'
 import { countTokens } from '../utils/token_counter'
 import type { Conversation, SearchMode } from '../types/chat'
 
@@ -496,44 +497,28 @@ const startWelcomeTyping = () => {
 }
 
 const saveCachedSettings = () => {
-  try {
-    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY)
-    const existing = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
-
-    localStorage.setItem(
-      SETTINGS_STORAGE_KEY,
-      JSON.stringify({
-        ...existing,
-        user: chatSettings.value.user,
-        userId: chatSettings.value.userId,
-        search: chatSettings.value.search,
-      })
-    )
-  } catch {
-    // 忽略
-  }
+  patchStored(SETTINGS_STORAGE_KEY, {
+    user: chatSettings.value.user,
+    userId: chatSettings.value.userId,
+    search: chatSettings.value.search,
+  })
 }
 
 const loadCachedSettings = () => {
-  try {
-    const cached = localStorage.getItem(SETTINGS_STORAGE_KEY)
-    if (cached) {
-      const parsed = JSON.parse(cached) as CachedChatSettings
-      const cachedUser = String(parsed.user ?? parsed.username ?? parsed.userName ?? '').trim()
-      const cachedUserId = String(parsed.userId ?? '').trim()
-      const normalizedUserId =
-        cachedUserId && !UUID_PATTERN.test(cachedUserId)
-          ? cachedUserId
-          : cachedUser || undefined
+  const parsed = readStored<CachedChatSettings | null>(SETTINGS_STORAGE_KEY, null)
+  if (parsed) {
+    const cachedUser = String(parsed.user ?? parsed.username ?? parsed.userName ?? '').trim()
+    const cachedUserId = String(parsed.userId ?? '').trim()
+    const normalizedUserId =
+      cachedUserId && !UUID_PATTERN.test(cachedUserId)
+        ? cachedUserId
+        : cachedUser || undefined
 
-      chatSettings.value = {
-        user: cachedUser || cachedUserId,
-        userId: normalizedUserId,
-        search: isSearchMode(parsed.search) ? parsed.search : '联网搜索',
-      }
+    chatSettings.value = {
+      user: cachedUser || cachedUserId,
+      userId: normalizedUserId,
+      search: isSearchMode(parsed.search) ? parsed.search : '联网搜索',
     }
-  } catch {
-    // 忽略
   }
 }
 

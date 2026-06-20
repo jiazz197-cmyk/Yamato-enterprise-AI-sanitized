@@ -2,6 +2,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from app.models.orm.platform.base import Base
 
@@ -43,7 +44,7 @@ class KnowledgeInstancePermission(Base):
     __tablename__ = "knowledge_instance_permission"
     id = Column(Integer, primary_key=True, autoincrement=True)
     instance_id = Column(Integer, ForeignKey("knowledge_instance.id"), nullable=False, comment="知识库实例ID")
-    user_id = Column(Integer, nullable=True, comment="用户ID")
+    user_id = Column(PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=True, comment="用户ID")
     role_id = Column(Integer, nullable=True, comment="角色ID")
     permission = Column(String(32), nullable=False, comment="权限类型：read/write/admin")
     created_at = Column(DateTime, default=datetime.utcnow)

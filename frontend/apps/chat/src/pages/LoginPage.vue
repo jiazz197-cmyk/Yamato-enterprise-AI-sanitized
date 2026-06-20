@@ -49,6 +49,7 @@ import { RouterLink, useRouter } from 'vue-router'
 import { Input, useToast } from '@yamato/components'
 import { config } from '../config'
 import { login, getMe, saveUserRole, saveUserPermissions } from '../services/auth'
+import { readStored, patchStored } from '../services/storage'
 import { setAuthTokenToStorage } from '../services/token_storage'
 
 const router = useRouter()
@@ -72,23 +73,19 @@ const handleSubmit = async () => {
 
     try {
       const me = await getMe()
-      const existing = JSON.parse(localStorage.getItem(config.settingsStorageKey) || '{}')
+      const existing = readStored<{ search?: unknown }>(config.settingsStorageKey, {})
       const loginUserId = String(me.id || '').trim()
       const loginUser = String(me.username || me.id || '').trim()
       const loginUserName = String((me as any).name || me.username || me.id || '').trim()
-      localStorage.setItem(
-        config.settingsStorageKey,
-        JSON.stringify({
-          ...existing,
-          userId: loginUser,
-          userUUID: loginUserId,
-          user: loginUser,
-          userName: loginUserName,
-          username: loginUser,
-          role: me.role || '',
-          search: existing.search || '联网搜索',
-        })
-      )
+      patchStored(config.settingsStorageKey, {
+        userId: loginUser,
+        userUUID: loginUserId,
+        user: loginUser,
+        userName: loginUserName,
+        username: loginUser,
+        role: me.role || '',
+        search: existing.search || '联网搜索',
+      })
       saveUserRole(me.role || '')
       saveUserPermissions(me.permissions || [])
     } catch {
