@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional, Union, Any
 import threading
 
-from pydantic import Field, validator, field_validator, ValidationInfo
+from pydantic import Field, validator, field_validator, model_validator, ValidationInfo
 from pydantic_settings import BaseSettings
 from pydantic._internal._model_construction import ModelMetaclass
 
@@ -174,6 +174,51 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     SQLSERVER_QUERY_TIMEOUT_SEC: int = Field(120, ge=1, le=3600, env="SQLSERVER_QUERY_TIMEOUT_SEC")
     SQLSERVER_LOGIN_TIMEOUT_SEC: int = Field(30, ge=1, le=300, env="SQLSERVER_LOGIN_TIMEOUT_SEC")
     SQLSERVER_QUERY_MAX_WORKERS: int = Field(2, ge=1, le=8, env="SQLSERVER_QUERY_MAX_WORKERS")
+
+    # U8 BOM 树展开并行度：单个 BOM 任务内，每个根编码子树分配一个 worker 线程 +
+    # 一条独立 DB 连接。设为 1 即退回原始串行行为。128 核服务器默认 16 吃满十几个核心。
+    U8_BOM_PARALLEL_WORKERS: int = Field(
+        16, ge=1, le=128, env="U8_BOM_PARALLEL_WORKERS"
+    )
+    # 允许同时运行的 BOM 查询任务数（运行时信号量约束）。
+    # 与 U8_BOM_PARALLEL_WORKERS 解耦：EXECUTOR_MAX_WORKERS 控制 OCR/导入等所有后台任务，
+    # 而本项只限制会打开 U8 SQL Server 连接的 BOM 任务并发数。
+    U8_BOM_MAX_CONCURRENT_TASKS: int = Field(
+        3, ge=1, le=64, env="U8_BOM_MAX_CONCURRENT_TASKS"
+    )
+    # 全局后台任务线程池大小（之前未定义，恒为 fallback=4）。
+    # 控制 OCR/导入/报价等所有后台任务类型之间的并发，与 U8 连接数无关（已解耦）。
+    EXECUTOR_MAX_WORKERS: int = Field(
+        8, ge=1, le=512, env="EXECUTOR_MAX_WORKERS"
+    )
+    # 单台后端实例允许同时打开的 U8 SQL Server 连接总数上限（所有 BOM 任务合计）。
+    # U8_BOM_MAX_CONCURRENT_TASKS × U8_BOM_PARALLEL_WORKERS 不得超过此值，
+    # 避免压垮生产 U8 ERP 数据库。默认 48 = 3 任务 × 16 并行。
+    U8_BOM_MAX_TOTAL_CONNECTIONS: int = Field(
+        48, ge=1, le=2048, env="U8_BOM_MAX_TOTAL_CONNECTIONS"
+    )
+
+    @model_validator(mode="after")
+    def _validate_u8_bom_connection_budget(self):
+        """限制 BOM 并发任务数 × 单任务并行连接数 不超过总连接上限。
+
+        每个 BOM 任务最多建立 U8_BOM_PARALLEL_WORKERS 条连接，最多
+        U8_BOM_MAX_CONCURRENT_TASKS 个 BOM 任务同时运行（运行时信号量约束），
+        二者乘积即最坏情况下到 U8 库的并发连接数，必须不超过
+        U8_BOM_MAX_TOTAL_CONNECTIONS，防止打满生产 U8 ERP 数据库连接。
+
+        注意：与 EXECUTOR_MAX_WORKERS 解耦——后者管 OCR/导入等非 BOM 任务，
+        不占用 U8 连接预算。
+        """
+        product = self.U8_BOM_MAX_CONCURRENT_TASKS * self.U8_BOM_PARALLEL_WORKERS
+        if product > self.U8_BOM_MAX_TOTAL_CONNECTIONS:
+            raise ValueError(
+                f"U8_BOM_MAX_CONCURRENT_TASKS({self.U8_BOM_MAX_CONCURRENT_TASKS}) × "
+                f"U8_BOM_PARALLEL_WORKERS({self.U8_BOM_PARALLEL_WORKERS}) = {product} "
+                f"超过 U8_BOM_MAX_TOTAL_CONNECTIONS({self.U8_BOM_MAX_TOTAL_CONNECTIONS})，"
+                f"请调小其中之一或调高上限"
+            )
+        return self
 
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
