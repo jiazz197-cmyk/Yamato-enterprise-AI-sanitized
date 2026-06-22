@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from io import BytesIO
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from app.adapters.quotation._xlsx_utils import (
     collect_fieldnames,
@@ -43,7 +43,12 @@ def _sheet_cell_ref(sheet_title: str, col_letter: str, row_num: int) -> str:
 
 
 class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
-    def export_workbook(self, workbook_data: QuotationWorkbookData) -> QuotationWorkbookExport:
+    def export_workbook(
+        self,
+        workbook_data: QuotationWorkbookData,
+        cancel_checker: Optional[Callable[[], bool]] = None,
+    ) -> QuotationWorkbookExport:
+        from app.domain.quotation.exceptions import QuotationPipelineCancelledError
         from openpyxl import Workbook  # noqa: PLC0415
         from openpyxl.styles import Border, Font, Side  # noqa: PLC0415
         from openpyxl.utils import get_column_letter  # noqa: PLC0415
@@ -60,7 +65,9 @@ class OpenpyxlQuotationWorkbookAdapter(QuotationWorkbookRenderPort):
         detail_sheet_refs: List[Dict[str, Any]] = []
         detail_sheet_refs_by_name: Dict[str, Dict[str, Any]] = {}
 
-        for detail_sheet in workbook_data.detail_sheets:
+        for sheet_idx, detail_sheet in enumerate(workbook_data.detail_sheets):
+            if cancel_checker and sheet_idx % 50 == 0 and cancel_checker():
+                raise QuotationPipelineCancelledError("任务在渲染明细表时被取消")
             ws = wb.create_sheet(title=excel_sheet_title(detail_sheet.sheet_name, used_titles))
             actual_title = ws.title
             if not detail_sheet.rows:

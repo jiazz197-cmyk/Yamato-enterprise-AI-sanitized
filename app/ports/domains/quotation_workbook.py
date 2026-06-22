@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Callable, Optional, Protocol
 
 from app.ports.dto.quotation_workbook import QuotationWorkbookData, QuotationWorkbookExport
 
@@ -10,5 +10,9 @@ from app.ports.dto.quotation_workbook import QuotationWorkbookData, QuotationWor
 class QuotationWorkbookRenderPort(Protocol):
     """Render a workbook data model into an `.xlsx` binary."""
 
-    def export_workbook(self, workbook_data: QuotationWorkbookData) -> QuotationWorkbookExport:
+    def export_workbook(
+        self,
+        workbook_data: QuotationWorkbookData,
+        cancel_checker: Optional[Callable[[], bool]] = None,
+    ) -> QuotationWorkbookExport:
         ...

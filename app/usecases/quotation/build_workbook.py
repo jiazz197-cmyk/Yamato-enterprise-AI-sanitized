@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional
 
 from app.domain.quotation import build_quotation_workbook_data
 from app.ports.domains.quotation_workbook import QuotationWorkbookRenderPort
@@ -20,6 +20,7 @@ class BuildQuotationWorkbookCommand:
     keywords_payload: Any = None
     generated_at: datetime | None = None
     partid_quantities: Dict[str, int] | None = None
+    cancel_checker: Optional[Callable[[], bool]] = None
 
 
 class BuildQuotationWorkbookUseCase:
@@ -36,4 +37,6 @@ class BuildQuotationWorkbookUseCase:
             generated_at=cmd.generated_at,
             partid_quantities=cmd.partid_quantities,
         )
-        return self._render_port.export_workbook(workbook_data)
+        return self._render_port.export_workbook(
+            workbook_data, cancel_checker=cmd.cancel_checker
+        )

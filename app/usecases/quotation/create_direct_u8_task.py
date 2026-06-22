@@ -13,7 +13,7 @@ from app.ports.domains.quotation import FileStoragePort, QuotationTaskRepoPort
 
 logger = get_logger("quotation.create_direct_u8_task")
 
-_MAX_PARTIDS = 500
+_MAX_PARTIDS = 1500
 
 
 @dataclass

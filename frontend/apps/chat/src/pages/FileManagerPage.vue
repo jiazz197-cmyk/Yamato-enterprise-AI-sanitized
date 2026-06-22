@@ -149,7 +149,7 @@
       </label>
       <div class="direct-u8-input-grid">
         <label class="task-name-field">
-          <span class="task-name-field__label">编码（每行一条，最多 500 个）</span>
+          <span class="task-name-field__label">编码（每行一条，最多 1500 个）</span>
           <textarea
             v-model="directU8PartidsText"
             class="task-name-field__input task-name-field__textarea"
@@ -190,7 +190,7 @@
         />
       </label>
       <label class="task-name-field" style="margin-top: 12px">
-        <span class="task-name-field__label">项目编码（每行一条，最多 500 个）</span>
+        <span class="task-name-field__label">项目编码（每行一条，最多 1500 个）</span>
         <textarea
           v-model="directProjectCodesText"
           class="task-name-field__input task-name-field__textarea"
@@ -283,7 +283,7 @@ const EVENT_LOOP_LAG_SAMPLE_INTERVAL_MS = 1000
 const EVENT_LOOP_LAG_WARN_MS = 250
 const WS_COOLDOWN_MS = 60000
 const WS_MAX_PER_TASK_FAILURES = 2
-const TASK_POLLING_INTERVAL_MS = 4000
+const TASK_POLLING_INTERVAL_MS = 8000
 const LIST_REFRESH_NORMAL_MS = 60000
 const LIST_REFRESH_BACKOFF_1_MS = 90000
 const LIST_REFRESH_BACKOFF_2_MS = 120000
@@ -1969,8 +1969,8 @@ const confirmDirectU8Submit = async (): Promise<void> => {
     errorMessage.value = '请至少输入一个 PARTID'
     return
   }
-  if (partids.length > 500) {
-    errorMessage.value = `最多支持 500 个 PARTID，当前输入了 ${partids.length} 个`
+  if (partids.length > 1500) {
+    errorMessage.value = `最多支持 1500 个 PARTID，当前输入了 ${partids.length} 个`
     return
   }
 
@@ -2019,8 +2019,8 @@ const confirmDirectProjectSubmit = async (): Promise<void> => {
     errorMessage.value = '请至少输入一个项目编码'
     return
   }
-  if (partids.length > 500) {
-    errorMessage.value = `最多支持 500 个编码，当前输入了 ${partids.length} 个`
+  if (partids.length > 1500) {
+    errorMessage.value = `最多支持 1500 个编码，当前输入了 ${partids.length} 个`
     return
   }
 

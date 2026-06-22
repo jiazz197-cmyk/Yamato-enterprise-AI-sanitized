@@ -7,7 +7,7 @@ import re
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from app.core.task_manager import TaskManager, task_manager
@@ -73,6 +73,7 @@ def _upload_u8_result_by_type_xlsx_to_minio(
     raw_extracted_info: Any = None,
     keywords_payload: Any = None,
     partid_quantities: Optional[Dict[str, int]] = None,
+    cancel_checker: Optional[Callable[[], bool]] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Build multi-sheet xlsx from ``u8_result_by_type`` and upload via sync MinIO.
 
@@ -89,6 +90,7 @@ def _upload_u8_result_by_type_xlsx_to_minio(
                 keywords_payload=keywords_payload,
                 generated_at=datetime.now(ZoneInfo("Asia/Shanghai")),
                 partid_quantities=partid_quantities,
+                cancel_checker=cancel_checker,
             )
         )
     except ImportError as exc:
@@ -541,6 +543,7 @@ def process_quotation_task_phase2_background(
             raw_extracted_info=existing_payload.get("raw_extracted_info"),
             keywords_payload=existing_payload.get("keywords_payload"),
             partid_quantities=_extract_partid_quantities(existing_payload),
+            cancel_checker=token.is_cancelled,
         )
         if xlsx_path and xlsx_name:
             final_payload["u8_result_by_type_xlsx_minio_path"] = xlsx_path
