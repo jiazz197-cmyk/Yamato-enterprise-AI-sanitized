@@ -27,6 +27,11 @@ logger = get_logger("database.sqlserver")
 
 _DEADLOCK_RETRY_DELAYS_SEC: tuple[float, ...] = (0.3, 0.8, 1.5)
 
+# 连续根节点失败上限：达到即判定系统性故障（ERP 宕机/连接耗尽/饱和）并中止任务，
+# 避免在 ERP 不可用时每个根各自熬满查询超时（默认 120s）而放大 DB 负载。
+# 并发下成功与失败交错会重置计数，故仅在持续大面积失败时触发。
+_MAX_CONSECUTIVE_ROOT_FAILURES: int = 5
+
 # SQL Server 单次参数化查询硬上限为 2100 个参数。IN 列表分批上限留出余量，
 # 避免大 BOM（根编码 × 深度展开后子件数无界）触发 8003 "too many parameters"
 # 错误而被静默吞掉，导致价格/名称补充丢失。
@@ -1047,6 +1052,33 @@ def _query_u8_bom_inventory(
         shared_cache = SharedChildrenCache()
         diag = _DiagCounters()
 
+        # 故障隔离 + 熔断：单根失败时跳过该根继续其余根（任务带部分结果完成）；
+        # 连续 _MAX_CONSECUTIVE_ROOT_FAILURES 个根失败则判定系统性故障并中止任务，
+        # 避免 ERP 不可用时每个根各自熬满查询超时而放大 DB 负载。串行/并行路径共用。
+        failed_root_codes: List[str] = []
+        consecutive_failures = 0
+
+        def _on_root_failure(root_code: str, exc: BaseException) -> bool:
+            """记录一个失败的根；返回 True 表示判定系统性故障、应中止任务。"""
+            nonlocal consecutive_failures
+            consecutive_failures += 1
+            failed_root_codes.append(root_code)
+            logger.warning(
+                "U8 根节点展开失败，跳过: root_code=%s, consecutive=%s/%s, error=%s",
+                root_code, consecutive_failures, _MAX_CONSECUTIVE_ROOT_FAILURES, exc,
+            )
+            if consecutive_failures >= _MAX_CONSECUTIVE_ROOT_FAILURES:
+                logger.error(
+                    "U8 BOM 连续 %s 个根节点失败，判定系统性故障，中止任务。failed_sample=%s",
+                    consecutive_failures, failed_root_codes[:10],
+                )
+                return True
+            return False
+
+        def _on_root_success() -> None:
+            nonlocal consecutive_failures
+            consecutive_failures = 0
+
         logger.info(
             "U8 BOM 并行查询开始: root_codes=%s, parallel_workers=%s, max_depth=%s, "
             "user=%s",
@@ -1071,10 +1103,18 @@ def _query_u8_bom_inventory(
             for root_code in parent_codes:
                 raise_if_cancelled(cancel_checker)
                 root_name = root_name_map.get(root_code, root_code)
-                rows, no_bom = _walk_one_root(
-                    root_code, root_name, max_depth, root_codes_set,
-                    cancel_checker, pool, shared_cache, diag,
-                )
+                try:
+                    rows, no_bom = _walk_one_root(
+                        root_code, root_name, max_depth, root_codes_set,
+                        cancel_checker, pool, shared_cache, diag,
+                    )
+                except QueryCancelledError:
+                    raise
+                except Exception as exc:
+                    if _on_root_failure(root_code, exc):
+                        raise
+                    continue
+                _on_root_success()
                 per_root_rows[root_code] = rows
                 if no_bom:
                     per_root_no_bom.add(root_code)
@@ -1108,18 +1148,14 @@ def _query_u8_bom_inventory(
                             f.cancel()
                         raise
                     except Exception as exc:
-                        # fail-fast：取消尚未启动的兄弟 future（f.cancel() 无法中断
-                        # 已在运行的线程，它们会跑到下一个 raise_if_cancelled 才停），
-                        # 避免继续浪费 DB 负载
-                        logger.error(
-                            "U8 根节点展开异常: root_code=%s, error=%s",
-                            root_code,
-                            exc,
-                            exc_info=True,
-                        )
-                        for f in future_map:
-                            f.cancel()
-                        raise
+                        # 故障隔离：单根失败不致命，跳过该根继续其余根；
+                        # 仅当判定系统性故障（连续失败达上限）时才取消兄弟并上抛。
+                        if _on_root_failure(root_code, exc):
+                            for f in future_map:
+                                f.cancel()
+                            raise
+                        continue
+                    _on_root_success()
                     per_root_rows[root_code] = rows
                     if no_bom:
                         per_root_no_bom.add(root_code)
@@ -1134,6 +1170,12 @@ def _query_u8_bom_inventory(
                 no_bom_root_codes.append(root_code)
 
         diag.log_summary("BOM 并行展开")
+
+        if failed_root_codes:
+            logger.warning(
+                "U8 BOM 部分根节点查询失败已跳过: failed=%s/%s, sample=%s",
+                len(failed_root_codes), len(parent_codes), failed_root_codes[:10],
+            )
 
         # 3. 无 BOM 子件的根编码 → 直接查 Inventory（单连接批量）
         raise_if_cancelled(cancel_checker)
