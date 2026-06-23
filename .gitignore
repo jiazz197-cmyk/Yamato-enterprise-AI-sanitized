@@ -35,3 +35,5 @@ tests/output/
 .kilo/
 .cursor/
 .claude/
+.understand-anything/
+understand-anything/

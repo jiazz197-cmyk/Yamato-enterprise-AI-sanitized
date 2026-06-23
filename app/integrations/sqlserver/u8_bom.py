@@ -6,6 +6,7 @@ parent codes are normalized from trusted API input, not ad-hoc SQL.
 
 from __future__ import annotations
 
+import atexit
 import re
 import threading
 import time
@@ -26,71 +27,65 @@ logger = get_logger("database.sqlserver")
 
 _DEADLOCK_RETRY_DELAYS_SEC: tuple[float, ...] = (0.3, 0.8, 1.5)
 
+# SQL Server 单次参数化查询硬上限为 2100 个参数。IN 列表分批上限留出余量，
+# 避免大 BOM（根编码 × 深度展开后子件数无界）触发 8003 "too many parameters"
+# 错误而被静默吞掉，导致价格/名称补充丢失。
+_IN_CLAUSE_BATCH_SIZE: int = 1000
+
 
 # ---------------------------------------------------------------------------
-# 诊断计数器：追踪并行展开的实际并发度和 SQL vs Python 时间比。
+# 诊断计数器：追踪单次查询并行展开的实际并发度和 SQL vs Python 时间比。
 # 仅用于日志诊断，不影响功能。
+#
+# 每次请求创建独立的 _DiagCounters 实例并下传，而非使用模块全局变量——
+# 否则并发的多个 BOM 任务会互相 reset/累加同一组计数器，导致数值串台
+# （甚至 _diag_active_threads 被减成负数）。
 # ---------------------------------------------------------------------------
-_diag_active_threads: int = 0
-_diag_max_concurrent: int = 0
-_diag_sql_time_sec: float = 0.0
-_diag_python_time_sec: float = 0.0
-_diag_query_count: int = 0
-_diag_lock = threading.Lock()
+class _DiagCounters:
+    """Per-request diagnostic counters, thread-safe across the request's workers."""
 
+    def __init__(self) -> None:
+        self.active_threads: int = 0
+        self.max_concurrent: int = 0
+        self.sql_time_sec: float = 0.0
+        self.python_time_sec: float = 0.0
+        self.query_count: int = 0
+        self._lock = threading.Lock()
 
-def _diag_thread_enter() -> None:
-    global _diag_active_threads, _diag_max_concurrent
-    with _diag_lock:
-        _diag_active_threads += 1
-        if _diag_active_threads > _diag_max_concurrent:
-            _diag_max_concurrent = _diag_active_threads
+    def thread_enter(self) -> None:
+        with self._lock:
+            self.active_threads += 1
+            if self.active_threads > self.max_concurrent:
+                self.max_concurrent = self.active_threads
 
+    def thread_exit(self) -> None:
+        with self._lock:
+            self.active_threads -= 1
 
-def _diag_thread_exit() -> None:
-    global _diag_active_threads
-    with _diag_lock:
-        _diag_active_threads -= 1
+    def record_sql(self, elapsed: float) -> None:
+        with self._lock:
+            self.sql_time_sec += elapsed
+            self.query_count += 1
 
+    def record_python(self, elapsed: float) -> None:
+        with self._lock:
+            self.python_time_sec += elapsed
 
-def _diag_record_sql(elapsed: float) -> None:
-    global _diag_sql_time_sec, _diag_query_count
-    with _diag_lock:
-        _diag_sql_time_sec += elapsed
-        _diag_query_count += 1
-
-
-def _diag_record_python(elapsed: float) -> None:
-    global _diag_python_time_sec
-    with _diag_lock:
-        _diag_python_time_sec += elapsed
-
-
-def _diag_reset() -> None:
-    global _diag_active_threads, _diag_max_concurrent, _diag_sql_time_sec, _diag_python_time_sec, _diag_query_count
-    with _diag_lock:
-        _diag_active_threads = 0
-        _diag_max_concurrent = 0
-        _diag_sql_time_sec = 0.0
-        _diag_python_time_sec = 0.0
-        _diag_query_count = 0
-
-
-def _diag_log_summary(label: str) -> None:
-    with _diag_lock:
-        sql_t = _diag_sql_time_sec
-        py_t = _diag_python_time_sec
-        qc = _diag_query_count
-        mc = _diag_max_concurrent
-    if qc > 0:
-        logger.info(
-            "[DIAG] %s: max_concurrent_threads=%s, query_count=%s, "
-            "sql_time=%.2fs, python_time=%.2fs, avg_sql=%.1fms, "
-            "sql_pct=%.0f%%",
-            label, mc, qc, sql_t, py_t,
-            (sql_t / qc) * 1000,
-            (sql_t / (sql_t + py_t) * 100) if (sql_t + py_t) > 0 else 0,
-        )
+    def log_summary(self, label: str) -> None:
+        with self._lock:
+            sql_t = self.sql_time_sec
+            py_t = self.python_time_sec
+            qc = self.query_count
+            mc = self.max_concurrent
+        if qc > 0:
+            logger.info(
+                "[DIAG] %s: max_concurrent_threads=%s, query_count=%s, "
+                "sql_time=%.2fs, python_time=%.2fs, avg_sql=%.1fms, "
+                "sql_pct=%.0f%%",
+                label, mc, qc, sql_t, py_t,
+                (sql_t / qc) * 1000,
+                (sql_t / (sql_t + py_t) * 100) if (sql_t + py_t) > 0 else 0,
+            )
 
 
 class SharedChildrenCache:
@@ -131,6 +126,7 @@ class SharedChildrenCache:
         self,
         parent_inv_code: str,
         fetch_fn: Callable[[], List[Dict[str, Any]]],
+        cancel_checker: Optional[Callable[[], bool]] = None,
     ) -> List[Dict[str, Any]]:
         # Fast path: already cached.
         cached = self._store.get(parent_inv_code)
@@ -149,6 +145,14 @@ class SharedChildrenCache:
             if err_entry is not None and time.time() >= err_entry[1]:
                 self._errors.pop(parent_inv_code, None)
                 err_entry = None
+
+            # Honor a still-valid (non-expired) cached failure: re-raise it
+            # instead of becoming a fetcher, so the negative-TTL actually bounds
+            # re-querying under persistent failures (the inflight marker was
+            # removed on the prior failure, so without this a fresh caller would
+            # otherwise re-query the DB immediately).
+            if err_entry is not None:
+                raise err_entry[0]
 
             event = self._inflight.get(parent_inv_code)
             if event is None:
@@ -177,8 +181,12 @@ class SharedChildrenCache:
                 event.set()
                 raise
         else:
-            # Wait for the in-flight fetcher to finish, then read the result.
-            event.wait()
+            # Wait for the in-flight fetcher to finish, polling cancel between
+            # short waits so a blocked waiter can be interrupted (it otherwise
+            # holds a pooled connection it is not using until the fetcher's SQL
+            # returns — which may be up to the query timeout).
+            while not event.wait(timeout=1.0):
+                raise_if_cancelled(cancel_checker)
             cached = self._store.get(parent_inv_code)
             if cached is not None:
                 return cached
@@ -195,14 +203,18 @@ class SharedChildrenCache:
 
 
 # ---------------------------------------------------------------------------
-# BOM 任务并发信号量：限制同时运行的 BOM 查询任务数。
+# 并发控制（共享连接池模型）：
 #
-# 每个 BOM 任务会建立最多 U8_BOM_PARALLEL_WORKERS 条 U8 SQL Server 连接，
-# 信号量大小 = U8_BOM_MAX_CONCURRENT_TASKS，二者乘积即最坏情况下到 U8 库的
-# 并发连接数（受 config.U8_BOM_MAX_TOTAL_CONNECTIONS 校验约束）。
+# 1. 全局共享连接池 _shared_pool：大小 = U8_BOM_MAX_TOTAL_CONNECTIONS，是到 U8 ERP
+#    的连接硬上限。所有 BOM 任务共用，按需 acquire/release。这是保护 ERP 的唯一闸门。
 #
-# 与全局线程池 EXECUTOR_MAX_WORKERS 解耦：后者管 OCR/导入等非 BOM 任务，
-# 不受本信号量约束，因此调大 EXECUTOR 不会增加 U8 连接压力。
+# 2. 全局 BOM 任务信号量 _bom_concurrency_semaphore：大小 = U8_BOM_MAX_CONCURRENT_TASKS，
+#    限制同时运行的 BOM 任务数（即嵌套线程池总数 / 线程数上限），与 ERP 连接数解耦。
+#
+# 3. 每用户信号量 _per_user_semaphores：大小 = U8_BOM_MAX_CONCURRENT_TASKS_PER_USER，
+#    限制单用户同时运行的 BOM 任务数，保证 30 人团队公平性，防单人刷爆全局额度。
+#
+# 4. 全局线程池 EXECUTOR_MAX_WORKERS：≥ 任务信号量，否则任务会在执行器队列“看戏”。
 # ---------------------------------------------------------------------------
 _bom_concurrency_semaphore: Optional[threading.BoundedSemaphore] = None
 _bom_semaphore_init_lock = threading.Lock()
@@ -217,13 +229,102 @@ def _get_bom_concurrency_semaphore() -> threading.BoundedSemaphore:
                 size = settings.U8_BOM_MAX_CONCURRENT_TASKS
                 _bom_concurrency_semaphore = threading.BoundedSemaphore(size)
                 logger.info(
-                    "U8 BOM 并发信号量初始化: max_concurrent_tasks=%s "
-                    "(单任务并行=%s, 最坏连接数=%s)",
+                    "U8 BOM 任务信号量初始化: max_concurrent_tasks=%s (每用户=%s, "
+                    "共享连接池=%s)",
                     size,
-                    settings.U8_BOM_PARALLEL_WORKERS,
-                    size * settings.U8_BOM_PARALLEL_WORKERS,
+                    settings.U8_BOM_MAX_CONCURRENT_TASKS_PER_USER,
+                    settings.U8_BOM_MAX_TOTAL_CONNECTIONS,
                 )
     return _bom_concurrency_semaphore
+
+
+# 全局共享 U8 连接池（懒初始化，进程级单例）。
+_shared_pool: Optional[PymssqlConnectionPool] = None
+_shared_pool_init_lock = threading.Lock()
+
+
+def _get_shared_pool() -> PymssqlConnectionPool:
+    """Lazily build (once) the process-global shared U8 connection pool."""
+    global _shared_pool
+    if _shared_pool is None:
+        with _shared_pool_init_lock:
+            if _shared_pool is None:
+                conf = {
+                    "backend": "pymssql",
+                    "server": settings.U8_SQLSERVER_HOST,
+                    "port": settings.U8_SQLSERVER_PORT,
+                    "database": settings.U8_SQLSERVER_DATABASE,
+                    "username": settings.U8_SQLSERVER_USER,
+                    "password": settings.U8_SQLSERVER_PASSWORD,
+                    "encrypt": settings.U8_SQLSERVER_ENCRYPT,
+                }
+                _shared_pool = get_sql_client_pool(
+                    conf, max_size=settings.U8_BOM_MAX_TOTAL_CONNECTIONS
+                )
+                logger.info(
+                    "U8 共享连接池初始化: max_size=%s (所有 BOM 任务共用)",
+                    settings.U8_BOM_MAX_TOTAL_CONNECTIONS,
+                )
+                # 进程级单例永不在请求结束时关闭；注册 atexit 优雅释放空闲连接，
+                # 避免进程退出时连接未关（在测试日志里留 warning）。
+                atexit.register(_close_shared_pool)
+    return _shared_pool
+
+
+def _close_shared_pool() -> None:
+    """atexit 钩子：关闭共享连接池的空闲连接（进程退出时）。"""
+    global _shared_pool
+    pool = _shared_pool
+    if pool is not None:
+        try:
+            pool.close()
+        except Exception as exc:  # noqa: BLE001 — 退出钩子不能抛
+            logger.warning("U8 共享连接池关闭异常: %s", exc)
+
+
+# 每用户 BOM 任务信号量表（user_key -> BoundedSemaphore）。
+# user_key 来自同步 API 的 current_user.id 或 Phase2 的 task owner_id。
+# 30 人团队规模下条目数有限，不做淘汰；若未来 user_key 基数变大需加 LRU。
+_per_user_semaphores: Dict[str, threading.BoundedSemaphore] = {}
+_per_user_sem_lock = threading.Lock()
+
+
+def _get_per_user_semaphore(user_key: str) -> threading.BoundedSemaphore:
+    with _per_user_sem_lock:
+        sem = _per_user_semaphores.get(user_key)
+        if sem is None:
+            sem = threading.BoundedSemaphore(
+                settings.U8_BOM_MAX_CONCURRENT_TASKS_PER_USER
+            )
+            _per_user_semaphores[user_key] = sem
+        return sem
+
+
+def _acquire_per_user_slot(
+    user_key: Optional[str],
+    cancel_checker: Optional[Callable[[], bool]] = None,
+) -> bool:
+    """Block until the user's BOM-task slot is available. No-op if no user_key."""
+    if not user_key:
+        return False
+    sem = _get_per_user_semaphore(user_key)
+    waited = False
+    while not sem.acquire(timeout=1.0):
+        if not waited:
+            logger.info("U8 BOM 每用户并发已满，排队等待: user=%s", user_key)
+            waited = True
+        raise_if_cancelled(cancel_checker)
+    return True
+
+
+def _release_per_user_slot(user_key: Optional[str], held: bool) -> None:
+    if not user_key or not held:
+        return
+    sem = _get_per_user_semaphore(user_key)
+    try:
+        sem.release()
+    except ValueError:
+        logger.warning("U8 BOM 每用户信号量重复释放: user=%s", user_key)
 
 
 def _acquire_bom_slot(
@@ -250,8 +351,14 @@ def _release_bom_slot() -> None:
     try:
         sem.release()
     except ValueError:
-        # 信号量计数已满（重复释放），忽略以保持健壮
-        pass
+        # BoundedSemaphore.release() 仅在重复释放（超过初始计数）时抛 ValueError。
+        # 当前 acquire/release 一一配对、由 slot_held 守卫，正常不会触发；
+        # 若触发说明存在重复释放 bug（会让槽位计数虚高、绕过并发上限），
+        # 记日志而非静默吞掉，便于发现会计错误。
+        logger.warning(
+            "U8 BOM 并发信号量重复释放（ValueError 已忽略），"
+            "可能存在 slot 重复释放 bug"
+        )
 
 
 def _is_sqlserver_deadlock_error(exc: BaseException) -> bool:
@@ -311,60 +418,76 @@ def _is_price_missing(value: Any) -> bool:
 def _query_recordoutlist_prices(
     client: Any,
     missing_codes: set[str],
+    cancel_checker: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, float]:
     """Query recordoutlist for latest iunitcost per cinvcode.
 
     Returns a dict mapping cinvcode -> iunitcost (latest record per code).
     Falls back to simpler ORDER BY if ddate column is unavailable.
+
+    Codes are queried in batches of ``_IN_CLAUSE_BATCH_SIZE`` so a large BOM
+    (which can yield far more distinct child codes than the 1500-root input
+    cap) never exceeds SQL Server's 2100-parameter limit.
     """
     if not missing_codes:
         return {}
 
     codes = sorted(missing_codes)
-    placeholders = ", ".join(["%s"] * len(codes))
 
     # Try with ddate first (standard U8 date column), fallback to autoid only
     for order_by in ("ddate DESC, autoid DESC", "autoid DESC"):
-        sql = f"""
-            SELECT cinvcode, iunitcost
-            FROM (
-                SELECT
-                    cinvcode,
-                    iunitcost,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY cinvcode
-                        ORDER BY {order_by}
-                    ) AS rn
-                FROM UFDATA_CHANGE_ME.dbo.recordoutlist
-                WHERE cinvcode IN ({placeholders})
-                  AND iunitcost IS NOT NULL
-                  AND iunitcost <> 0
-            ) t
-            WHERE rn = 1
-        """
-        try:
-            rows = _query_with_deadlock_retry(
-                client,
-                sql,
-                log_label=f"recordoutlist_prices:{order_by}",
-                params=codes,
-            )
-            result: Dict[str, float] = {}
-            for row in rows:
-                code = str(row.get("cinvcode", "")).strip()
-                cost = row.get("iunitcost")
-                if code and cost is not None:
-                    try:
-                        result[code] = float(cost)
-                    except (ValueError, TypeError):
-                        pass
+        result: Dict[str, float] = {}
+        all_failed = True
+        for start in range(0, len(codes), _IN_CLAUSE_BATCH_SIZE):
+            raise_if_cancelled(cancel_checker)
+            batch = codes[start:start + _IN_CLAUSE_BATCH_SIZE]
+            placeholders = ", ".join(["%s"] * len(batch))
+            sql = f"""
+                SELECT cinvcode, iunitcost
+                FROM (
+                    SELECT
+                        cinvcode,
+                        iunitcost,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY cinvcode
+                            ORDER BY {order_by}
+                        ) AS rn
+                    FROM UFDATA_CHANGE_ME.dbo.recordoutlist
+                    WHERE cinvcode IN ({placeholders})
+                      AND iunitcost IS NOT NULL
+                      AND iunitcost <> 0
+                ) t
+                WHERE rn = 1
+            """
+            try:
+                rows = _query_with_deadlock_retry(
+                    client,
+                    sql,
+                    log_label=f"recordoutlist_prices:{order_by}",
+                    cancel_checker=cancel_checker,
+                    params=batch,
+                )
+                for row in rows:
+                    code = str(row.get("cinvcode", "")).strip()
+                    cost = row.get("iunitcost")
+                    if code and cost is not None:
+                        try:
+                            result[code] = float(cost)
+                        except (ValueError, TypeError):
+                            pass
+                all_failed = False
+            except Exception as exc:
+                logger.warning(
+                    "recordoutlist 价格补充查询失败 (ORDER BY %s, batch=%s..%s): %s",
+                    order_by, start, start + len(batch), exc,
+                )
+                # 单批失败不致命：继续尝试剩余批次，d 缺失的编码保持原值。
+                # 整个 ORDER BY 策略仅当所有批次都失败时才回退到下一个 ORDER BY。
+                continue
+
+        if not all_failed:
             return result
-        except Exception as exc:
-            logger.warning(
-                "recordoutlist 价格补充查询失败 (ORDER BY %s): %s",
-                order_by, exc,
-            )
-            continue
+        # 所有批次均失败 → 尝试下一个 ORDER BY 策略
 
     logger.warning("recordoutlist 价格补充查询失败 (所有 ORDER BY 回退)")
     return {}
@@ -373,6 +496,7 @@ def _query_recordoutlist_prices(
 def _supplement_missing_prices(
     result_rows: List[Dict[str, Any]],
     client: Any,
+    cancel_checker: Optional[Callable[[], bool]] = None,
 ) -> None:
     """Supplement missing iInvNcost from recordoutlist, in-place.
 
@@ -390,7 +514,7 @@ def _supplement_missing_prices(
     if not missing_codes:
         return
 
-    supplement_prices = _query_recordoutlist_prices(client, missing_codes)
+    supplement_prices = _query_recordoutlist_prices(client, missing_codes, cancel_checker)
     if not supplement_prices:
         logger.info("U8 价格补充: recordoutlist 无匹配价格, missing_codes=%s", len(missing_codes))
         return
@@ -449,31 +573,47 @@ def split_parent_inv_codes(value: Any) -> List[str]:
     return list(dict.fromkeys(codes))
 
 
-def _fetch_root_inv_names(client: SqlServerClient, codes: List[str]) -> Dict[str, str]:
-    """批量查询根父件编码对应的名称"""
+def _fetch_root_inv_names(
+    client: Any,
+    codes: List[str],
+    cancel_checker: Optional[Callable[[], bool]] = None,
+) -> Dict[str, str]:
+    """批量查询根父件编码对应的名称。
+
+    分批查询以避免超大批量编码触发 SQL Server 的 2100 参数上限。
+    """
     if not codes:
         return {}
 
-    # 构建 IN 条件
-    placeholders = ", ".join(["%s"] * len(codes))
-    sql = f"""
-        SELECT cInvCode, cInvName
-        FROM Inventory
-        WHERE cInvCode IN ({placeholders})
-    """
-    rows = _query_with_deadlock_retry(
-        client,
-        sql,
-        log_label="root_inv_names",
-        params=codes,
-    )
-
     result: Dict[str, str] = {}
-    for row in rows:
-        code = str(row.get("cInvCode") or "").strip()
-        name = str(row.get("cInvName") or "").strip()
-        if code and name:
-            result[code] = name
+    for start in range(0, len(codes), _IN_CLAUSE_BATCH_SIZE):
+        raise_if_cancelled(cancel_checker)
+        batch = codes[start:start + _IN_CLAUSE_BATCH_SIZE]
+        placeholders = ", ".join(["%s"] * len(batch))
+        sql = f"""
+            SELECT cInvCode, cInvName
+            FROM Inventory
+            WHERE cInvCode IN ({placeholders})
+        """
+        try:
+            rows = _query_with_deadlock_retry(
+                client,
+                sql,
+                log_label="root_inv_names",
+                cancel_checker=cancel_checker,
+                params=batch,
+            )
+            for row in rows:
+                code = str(row.get("cInvCode") or "").strip()
+                name = str(row.get("cInvName") or "").strip()
+                if code and name:
+                    result[code] = name
+        except Exception as exc:
+            logger.warning(
+                "根父件名称查询失败 (batch=%s..%s): %s",
+                start, start + len(batch), exc,
+            )
+            continue
 
     # 找不到名称的编码，使用编码本身作为名称
     for code in codes:
@@ -488,6 +628,7 @@ def _fill_inventory_only_rows(
     client: Any,
     no_bom_codes: List[str],
     root_name_map: Dict[str, str],
+    cancel_checker: Optional[Callable[[], bool]] = None,
 ) -> None:
     """For codes without BOM children (purchased/leaf items), query Inventory
     directly and append a single self-referencing row per code.
@@ -498,38 +639,45 @@ def _fill_inventory_only_rows(
     if not no_bom_codes:
         return
 
-    placeholders = ", ".join(["%s"] * len(no_bom_codes))
-    sql = f"""
-        SELECT
-            cInvCode,
-            cInvName,
-            iInvSprice,
-            iInvNcost,
-            cInvStd,
-            cInvDepCode,
-            cDefWareHouse,
-            bForeExpland,
-            iSupplyType
-        FROM Inventory
-        WHERE cInvCode IN ({placeholders})
-    """
-    try:
-        inv_rows = _query_with_deadlock_retry(
-            client,
-            sql,
-            log_label="inventory_only_rows",
-            params=no_bom_codes,
-        )
-    except Exception as exc:
-        logger.warning("Inventory 采购件回退查询失败: %s", exc)
-        return
-
     # Map code -> inventory row
     inv_by_code: Dict[str, Dict[str, Any]] = {}
-    for row in inv_rows:
-        code = str(row.get("cInvCode") or "").strip()
-        if code:
-            inv_by_code[code] = row
+    for start in range(0, len(no_bom_codes), _IN_CLAUSE_BATCH_SIZE):
+        raise_if_cancelled(cancel_checker)
+        batch = no_bom_codes[start:start + _IN_CLAUSE_BATCH_SIZE]
+        placeholders = ", ".join(["%s"] * len(batch))
+        sql = f"""
+            SELECT
+                cInvCode,
+                cInvName,
+                iInvSprice,
+                iInvNcost,
+                cInvStd,
+                cInvDepCode,
+                cDefWareHouse,
+                bForeExpland,
+                iSupplyType
+            FROM Inventory
+            WHERE cInvCode IN ({placeholders})
+        """
+        try:
+            inv_rows = _query_with_deadlock_retry(
+                client,
+                sql,
+                log_label="inventory_only_rows",
+                cancel_checker=cancel_checker,
+                params=batch,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Inventory 采购件回退查询失败 (batch=%s..%s): %s",
+                start, start + len(batch), exc,
+            )
+            continue
+
+        for row in inv_rows:
+            code = str(row.get("cInvCode") or "").strip()
+            if code:
+                inv_by_code[code] = row
 
     filled_count = 0
     for code in no_bom_codes:
@@ -681,12 +829,17 @@ def _fetch_children_cached(
     parent_inv_code: str,
     root_codes_set: set[str],
     cancel_checker: Optional[Callable[[], bool]] = None,
+    diag: Optional["_DiagCounters"] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch BOM children for one parent code, using a shared thread-safe cache.
 
-    The SQL fetch runs inside ``cache.get_or_fetch``'s lock, so concurrent
-    workers requesting the same parent code block until the first fetch
-    completes; the result is then shared globally without re-querying.
+    The SQL fetch runs OUTSIDE the cache lock: ``SharedChildrenCache.get_or_fetch``
+    registers a per-key ``threading.Event`` in a short critical section, then the
+    first fetcher runs the query on its own pooled connection while same-code
+    waiters block on ``event.wait()`` (not on the lock). Distinct parent codes
+    proceed in parallel. The result is shared globally without re-querying; on
+    failure the exception is cached (short negative-TTL) so woken waiters and
+    fresh callers re-raise instead of re-querying.
     """
 
     def _do_fetch() -> List[Dict[str, Any]]:
@@ -700,7 +853,8 @@ def _fetch_children_cached(
             params=(parent_inv_code,),
         )
         _sql_elapsed = time.time() - _sql_start
-        _diag_record_sql(_sql_elapsed)
+        if diag is not None:
+            diag.record_sql(_sql_elapsed)
         if not rows and parent_inv_code in root_codes_set:
             probe = _probe_partmap_hits(client, parent_inv_code, cancel_checker)
             logger.warning(
@@ -712,8 +866,9 @@ def _fetch_children_cached(
         return rows
 
     _py_start = time.time()
-    result = cache.get_or_fetch(parent_inv_code, _do_fetch)
-    _diag_record_python(time.time() - _py_start)
+    result = cache.get_or_fetch(parent_inv_code, _do_fetch, cancel_checker)
+    if diag is not None:
+        diag.record_python(time.time() - _py_start)
     return result
 
 
@@ -730,6 +885,7 @@ def _walk_bom_subtree(
     visited_part_ids: set[str],
     root_codes_set: set[str],
     cancel_checker: Optional[Callable[[], bool]] = None,
+    diag: Optional["_DiagCounters"] = None,
 ) -> List[Dict[str, Any]]:
     """Depth-first walk of one BOM subtree; returns rows for this subtree only.
 
@@ -746,6 +902,7 @@ def _walk_bom_subtree(
         parent_code,
         root_codes_set,
         cancel_checker,
+        diag,
     )
     if not children:
         return []
@@ -815,6 +972,7 @@ def _walk_bom_subtree(
                     visited_part_ids=next_visited,
                     root_codes_set=root_codes_set,
                     cancel_checker=cancel_checker,
+                    diag=diag,
                 )
             )
 
@@ -829,6 +987,7 @@ def _walk_one_root(
     cancel_checker: Optional[Callable[[], bool]],
     pool: "PymssqlConnectionPool",
     shared_cache: "SharedChildrenCache",
+    diag: Optional["_DiagCounters"] = None,
 ) -> tuple[List[Dict[str, Any]], bool]:
     """Walk one root code's BOM subtree using a dedicated pooled connection.
 
@@ -836,9 +995,10 @@ def _walk_one_root(
     fetched only once. Returns ``(rows, has_no_bom_children)``.
     """
     raise_if_cancelled(cancel_checker)
-    _diag_thread_enter()
+    if diag is not None:
+        diag.thread_enter()
     try:
-        with pooled_client(pool) as client:
+        with pooled_client(pool, cancel_checker=cancel_checker) as client:
             rows = _walk_bom_subtree(
                 client=client,
                 cache=shared_cache,
@@ -851,56 +1011,55 @@ def _walk_one_root(
                 visited_part_ids=set(),
                 root_codes_set=root_codes_set,
                 cancel_checker=cancel_checker,
+                diag=diag,
             )
         return rows, len(rows) == 0
     finally:
-        _diag_thread_exit()
+        if diag is not None:
+            diag.thread_exit()
 
 
 def _query_u8_bom_inventory(
     parent_codes: List[str],
     max_depth: int,
     cancel_checker: Optional[Callable[[], bool]] = None,
+    user_key: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     if not parent_codes:
         return []
 
     parallel_workers = max(1, min(settings.U8_BOM_PARALLEL_WORKERS, len(parent_codes)))
-    pool_config = {
-        "backend": "pymssql",
-        "server": settings.U8_SQLSERVER_HOST,
-        "port": settings.U8_SQLSERVER_PORT,
-        "database": settings.U8_SQLSERVER_DATABASE,
-        "username": settings.U8_SQLSERVER_USER,
-        "password": settings.U8_SQLSERVER_PASSWORD,
-        "encrypt": settings.U8_SQLSERVER_ENCRYPT,
-    }
 
     slot_held = False
-    pool: Optional[PymssqlConnectionPool] = None
+    per_user_held = False
     overall_start = time.time()
 
     try:
-        # 获取 BOM 并发槽位（信号量），限制同时运行的 BOM 任务数以保护 U8 ERP 库。
-        # 在排队等待期间支持取消。acquire 在 try 内，确保后续任何异常都能在 finally 释放槽位。
+        # 先获取每用户槽位（快速拒绝刷爆的用户），再获取全局 BOM 任务槽位。
+        # 二者均在 try 内获取、在 finally 释放；等待期间支持取消。
+        per_user_held = _acquire_per_user_slot(user_key, cancel_checker)
         _acquire_bom_slot(cancel_checker)
         slot_held = True
 
-        pool = get_sql_client_pool(pool_config, max_size=parallel_workers)
+        # 共享连接池（进程级单例）：所有 BOM 任务共用，ERP 连接数受池大小硬约束。
+        pool = _get_shared_pool()
         root_codes_set = set(parent_codes)
         shared_cache = SharedChildrenCache()
+        diag = _DiagCounters()
 
         logger.info(
-            "U8 BOM 并行查询开始: root_codes=%s, parallel_workers=%s, max_depth=%s",
+            "U8 BOM 并行查询开始: root_codes=%s, parallel_workers=%s, max_depth=%s, "
+            "user=%s",
             len(parent_codes),
             parallel_workers,
             max_depth,
+            user_key or "-",
         )
-        _diag_reset()
 
         # 1. 批量查询所有根父件名称（单连接）
-        with pooled_client(pool) as name_client:
-            root_name_map = _fetch_root_inv_names(name_client, parent_codes)
+        raise_if_cancelled(cancel_checker)
+        with pooled_client(pool, cancel_checker=cancel_checker) as name_client:
+            root_name_map = _fetch_root_inv_names(name_client, parent_codes, cancel_checker)
 
         # 2. 展开每个根编码的 BOM 子树（并行或串行回退）
         # 结果按 parent_codes 输入顺序归并，保证与原串行实现输出顺序一致。
@@ -914,7 +1073,7 @@ def _query_u8_bom_inventory(
                 root_name = root_name_map.get(root_code, root_code)
                 rows, no_bom = _walk_one_root(
                     root_code, root_name, max_depth, root_codes_set,
-                    cancel_checker, pool, shared_cache,
+                    cancel_checker, pool, shared_cache, diag,
                 )
                 per_root_rows[root_code] = rows
                 if no_bom:
@@ -934,6 +1093,7 @@ def _query_u8_bom_inventory(
                         cancel_checker,
                         pool,
                         shared_cache,
+                        diag,
                     ): root_code
                     for root_code in parent_codes
                 }
@@ -942,12 +1102,15 @@ def _query_u8_bom_inventory(
                     try:
                         rows, no_bom = future.result()
                     except QueryCancelledError:
-                        # 取消：取消其余未完成的 future 后向上抛出
+                        # 取消：取消尚未启动的 future 后向上抛出（已在运行的线程
+                        # 会跑到各自的 raise_if_cancelled 才停）
                         for f in future_map:
                             f.cancel()
                         raise
                     except Exception as exc:
-                        # fail-fast：取消兄弟任务，避免继续浪费 DB 负载
+                        # fail-fast：取消尚未启动的兄弟 future（f.cancel() 无法中断
+                        # 已在运行的线程，它们会跑到下一个 raise_if_cancelled 才停），
+                        # 避免继续浪费 DB 负载
                         logger.error(
                             "U8 根节点展开异常: root_code=%s, error=%s",
                             root_code,
@@ -970,21 +1133,20 @@ def _query_u8_bom_inventory(
             if root_code in per_root_no_bom:
                 no_bom_root_codes.append(root_code)
 
-        _diag_log_summary("并行展开阶段")
-
-        _diag_log_summary("BOM 并行展开")
-
-        _diag_log_summary("BOM 并行展开")
+        diag.log_summary("BOM 并行展开")
 
         # 3. 无 BOM 子件的根编码 → 直接查 Inventory（单连接批量）
-        with pooled_client(pool) as inv_client:
+        raise_if_cancelled(cancel_checker)
+        with pooled_client(pool, cancel_checker=cancel_checker) as inv_client:
             _fill_inventory_only_rows(
-                result_rows, inv_client, no_bom_root_codes, root_name_map
+                result_rows, inv_client, no_bom_root_codes, root_name_map,
+                cancel_checker,
             )
 
         # 4. 补充缺失价格（单连接批量）
-        with pooled_client(pool) as price_client:
-            _supplement_missing_prices(result_rows, price_client)
+        raise_if_cancelled(cancel_checker)
+        with pooled_client(pool, cancel_checker=cancel_checker) as price_client:
+            _supplement_missing_prices(result_rows, price_client, cancel_checker)
 
         elapsed = time.time() - overall_start
         logger.info(
@@ -998,11 +1160,13 @@ def _query_u8_bom_inventory(
         )
         return result_rows
     finally:
-        if pool is not None:
-            pool.close()
+        # 共享连接池不在请求结束时关闭（进程级单例）；连接由 pooled_client 归还。
         if slot_held:
             _release_bom_slot()
             slot_held = False
+        if per_user_held:
+            _release_per_user_slot(user_key, per_user_held)
+            per_user_held = False
 
 
 _SUPPLY_TYPE_MAP: Dict[int, str] = {

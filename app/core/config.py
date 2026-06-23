@@ -173,50 +173,65 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     # pymssql: query timeout (seconds) and connection/login timeout
     SQLSERVER_QUERY_TIMEOUT_SEC: int = Field(120, ge=1, le=3600, env="SQLSERVER_QUERY_TIMEOUT_SEC")
     SQLSERVER_LOGIN_TIMEOUT_SEC: int = Field(30, ge=1, le=300, env="SQLSERVER_LOGIN_TIMEOUT_SEC")
+    # PDM matcher 四路召回的"查询内"并行度（与跨请求并发无关）。不用于同步查询 API
+    # 执行器（那个用 EXECUTOR_MAX_WORKERS）。
     SQLSERVER_QUERY_MAX_WORKERS: int = Field(2, ge=1, le=8, env="SQLSERVER_QUERY_MAX_WORKERS")
 
-    # U8 BOM 树展开并行度：单个 BOM 任务内，每个根编码子树分配一个 worker 线程 +
-    # 一条独立 DB 连接。设为 1 即退回原始串行行为。128 核服务器默认 16 吃满十几个核心。
+    # U8 BOM 树展开并行度：单个 BOM 任务内嵌 ThreadPoolExecutor 的 worker 数
+    # （每个根编码子树一个 worker）。注意：采用全局共享连接池后，本值不再决定
+    # 到 ERP 的连接数（由 U8_BOM_MAX_TOTAL_CONNECTIONS 决定），仅决定单任务的
+    # 线程数/并行度。设为 1 即退回串行。调大会增加线程数（任务数 × 本值）。
     U8_BOM_PARALLEL_WORKERS: int = Field(
         16, ge=1, le=128, env="U8_BOM_PARALLEL_WORKERS"
     )
-    # 允许同时运行的 BOM 查询任务数（运行时信号量约束）。
-    # 与 U8_BOM_PARALLEL_WORKERS 解耦：EXECUTOR_MAX_WORKERS 控制 OCR/导入等所有后台任务，
-    # 而本项只限制会打开 U8 SQL Server 连接的 BOM 任务并发数。
+    # 允许同时运行的 BOM 查询任务数（运行时全局信号量约束）。
+    # 采用共享连接池后，本值不再保护 ERP 连接（连接池上限负责），而是限制并发
+    # BOM 任务数 / 嵌套线程池总数。需 ≤ EXECUTOR_MAX_WORKERS，否则任务会卡在
+    # 执行器队列里等待（“看戏”）。
     U8_BOM_MAX_CONCURRENT_TASKS: int = Field(
-        3, ge=1, le=64, env="U8_BOM_MAX_CONCURRENT_TASKS"
+        30, ge=1, le=64, env="U8_BOM_MAX_CONCURRENT_TASKS"
     )
-    # 全局后台任务线程池大小（之前未定义，恒为 fallback=4）。
-    # 控制 OCR/导入/报价等所有后台任务类型之间的并发，与 U8 连接数无关（已解耦）。
+    # 单个用户同时可运行的 BOM 查询任务数上限（每用户独立信号量，互不共享）。
+    # 防止单人刷爆全局并发额度，保证 30 人团队公平性。
+    U8_BOM_MAX_CONCURRENT_TASKS_PER_USER: int = Field(
+        2, ge=1, le=64, env="U8_BOM_MAX_CONCURRENT_TASKS_PER_USER"
+    )
+    # 后台任务线程池大小，同时也是同步查询 API 执行器大小（两条路径共用此旋钮）。
+    # 控制 OCR/导入/报价等后台任务 + 同步 /u8/bom-inventory 查询的并发。
+    # 需 ≥ U8_BOM_MAX_CONCURRENT_TASKS，否则 BOM 任务（无论同步还是后台）会在
+    # 执行器队列里排队"看戏"，根本到不了 per-user / 全局 BOM 信号量。
     EXECUTOR_MAX_WORKERS: int = Field(
-        8, ge=1, le=512, env="EXECUTOR_MAX_WORKERS"
+        30, ge=1, le=512, env="EXECUTOR_MAX_WORKERS"
     )
-    # 单台后端实例允许同时打开的 U8 SQL Server 连接总数上限（所有 BOM 任务合计）。
-    # U8_BOM_MAX_CONCURRENT_TASKS × U8_BOM_PARALLEL_WORKERS 不得超过此值，
-    # 避免压垮生产 U8 ERP 数据库。默认 48 = 3 任务 × 16 并行。
+    # 全局共享 U8 连接池大小 = 单实例同时打开的 U8 SQL Server 连接总数硬上限。
+    # 所有 BOM 任务共享此池，按需 acquire/release，ERP 永远只看到这么多连接。
+    # 这是保护生产 U8 ERP 数据库的唯一连接闸门（取代旧的“任务数×并行度”乘积）。
     U8_BOM_MAX_TOTAL_CONNECTIONS: int = Field(
-        48, ge=1, le=2048, env="U8_BOM_MAX_TOTAL_CONNECTIONS"
+        64, ge=1, le=2048, env="U8_BOM_MAX_TOTAL_CONNECTIONS"
+    )
+    # 从共享连接池获取一条连接的最长等待秒数（带 1s 轮询 + 取消检查）。
+    # 超时抛 PoolTimeout（通常意味着 ERP 连接被长时间占满）。
+    U8_BOM_POOL_ACQUIRE_TIMEOUT_SEC: int = Field(
+        60, ge=1, le=600, env="U8_BOM_POOL_ACQUIRE_TIMEOUT_SEC"
     )
 
     @model_validator(mode="after")
-    def _validate_u8_bom_connection_budget(self):
-        """限制 BOM 并发任务数 × 单任务并行连接数 不超过总连接上限。
+    def _validate_u8_bom_concurrency(self):
+        """共享连接池模型下的并发一致性校验。
 
-        每个 BOM 任务最多建立 U8_BOM_PARALLEL_WORKERS 条连接，最多
-        U8_BOM_MAX_CONCURRENT_TASKS 个 BOM 任务同时运行（运行时信号量约束），
-        二者乘积即最坏情况下到 U8 库的并发连接数，必须不超过
-        U8_BOM_MAX_TOTAL_CONNECTIONS，防止打满生产 U8 ERP 数据库连接。
-
-        注意：与 EXECUTOR_MAX_WORKERS 解耦——后者管 OCR/导入等非 BOM 任务，
-        不占用 U8 连接预算。
+        - EXECUTOR_MAX_WORKERS ≥ U8_BOM_MAX_CONCURRENT_TASKS：EXECUTOR 同时是后台
+          任务池和同步查询 API 执行器，二者共用此旋钮。若小于任务并发上限，BOM 任务
+          （无论同步 /u8/bom-inventory 还是后台报价）会在执行器队列里排队“看戏”，
+          根本到不了 per-user / 全局 BOM 信号量。
+        - U8_BOM_MAX_TOTAL_CONNECTIONS 是 ERP 连接硬上限（共享池大小），与任务数/
+          并行度解耦——任务数 × 并行度 可远大于连接数，多出的 worker 线程会在池上
+          阻塞等待连接（合理的背压，非错误）。
         """
-        product = self.U8_BOM_MAX_CONCURRENT_TASKS * self.U8_BOM_PARALLEL_WORKERS
-        if product > self.U8_BOM_MAX_TOTAL_CONNECTIONS:
+        if self.U8_BOM_MAX_CONCURRENT_TASKS > self.EXECUTOR_MAX_WORKERS:
             raise ValueError(
-                f"U8_BOM_MAX_CONCURRENT_TASKS({self.U8_BOM_MAX_CONCURRENT_TASKS}) × "
-                f"U8_BOM_PARALLEL_WORKERS({self.U8_BOM_PARALLEL_WORKERS}) = {product} "
-                f"超过 U8_BOM_MAX_TOTAL_CONNECTIONS({self.U8_BOM_MAX_TOTAL_CONNECTIONS})，"
-                f"请调小其中之一或调高上限"
+                f"U8_BOM_MAX_CONCURRENT_TASKS({self.U8_BOM_MAX_CONCURRENT_TASKS}) > "
+                f"EXECUTOR_MAX_WORKERS({self.EXECUTOR_MAX_WORKERS})：BOM 任务会卡在"
+                f"执行器队列，请调大 EXECUTOR_MAX_WORKERS 或调小任务并发数"
             )
         return self
 

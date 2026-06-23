@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# 与 create_direct_u8_task 的 _MAX_PARTIDS 一致，防止 API 路径传入超大编码列表。
+_MAX_PARENT_INV_CODES: int = 1500
 
 
 class U8BomInventoryRequest(BaseModel):
@@ -15,6 +19,23 @@ class U8BomInventoryRequest(BaseModel):
         description="父件编码，支持字符串（逗号/空格分隔）或数组",
     )
     max_depth: int = Field(3, ge=1, le=50, description="递归最大深度")
+
+    @field_validator("parent_inv_codes")
+    @classmethod
+    def _cap_parent_inv_codes(cls, v: str | List[str]) -> str | List[str]:
+        """Cap the number of parent codes to avoid unbounded IN-clause / load.
+
+        Mirrors the 1500-partid ceiling enforced on the direct-task path.
+        """
+        if isinstance(v, list):
+            if len(v) > _MAX_PARENT_INV_CODES:
+                raise ValueError(f"parent_inv_codes 最多支持 {_MAX_PARENT_INV_CODES} 个编码")
+            return v
+        # 字符串形式按分隔符拆分计数（与 split_parent_inv_codes 一致）
+        codes = [c.strip() for c in re.split(r"[;,/|\s、，；]+", v) if c.strip()]
+        if len(codes) > _MAX_PARENT_INV_CODES:
+            raise ValueError(f"parent_inv_codes 最多支持 {_MAX_PARENT_INV_CODES} 个编码")
+        return v
 
 
 class PdmBomRequest(BaseModel):

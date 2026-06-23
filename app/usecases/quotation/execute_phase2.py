@@ -34,6 +34,8 @@ class ExecuteQuotationPhase2Command:
     code_type: Optional[str] = None
     progress_callback: ProgressCallback = None
     cancel_checker: CancelChecker = None
+    # 任务归属用户 id，用作 U8 BOM 每用户并发限流的 key（单人最多 N 个并发 BOM 查询）。
+    owner_id: Optional[str] = None
 
 
 class ExecuteQuotationPhase2UseCase:
@@ -123,6 +125,7 @@ class ExecuteQuotationPhase2UseCase:
             response = self._u8_query.run(
                 U8BomInventoryCommand(parent_inv_codes=parent_inv_codes, max_depth=_U8_MAX_DEPTH),
                 cancel_checker=cancel,
+                user_key=cmd.owner_id,
             )
         except QueryCancelledError as exc:
             raise QuotationPipelineCancelledError("U8 查询已取消") from exc
@@ -194,6 +197,7 @@ class ExecuteQuotationPhase2UseCase:
         shallow_response = self._u8_query.run(
             U8BomInventoryCommand(parent_inv_codes=",".join(converted_u8_codes), max_depth=1),
             cancel_checker=cancel,
+            user_key=cmd.owner_id,
         )
         shallow_result = response_to_dict(shallow_response)
 
@@ -229,6 +233,7 @@ class ExecuteQuotationPhase2UseCase:
                 child_response = self._u8_query.run(
                     U8BomInventoryCommand(parent_inv_codes=child_code, max_depth=_U8_MAX_DEPTH),
                     cancel_checker=cancel,
+                    user_key=cmd.owner_id,
                 )
             except QueryCancelledError as exc:
                 raise QuotationPipelineCancelledError("U8 查询已取消") from exc

@@ -33,6 +33,7 @@ logger = get_logger("database.sqlserver")
 def run_u8_bom_inventory_query(
     payload: U8BomInventoryRequest,
     cancel_checker: Optional[Callable[[], bool]] = None,
+    user_key: Optional[str] = None,
 ) -> QueryResponse:
     """U8 BOM + Inventory. Cooperative cancellation between root iterations."""
     parent_codes = split_parent_inv_codes(payload.parent_inv_codes)
@@ -41,7 +42,10 @@ def run_u8_bom_inventory_query(
 
     try:
         raw_rows = _query_u8_bom_inventory(
-            parent_codes, payload.max_depth, cancel_checker=cancel_checker
+            parent_codes,
+            payload.max_depth,
+            cancel_checker=cancel_checker,
+            user_key=user_key,
         )
         rows = format_u8_output_rows(raw_rows)
         logger.debug(

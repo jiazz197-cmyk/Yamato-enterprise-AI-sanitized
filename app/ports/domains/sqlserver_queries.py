@@ -10,7 +10,13 @@ CancelChecker = Optional[Callable[[], bool]]
 
 
 class U8BomInventoryQueryPort(Protocol):
-    def run(self, payload: Any, *, cancel_checker: CancelChecker = None) -> Any:
+    def run(
+        self,
+        payload: Any,
+        *,
+        cancel_checker: CancelChecker = None,
+        user_key: Optional[str] = None,
+    ) -> Any:
         ...
 
 

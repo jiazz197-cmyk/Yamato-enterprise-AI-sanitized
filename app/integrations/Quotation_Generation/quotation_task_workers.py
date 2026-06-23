@@ -495,6 +495,8 @@ def process_quotation_task_phase2_background(
         phase2_uc = build_execute_quotation_phase2_use_case()
         manual_types = existing_payload.get("manual_partid_types")
         code_type = existing_payload.get("code_type")
+        # 取任务归属用户作为 per-user BOM 并发限流 key（dispatch 时已缓存）。
+        owner_id = task_owner_registry.peek_cache(task_id) or ""
         phase2_result = phase2_uc.execute(
             ExecuteQuotationPhase2Command(
                 pdm_partids=selected_partids,
@@ -505,6 +507,7 @@ def process_quotation_task_phase2_background(
                 code_type=code_type,
                 progress_callback=update_progress,
                 cancel_checker=token.is_cancelled,
+                owner_id=owner_id or None,
             )
         )
 

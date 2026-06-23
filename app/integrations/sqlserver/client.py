@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from app.core.config import settings
 from app.core.exceptions import ExternalServiceError
 from app.core.logging import get_logger
+from app.integrations.sqlserver.exceptions import raise_if_cancelled
 
 logger = get_logger("database.sqlserver.client")
 
@@ -29,6 +30,9 @@ def _build_pymssql_conn(conf: Dict[str, Any]) -> Any:
         database=conf["database"],
         charset="utf8",
         as_dict=True,
+        # 全部为只读 SELECT，开启 autocommit 避免每条连接携带隐式事务：
+        # 这样一次查询超时不会在 LIFO 复用的下一条连接上留下 doomed 事务。
+        autocommit=True,
         timeout=settings.SQLSERVER_QUERY_TIMEOUT_SEC,
         login_timeout=settings.SQLSERVER_LOGIN_TIMEOUT_SEC,
     )
@@ -106,37 +110,57 @@ def get_sql_client(config: Dict[str, Any]):
     return _PymssqlClient(config)
 
 
+class PoolTimeout(RuntimeError):
+    """Raised when an ``acquire`` cannot obtain a connection within its timeout."""
+
+
 class PymssqlConnectionPool:
-    """Thread-safe pool of pymssql connections.
+    """Thread-safe, bounded, BLOCKING pool of pymssql connections.
 
-    Each ``acquire()`` returns a dedicated connection (creating one if the pool
-    is empty); ``release(conn)`` returns it for reuse. ``close()`` shuts every
-    idle connection. Connections that error out should be discarded via
-    ``discard(conn)`` rather than released.
+    A ``BoundedSemaphore`` (``_slots``) gates the total number of live
+    connections (idle + checked-out) to ``max_size``. ``acquire`` reserves a
+    slot (blocking up to ``timeout``) then reuses an idle connection or creates
+    a new one; ``release``/``discard`` return the slot. Idle connections do NOT
+    hold slots — a slot represents "one checked-out connection", so reuse from
+    idle is free and the pool never blocks on a stash of idle conns.
 
-    Intended for parallel BOM-tree expansion: every worker thread checks out
-    its own connection so queries do not serialize on a single connection.
+    Designed as a long-lived GLOBAL shared pool: all BOM tasks check connections
+    out of one instance so the ERP database sees at most ``max_size`` concurrent
+    connections regardless of how many tasks/threads exist. Acquire may BLOCK
+    (with timeout) instead of raising when capacity is reached — callers waiting
+    for a connection is correct back-pressure, not an error.
     """
 
     def __init__(self, conf: Dict[str, Any], max_size: Optional[int] = None):
         self._conf = conf
-        self._max_size = max_size or settings.U8_BOM_PARALLEL_WORKERS
+        self._max_size = max_size or settings.U8_BOM_MAX_TOTAL_CONNECTIONS
         self._idle: List[Any] = []
         self._lock = threading.Lock()
         self._created_count = 0
         self._closed = False
+        # One permit per allowed live connection. Acquired on checkout/create,
+        # released on release/discard. Bounded so a stray double-release raises.
+        self._slots = threading.BoundedSemaphore(self._max_size)
 
-    def acquire(self) -> Any:
+    def acquire(self, timeout: Optional[float] = None) -> Any:
+        """Reserve a connection, blocking up to ``timeout`` seconds.
+
+        Reuses an idle connection if available, else creates one (capacity
+        permitting). Raises ``PoolTimeout`` on timeout, ``RuntimeError`` if the
+        pool is closed.
+        """
+        if not self._slots.acquire(timeout=timeout):
+            raise PoolTimeout(
+                f"连接池获取连接超时({timeout}s)：当前已创建 {self._created_count}/"
+                f"{self._max_size}，可能 ERP 连接被长时间占满"
+            )
         with self._lock:
             if self._closed:
+                self._slots.release()
                 raise RuntimeError("连接池已关闭")
             if self._idle:
-                conn = self._idle.pop()
-                return conn
-            if self._created_count >= self._max_size:
-                raise RuntimeError(
-                    f"连接池已达上限 {self._max_size}，无法再创建新连接"
-                )
+                # 复用空闲连接：slot 已持有，created_count 不变。
+                return self._idle.pop()
             self._created_count += 1
         # 建连在锁外执行，避免长时间持锁阻塞其他线程
         try:
@@ -144,25 +168,34 @@ class PymssqlConnectionPool:
         except Exception:
             with self._lock:
                 self._created_count -= 1
+            self._slots.release()
             raise
 
     def release(self, conn: Any) -> None:
+        """Return a healthy connection to the idle list (frees its slot)."""
         if conn is None:
             return
+        closed = False
         with self._lock:
             if self._closed:
-                _safe_close(conn)
-                return
-            self._idle.append(conn)
+                closed = True
+                if self._created_count > 0:
+                    self._created_count -= 1
+            else:
+                self._idle.append(conn)
+        if closed:
+            _safe_close(conn)
+        self._slots.release()
 
     def discard(self, conn: Any) -> None:
-        """Drop a broken connection: close it and decrement the created counter."""
+        """Drop a broken connection: close it, decrement counter, free its slot."""
         if conn is None:
             return
         with self._lock:
             if self._created_count > 0:
                 self._created_count -= 1
         _safe_close(conn)
+        self._slots.release()
 
     def close(self) -> None:
         with self._lock:
@@ -171,8 +204,12 @@ class PymssqlConnectionPool:
             self._closed = True
             idle = self._idle
             self._idle = []
+            n_idle = len(idle)
+            if self._created_count >= n_idle:
+                self._created_count -= n_idle
         for conn in idle:
             _safe_close(conn)
+            self._slots.release()  # 唤醒可能在阻塞的 acquire（它们会看到 _closed 并抛错）
         logger.debug(
             "PymssqlConnectionPool closed: created_total=%s", self._created_count
         )
@@ -186,6 +223,10 @@ class PymssqlConnectionPool:
     def idle_count(self) -> int:
         with self._lock:
             return len(self._idle)
+
+    @property
+    def max_size(self) -> int:
+        return self._max_size
 
     def __enter__(self) -> "PymssqlConnectionPool":
         return self
@@ -238,17 +279,34 @@ class _PooledConnClient:
 
 
 @contextmanager
-def pooled_client(pool: "PymssqlConnectionPool") -> Iterator[_PooledConnClient]:
+def pooled_client(
+    pool: "PymssqlConnectionPool",
+    *,
+    cancel_checker: Optional[Callable[[], bool]] = None,
+) -> Iterator[_PooledConnClient]:
     """Check out a connection from ``pool`` and yield a ``.query()``-compatible client.
 
-    On normal exit the connection is returned to the pool; on exception it is
-    discarded (closed + counter decremented) so broken connections are not reused.
+    Acquire polls in 1s windows so a ``cancel_checker`` can interrupt a blocked
+    checkout (a worker waiting for a free connection can be cancelled). On normal
+    exit the connection is returned to the pool; on ANY exception (including
+    BaseException) it is discarded so broken connections are never reused.
     """
-    conn = pool.acquire()
+    # 轮询式获取：每 1s 检查一次取消，避免被阻塞的 worker 无法响应取消。
+    while True:
+        try:
+            conn = pool.acquire(timeout=1.0)
+            break
+        except PoolTimeout:
+            raise_if_cancelled(cancel_checker)
+            # 未取消 → 继续等待空闲连接（合理的背压）
     client = _PooledConnClient(conn)
     try:
         yield client
-    except Exception:
+    except BaseException:
+        # Discard (close + decrement) on ANY unwind path — including a
+        # non-Exception BaseException — so a checked-out connection is never
+        # orphaned outside the pool's tracking (close() only reclaims idle
+        # connections). Mirrors SharedChildrenCache's BaseException handling.
         pool.discard(conn)
         raise
     else:

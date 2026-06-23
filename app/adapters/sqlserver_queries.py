@@ -14,8 +14,11 @@ class U8BomInventoryQueryAdapter(U8BomInventoryQueryPort):
         payload: Any,
         *,
         cancel_checker: Optional[Callable[[], bool]] = None,
+        user_key: Optional[str] = None,
     ) -> Any:
-        return run_u8_bom_inventory_query(payload, cancel_checker=cancel_checker)
+        return run_u8_bom_inventory_query(
+            payload, cancel_checker=cancel_checker, user_key=user_key
+        )
 
 
 class PdmBomQueryAdapter(PdmBomQueryPort):
