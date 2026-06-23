@@ -12,6 +12,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.cache import redis_manager
 from app.core.config import settings
 from app.core.logging import security_logger
+from app.ports.contracts.identity import ROLE_ADMIN, ROLE_SUPERUSER
+
+# 享有 admin 分档限流预算的角色
+_ADMIN_ROLES = (ROLE_ADMIN, ROLE_SUPERUSER)
 
 
 @dataclass
@@ -29,6 +33,8 @@ class RateLimiter:
         self.anon_limit = settings.RATE_LIMIT_ANON
         self.expensive_auth_limit = settings.RATE_LIMIT_EXPENSIVE_AUTH
         self.expensive_anon_limit = settings.RATE_LIMIT_EXPENSIVE_ANON
+        self.auth_admin_limit = settings.RATE_LIMIT_AUTH_ADMIN
+        self.expensive_auth_admin_limit = settings.RATE_LIMIT_EXPENSIVE_AUTH_ADMIN
         self.window_size = settings.RATE_LIMIT_WINDOW
         self.expensive_path_prefixes = (
             f"{settings.API_V1_STR}/retriever",
@@ -90,7 +96,12 @@ class RateLimiter:
             return direct_ip
         return first_hop
 
-    async def _get_client_identifier(self, request: Request) -> Tuple[str, bool]:
+    async def _get_client_identifier(self, request: Request) -> Tuple[str, bool, str | None]:
+        """返回 (identifier, is_authenticated, role)。
+
+        role 从 JWT ``role`` claim 读取（旧 token 无该 claim → None，视为非 admin）。
+        identifier 仍为 ``auth:{user_id}``，保持每用户独立桶、跨部署连续。
+        """
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header.split(" ", 1)[1].strip()
@@ -99,20 +110,27 @@ class RateLimiter:
                     payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
                     user_id = str(payload.get("sub", "")).strip()
                     if user_id:
-                        return f"auth:{user_id}", True
+                        role = payload.get("role")
+                        role = role if isinstance(role, str) else None
+                        return f"auth:{user_id}", True, role
                 except jwt.PyJWTError:
                     pass
         client_ip = self._get_effective_client_ip(request)
-        return f"anon:{client_ip}", False
+        return f"anon:{client_ip}", False, None
 
-    def _get_limit_for_request(self, request: Request, is_authenticated: bool) -> int:
+    def _get_limit_for_request(self, request: Request, is_authenticated: bool, role: str | None) -> int:
+        is_admin = is_authenticated and role in _ADMIN_ROLES
         if request.url.path.startswith(self.expensive_path_prefixes):
+            if is_admin:
+                return self.expensive_auth_admin_limit
             return self.expensive_auth_limit if is_authenticated else self.expensive_anon_limit
+        if is_admin:
+            return self.auth_admin_limit
         return self.auth_limit if is_authenticated else self.anon_limit
 
     async def check_rate_limit(self, request: Request) -> RateLimitDecision:
-        identifier, is_authenticated = await self._get_client_identifier(request)
-        limit = self._get_limit_for_request(request, is_authenticated)
+        identifier, is_authenticated, role = await self._get_client_identifier(request)
+        limit = self._get_limit_for_request(request, is_authenticated, role)
         current_time = int(time.time())
         window_key = f"rate_limit:{identifier}:{current_time // self.window_size}"
 

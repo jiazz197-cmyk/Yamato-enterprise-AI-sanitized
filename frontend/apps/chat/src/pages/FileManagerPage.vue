@@ -259,8 +259,7 @@ let loadTasksTimeoutId: number | null = null
 let isPageUnmounted = false
 
 const wsDisabledUntilByTaskId = new Map<string, number>()
-const taskPollingTimerByTaskId = new Map<string, number>()
-const taskSyncModeByTaskId = new Map<string, 'ws' | 'polling'>()
+const taskSyncModeByTaskId = new Map<string, 'ws' | 'list'>()
 const wsFailureCountByTaskId = new Map<string, number>()
 const wsExpectedCloseReasonsByTaskId = new Map<string, string>()
 const wsHeartbeatTimerByTaskId = new Map<string, number>()
@@ -283,7 +282,10 @@ const EVENT_LOOP_LAG_SAMPLE_INTERVAL_MS = 1000
 const EVENT_LOOP_LAG_WARN_MS = 250
 const WS_COOLDOWN_MS = 60000
 const WS_MAX_PER_TASK_FAILURES = 2
-const TASK_POLLING_INTERVAL_MS = 8000
+// 单标签页最多维持的 live WS 连接数：超出部分由列表轮询覆盖（避免大量任务时 WS 扇出）。
+// 按状态优先级（running→awaiting_approval→queued）取前 N 个任务建 WS。
+const WS_MAX_LIVE_CONNECTIONS = 8
+const LIST_REFRESH_FAST_MS = 10000
 const LIST_REFRESH_NORMAL_MS = 60000
 const LIST_REFRESH_BACKOFF_1_MS = 90000
 const LIST_REFRESH_BACKOFF_2_MS = 120000
@@ -437,7 +439,8 @@ const recordWsFailure = (source: string, taskId: string, error?: unknown): void 
   if (newCount >= WS_MAX_PER_TASK_FAILURES) {
     const cooldownUntil = nowMs + WS_COOLDOWN_MS
     wsDisabledUntilByTaskId.set(taskId, cooldownUntil)
-    switchTaskSyncMode(taskId, 'polling', 'ws_cooldown_after_failures')
+    // WS 降级：不再逐任务轮询，改为依赖列表轮询（单一事实源）。
+    switchTaskSyncMode(taskId, 'list', 'ws_cooldown_after_failures')
     closeSocket(taskId, 'ws_cooldown')
     logDiagCritical('ws_task_cooldown_activated', {
       taskId,
@@ -468,7 +471,7 @@ const recordWsHandshakeSuccess = (taskId: string): void => {
   recordWsConnectSuccess(taskId)
 }
 
-const switchTaskSyncMode = (taskId: string, newMode: 'ws' | 'polling', reason: string): void => {
+const switchTaskSyncMode = (taskId: string, newMode: 'ws' | 'list', reason: string): void => {
   const oldMode = taskSyncModeByTaskId.get(taskId) ?? 'ws'
   if (oldMode === newMode) return
   taskSyncModeByTaskId.set(taskId, newMode)
@@ -478,97 +481,15 @@ const switchTaskSyncMode = (taskId: string, newMode: 'ws' | 'polling', reason: s
     newMode,
     reason,
   })
-  if (newMode === 'polling') {
-    startTaskPolling(taskId)
-    logDiagCritical('task_sync_mode_ws_to_polling', { taskId, reason })
+  if (newMode === 'list') {
+    // WS 降级：状态由列表轮询（单一事实源）覆盖，不启逐任务 HTTP 轮询。
+    // socket 已由调用方（recordWsFailure / ensureTaskSockets）关闭。
+    logDiagCritical('task_sync_mode_ws_to_list', { taskId, reason })
   } else {
-    stopTaskPolling(taskId)
     wsDisabledUntilByTaskId.delete(taskId)
     wsFailureCountByTaskId.delete(taskId)
-    logDiagCritical('task_sync_mode_polling_to_ws', { taskId, reason })
+    logDiagCritical('task_sync_mode_list_to_ws', { taskId, reason })
   }
-}
-
-const startTaskPolling = (taskId: string): void => {
-  if (taskPollingTimerByTaskId.has(taskId)) return
-  const task = tasks.value.find((t) => t.task_id === taskId)
-  if (!task) return
-  if (!ACTIVE_STATUSES.includes(task.status)) return
-
-  logDiagCritical('task_polling_started', {
-    taskId,
-    status: task.status,
-    intervalMs: TASK_POLLING_INTERVAL_MS,
-  })
-  taskPollingTick(taskId)
-}
-
-const stopTaskPolling = (taskId: string): void => {
-  const timer = taskPollingTimerByTaskId.get(taskId)
-  if (timer !== undefined) {
-    window.clearTimeout(timer)
-    taskPollingTimerByTaskId.delete(taskId)
-  }
-  taskSyncModeByTaskId.delete(taskId)
-  logDiagCritical('task_polling_stopped', { taskId })
-}
-
-const TASK_POLLING_BACKOFF_MAX_MS = 30000
-const TASK_POLLING_429_BACKOFF_MULTIPLIER = 2
-
-const taskPollingTick = (taskId: string, backoffMs?: number): void => {
-  if (isPageUnmounted) return
-  const task = tasks.value.find((t) => t.task_id === taskId)
-  if (!task) {
-    stopTaskPolling(taskId)
-    return
-  }
-  if (!ACTIVE_STATUSES.includes(task.status)) {
-    stopTaskPolling(taskId)
-    closeSocket(taskId, 'task_polling_terminal')
-    return
-  }
-  if (taskSyncModeByTaskId.get(taskId) !== 'polling') return
-
-  const effectiveInterval = typeof backoffMs === 'number' && backoffMs > 0
-    ? backoffMs
-    : TASK_POLLING_INTERVAL_MS
-
-  logDiag('task_polling_tick', { taskId, status: task.status, backoffMs: effectiveInterval })
-  const epoch = stateEpoch
-  getQuotationTask(taskId)
-    .then((task) => {
-      applyTaskUpsertById(task, { epoch, source: 'task_polling_tick' })
-      if (TERMINAL_STATUSES.includes(task.status)) {
-        stopTaskPolling(taskId)
-        return
-      }
-      taskPollingTimerByTaskId.set(
-        taskId,
-        window.setTimeout(() => taskPollingTick(taskId, TASK_POLLING_INTERVAL_MS), TASK_POLLING_INTERVAL_MS)
-      )
-    })
-    .catch((error: unknown) => {
-      const is429 = (error as { status?: number })?.status === 429
-        || String((error as { message?: string })?.message ?? '').includes('过于频繁')
-      const nextBackoff = is429
-        ? Math.min(
-            effectiveInterval * TASK_POLLING_429_BACKOFF_MULTIPLIER,
-            TASK_POLLING_BACKOFF_MAX_MS
-          )
-        : effectiveInterval
-      logDiagCritical('task_polling_tick_failed', {
-        taskId,
-        is429,
-        backoffMs: effectiveInterval,
-        nextBackoffMs: nextBackoff,
-        errorMessage: (error as { message?: string })?.message ?? '',
-      })
-      taskPollingTimerByTaskId.set(
-        taskId,
-        window.setTimeout(() => taskPollingTick(taskId, nextBackoff), nextBackoff)
-      )
-    })
 }
 
 const getNavigatorOnline = (): boolean | null => {
@@ -1220,7 +1141,6 @@ const refreshSingleTask = async (taskId: string, epoch = stateEpoch): Promise<vo
       source: 'refresh_single_task_success',
     })
     if (updated && ['completed', 'failed', 'cancelled'].includes(updated.status)) {
-      stopTaskPolling(taskId)
       closeSocket(taskId)
     }
     logDiag('refresh_single_task_success', {
@@ -1320,7 +1240,7 @@ const ensureTaskSockets = (epoch = stateEpoch): void => {
       continue
     }
     const syncMode = taskSyncModeByTaskId.get(existingTaskId)
-    if (syncMode === 'polling') {
+    if (syncMode === 'list') {
       closeSocket(existingTaskId, 'sync_mode_switch')
       continue
     }
@@ -1335,7 +1255,7 @@ const ensureTaskSockets = (epoch = stateEpoch): void => {
       wsTaskEpochMap.delete(queuedTaskId)
       continue
     }
-    if (taskSyncModeByTaskId.get(queuedTaskId) === 'polling') {
+    if (taskSyncModeByTaskId.get(queuedTaskId) === 'list') {
       wsConnectQueue.splice(i, 1)
       wsConnectQueuedTaskIds.delete(queuedTaskId)
       wsTaskEpochMap.delete(queuedTaskId)
@@ -1351,16 +1271,28 @@ const ensureTaskSockets = (epoch = stateEpoch): void => {
         cooldownUntil,
         remainingMs: cooldownUntil - nowMs,
       })
-      if (taskSyncModeByTaskId.get(taskId) !== 'polling') {
-        switchTaskSyncMode(taskId, 'polling', 'cooldown_suppress')
+      if (taskSyncModeByTaskId.get(taskId) !== 'list') {
+        switchTaskSyncMode(taskId, 'list', 'cooldown_suppress')
       }
       return
     }
+    // live WS 连接数上限：超出部分交给列表轮询覆盖（避免大量任务时 WS 扇出）。
+    const prospectiveLive = wsMap.size + wsConnectQueuedTaskIds.size
+    if (prospectiveLive >= WS_MAX_LIVE_CONNECTIONS) {
+      if (taskSyncModeByTaskId.get(taskId) !== 'list') {
+        switchTaskSyncMode(taskId, 'list', 'live_ws_cap')
+      }
+      logDiag('ws_connect_skipped_live_cap', {
+        taskId,
+        prospectiveLive,
+        cap: WS_MAX_LIVE_CONNECTIONS,
+      })
+      return
+    }
     const syncMode = taskSyncModeByTaskId.get(taskId)
-    if (syncMode === 'polling') {
-      // cooldown 已过期，切换回 WS 模式
-      stopTaskPolling(taskId)
-      logDiagCritical('task_sync_mode_polling_to_ws', { taskId, reason: 'cooldown_expired' })
+    if (syncMode === 'list') {
+      // cooldown 已过期或上限已释放，切换回 WS 模式
+      switchTaskSyncMode(taskId, 'ws', 'cooldown_expired')
     }
     enqueueTaskSocketConnect(taskId, epoch)
   })
@@ -1599,11 +1531,30 @@ const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promi
   }
 }
 
-const computeListRefreshDelayMs = (successiveFailures: number, backoffMultiplier: number): number => {
-  if (successiveFailures <= 0) return LIST_REFRESH_NORMAL_MS
-  if (backoffMultiplier <= 1) return LIST_REFRESH_BACKOFF_1_MS
-  if (backoffMultiplier <= 2) return LIST_REFRESH_BACKOFF_2_MS
-  return LIST_REFRESH_BACKOFF_MAX_MS
+const applyJitter = (base: number, ratio: number): number => {
+  // ratio=0.2 → ±20% 抖动，分散多标签/多用户的刷新突发
+  const factor = 1 + (Math.random() * 2 - 1) * ratio
+  return Math.max(1000, Math.round(base * factor))
+}
+
+const computeListRefreshDelayMs = (
+  successiveFailures: number,
+  backoffMultiplier: number,
+  activeTaskCount: number,
+  wsDegraded: boolean,
+): number => {
+  // 列表加载失败时走退避阶梯，错误期不快轮询（避免放大请求）
+  if (successiveFailures > 0) {
+    if (backoffMultiplier <= 1) return LIST_REFRESH_BACKOFF_1_MS
+    if (backoffMultiplier <= 2) return LIST_REFRESH_BACKOFF_2_MS
+    return LIST_REFRESH_BACKOFF_MAX_MS
+  }
+  // 有活动任务且 WS 未全覆盖（失败/冷却/超 live 上限）→ 快速档，±20% 抖动
+  if (activeTaskCount > 0 && wsDegraded) {
+    return applyJitter(LIST_REFRESH_FAST_MS, 0.2)
+  }
+  // WS 健康或无活动任务 → 60s 安全网，±10% 抖动
+  return applyJitter(LIST_REFRESH_NORMAL_MS, 0.1)
 }
 
 const scheduleNextListRefresh = (justSucceeded: boolean): void => {
@@ -1612,14 +1563,21 @@ const scheduleNextListRefresh = (justSucceeded: boolean): void => {
     window.clearTimeout(listRefreshTimerId)
     listRefreshTimerId = null
   }
+  const activeTaskCount = tasks.value.filter((t) => ACTIVE_STATUSES.includes(t.status)).length
+  const wsDegraded = activeTaskCount > 0 && wsMap.size < activeTaskCount
   const delayMs = computeListRefreshDelayMs(
     listRefreshSuccessiveFailures,
-    listRefreshBackoffMultiplier
+    listRefreshBackoffMultiplier,
+    activeTaskCount,
+    wsDegraded,
   )
   logDiagCritical('list_refresh_backoff_scheduled', {
     delayMs,
     successiveFailures: listRefreshSuccessiveFailures,
     backoffMultiplier: listRefreshBackoffMultiplier,
+    activeTaskCount,
+    wsDegraded,
+    wsConnections: wsMap.size,
     justSucceeded,
   })
   listRefreshTimerId = window.setTimeout(() => {
@@ -2088,10 +2046,6 @@ onUnmounted(() => {
     window.clearTimeout(timer)
   }
   refreshTimers.clear()
-  for (const timer of taskPollingTimerByTaskId.values()) {
-    window.clearTimeout(timer)
-  }
-  taskPollingTimerByTaskId.clear()
   for (const timer of wsHeartbeatTimerByTaskId.values()) {
     window.clearInterval(timer)
   }

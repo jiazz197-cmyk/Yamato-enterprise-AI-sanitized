@@ -122,7 +122,7 @@ async def websocket_task_endpoint(websocket: WebSocket, task_id: str) -> None:
         return
 
     try:
-        ws_manager.register(websocket, task_id, client_ip)
+        ws_manager.register(websocket, task_id, client_ip, user_id=user_id, is_admin=is_admin_like)
         ws_diag_logger.info(
             "[ws_diag] ws_connect_accepted: task_id=%s client_ip=%s user_id=%s owner_id=%s task_connections=%s total_connections=%s elapsed_ms=%.2f",
             task_id,

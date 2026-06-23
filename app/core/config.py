@@ -319,11 +319,18 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     RATE_LIMIT_ANON: int = Field(60, env="RATE_LIMIT_ANON")
     RATE_LIMIT_EXPENSIVE_AUTH: int = Field(60, env="RATE_LIMIT_EXPENSIVE_AUTH")
     RATE_LIMIT_EXPENSIVE_ANON: int = Field(15, env="RATE_LIMIT_EXPENSIVE_ANON")
+    # admin/superuser 分档（4× 普通预算）：admin 查看大量任务列表/详情时避免误触限流
+    RATE_LIMIT_AUTH_ADMIN: int = Field(1200, env="RATE_LIMIT_AUTH_ADMIN")
+    RATE_LIMIT_EXPENSIVE_AUTH_ADMIN: int = Field(240, env="RATE_LIMIT_EXPENSIVE_AUTH_ADMIN")
     RATE_LIMIT_WINDOW: int = Field(60, env="RATE_LIMIT_WINDOW")
     RATE_LIMIT_FAIL_OPEN: bool = Field(True, env="RATE_LIMIT_FAIL_OPEN")
     RATE_LIMIT_REDIS_ERROR_STATUS: int = Field(503, env="RATE_LIMIT_REDIS_ERROR_STATUS")
     WS_MAX_CONNECTIONS_PER_IP: int = Field(20, env="WS_MAX_CONNECTIONS_PER_IP")
     WS_MAX_MESSAGES_PER_MINUTE: int = Field(120, env="WS_MAX_MESSAGES_PER_MINUTE")
+    # 按用户（user_id）的 WS 连接上限——NAT 安全（不同于按 IP，办公室多人共享 IP 不会互相挤占）。
+    # admin/superuser 需要同时盯多个任务，给更高分档。
+    WS_MAX_CONNECTIONS_PER_USER: int = Field(16, env="WS_MAX_CONNECTIONS_PER_USER")
+    WS_MAX_CONNECTIONS_PER_USER_ADMIN: int = Field(64, env="WS_MAX_CONNECTIONS_PER_USER_ADMIN")
     # Cap in-memory per-IP message counter entries to avoid unbounded growth
     WS_MAX_TRACKED_IPS_FOR_COUNTERS: int = Field(2000, ge=100, le=100000, env="WS_MAX_TRACKED_IPS_FOR_COUNTERS")
 

@@ -29,6 +29,7 @@ class WebSocketConnectionManager:
         self._lock = threading.Lock()
         self.active_connections: Dict[str, Set[WebSocket]] = {}
         self.ip_connections: Dict[str, int] = {}
+        self.user_connections: Dict[str, int] = {}
         self.ip_message_counters: Dict[str, Dict[str, int]] = {}
 
     async def connect(self, websocket: WebSocket, task_id: str, client_ip: str) -> None:
@@ -42,15 +43,41 @@ class WebSocketConnectionManager:
         await websocket.accept()
         self.register(websocket, task_id, client_ip)
 
-    def register(self, websocket: WebSocket, task_id: str, client_ip: str) -> None:
-        """注册已 accept 的 WebSocket（不调用 accept）。"""
+    def register(
+        self,
+        websocket: WebSocket,
+        task_id: str,
+        client_ip: str,
+        user_id: str = "",
+        is_admin: bool = False,
+    ) -> None:
+        """注册已 accept 的 WebSocket（不调用 accept）。
+
+        按 user_id 限制每用户连接数（NAT 安全）：admin/superuser 用更高分档。
+        user_id 为空（旧调用方）时跳过该检查，仅计 IP。
+        """
         with self._lock:
+            if user_id:
+                cap = (
+                    settings.WS_MAX_CONNECTIONS_PER_USER_ADMIN
+                    if is_admin
+                    else settings.WS_MAX_CONNECTIONS_PER_USER
+                )
+                current_user_count = self.user_connections.get(user_id, 0)
+                if current_user_count >= cap:
+                    raise WebSocketException(
+                        code=status.WS_1008_POLICY_VIOLATION,
+                        reason="该用户连接数超过限制",
+                    )
             current_count = self.ip_connections.get(client_ip, 0)
             if task_id not in self.active_connections:
                 self.active_connections[task_id] = set()
             self.active_connections[task_id].add(websocket)
             self.ip_connections[client_ip] = current_count + 1
+            if user_id:
+                self.user_connections[user_id] = self.user_connections.get(user_id, 0) + 1
             websocket.state.client_ip = client_ip
+            websocket.state.user_id = user_id
 
     def disconnect(self, websocket: WebSocket, task_id: str) -> None:
         with self._lock:
@@ -65,6 +92,13 @@ class WebSocketConnectionManager:
                         self.ip_connections.pop(client_ip, None)
                     else:
                         self.ip_connections[client_ip] = next_count
+                user_id = getattr(websocket.state, "user_id", "") or ""
+                if user_id:
+                    next_user_count = max(self.user_connections.get(user_id, 1) - 1, 0)
+                    if next_user_count == 0:
+                        self.user_connections.pop(user_id, None)
+                    else:
+                        self.user_connections[user_id] = next_user_count
         logger.debug("WebSocket client disconnected: task_id=%s", task_id)
 
     def _trim_message_counters_if_needed(self) -> None:
