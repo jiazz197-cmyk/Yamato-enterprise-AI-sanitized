@@ -1,7 +1,7 @@
 """API Key、JWT、密码哈希及角色依赖。"""
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Any, Callable
 
 import bcrypt
 import jwt
@@ -30,12 +30,22 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
 
 
-def create_access_token(subject: str, expires_delta: timedelta | None = None) -> str:
-    """签发 JWT，sub 为 UUID 字符串。"""
+def create_access_token(
+    subject: str,
+    expires_delta: timedelta | None = None,
+    role: str | None = None,
+) -> str:
+    """签发 JWT，sub 为 UUID 字符串。
+
+    role 非空时写入 ``role`` claim，供限流中间件按角色分级（无需 DB 查询）。
+    鉴权仍以 ``sub`` + DB 权威查询为准（见 get_current_user），role claim 仅用于限流分档。
+    """
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    payload = {"sub": str(subject), "exp": expire}
+    payload: dict[str, Any] = {"sub": str(subject), "exp": expire}
+    if role is not None:
+        payload["role"] = role
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 

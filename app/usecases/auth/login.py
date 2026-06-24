@@ -31,6 +31,9 @@ class LoginUseCase:
             raise AuthenticationError("用户名或密码错误")
 
         user_id = str(getattr(user, "id", ""))
-        access_token = create_access_token(subject=user_id)
+        raw_role = getattr(user, "role", None)
+        # 与 load_user_for_websocket 一致：兼容 enum 与裸字符串
+        role = raw_role.value if hasattr(raw_role, "value") else (str(raw_role) if raw_role is not None else None)
+        access_token = create_access_token(subject=user_id, role=role)
         logger.info("User logged in: %s (id=%s)", getattr(user, "username", ""), user_id)
         return TokenPair(access_token=access_token)

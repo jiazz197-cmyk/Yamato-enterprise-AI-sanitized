@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional, Union, Any
 import threading
 
-from pydantic import Field, validator, field_validator, ValidationInfo
+from pydantic import Field, validator, field_validator, model_validator, ValidationInfo
 from pydantic_settings import BaseSettings
 from pydantic._internal._model_construction import ModelMetaclass
 
@@ -173,7 +173,67 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     # pymssql: query timeout (seconds) and connection/login timeout
     SQLSERVER_QUERY_TIMEOUT_SEC: int = Field(120, ge=1, le=3600, env="SQLSERVER_QUERY_TIMEOUT_SEC")
     SQLSERVER_LOGIN_TIMEOUT_SEC: int = Field(30, ge=1, le=300, env="SQLSERVER_LOGIN_TIMEOUT_SEC")
+    # PDM matcher 四路召回的"查询内"并行度（与跨请求并发无关）。不用于同步查询 API
+    # 执行器（那个用 EXECUTOR_MAX_WORKERS）。
     SQLSERVER_QUERY_MAX_WORKERS: int = Field(2, ge=1, le=8, env="SQLSERVER_QUERY_MAX_WORKERS")
+
+    # U8 BOM 树展开并行度：单个 BOM 任务内嵌 ThreadPoolExecutor 的 worker 数
+    # （每个根编码子树一个 worker）。注意：采用全局共享连接池后，本值不再决定
+    # 到 ERP 的连接数（由 U8_BOM_MAX_TOTAL_CONNECTIONS 决定），仅决定单任务的
+    # 线程数/并行度。设为 1 即退回串行。调大会增加线程数（任务数 × 本值）。
+    U8_BOM_PARALLEL_WORKERS: int = Field(
+        16, ge=1, le=128, env="U8_BOM_PARALLEL_WORKERS"
+    )
+    # 允许同时运行的 BOM 查询任务数（运行时全局信号量约束）。
+    # 采用共享连接池后，本值不再保护 ERP 连接（连接池上限负责），而是限制并发
+    # BOM 任务数 / 嵌套线程池总数。需 ≤ EXECUTOR_MAX_WORKERS，否则任务会卡在
+    # 执行器队列里等待（“看戏”）。
+    U8_BOM_MAX_CONCURRENT_TASKS: int = Field(
+        30, ge=1, le=64, env="U8_BOM_MAX_CONCURRENT_TASKS"
+    )
+    # 单个用户同时可运行的 BOM 查询任务数上限（每用户独立信号量，互不共享）。
+    # 防止单人刷爆全局并发额度，保证 30 人团队公平性。
+    U8_BOM_MAX_CONCURRENT_TASKS_PER_USER: int = Field(
+        2, ge=1, le=64, env="U8_BOM_MAX_CONCURRENT_TASKS_PER_USER"
+    )
+    # 后台任务线程池大小，同时也是同步查询 API 执行器大小（两条路径共用此旋钮）。
+    # 控制 OCR/导入/报价等后台任务 + 同步 /u8/bom-inventory 查询的并发。
+    # 需 ≥ U8_BOM_MAX_CONCURRENT_TASKS，否则 BOM 任务（无论同步还是后台）会在
+    # 执行器队列里排队"看戏"，根本到不了 per-user / 全局 BOM 信号量。
+    EXECUTOR_MAX_WORKERS: int = Field(
+        30, ge=1, le=512, env="EXECUTOR_MAX_WORKERS"
+    )
+    # 全局共享 U8 连接池大小 = 单实例同时打开的 U8 SQL Server 连接总数硬上限。
+    # 所有 BOM 任务共享此池，按需 acquire/release，ERP 永远只看到这么多连接。
+    # 这是保护生产 U8 ERP 数据库的唯一连接闸门（取代旧的“任务数×并行度”乘积）。
+    U8_BOM_MAX_TOTAL_CONNECTIONS: int = Field(
+        64, ge=1, le=2048, env="U8_BOM_MAX_TOTAL_CONNECTIONS"
+    )
+    # 从共享连接池获取一条连接的最长等待秒数（带 1s 轮询 + 取消检查）。
+    # 超时抛 PoolTimeout（通常意味着 ERP 连接被长时间占满）。
+    U8_BOM_POOL_ACQUIRE_TIMEOUT_SEC: int = Field(
+        60, ge=1, le=600, env="U8_BOM_POOL_ACQUIRE_TIMEOUT_SEC"
+    )
+
+    @model_validator(mode="after")
+    def _validate_u8_bom_concurrency(self):
+        """共享连接池模型下的并发一致性校验。
+
+        - EXECUTOR_MAX_WORKERS ≥ U8_BOM_MAX_CONCURRENT_TASKS：EXECUTOR 同时是后台
+          任务池和同步查询 API 执行器，二者共用此旋钮。若小于任务并发上限，BOM 任务
+          （无论同步 /u8/bom-inventory 还是后台报价）会在执行器队列里排队“看戏”，
+          根本到不了 per-user / 全局 BOM 信号量。
+        - U8_BOM_MAX_TOTAL_CONNECTIONS 是 ERP 连接硬上限（共享池大小），与任务数/
+          并行度解耦——任务数 × 并行度 可远大于连接数，多出的 worker 线程会在池上
+          阻塞等待连接（合理的背压，非错误）。
+        """
+        if self.U8_BOM_MAX_CONCURRENT_TASKS > self.EXECUTOR_MAX_WORKERS:
+            raise ValueError(
+                f"U8_BOM_MAX_CONCURRENT_TASKS({self.U8_BOM_MAX_CONCURRENT_TASKS}) > "
+                f"EXECUTOR_MAX_WORKERS({self.EXECUTOR_MAX_WORKERS})：BOM 任务会卡在"
+                f"执行器队列，请调大 EXECUTOR_MAX_WORKERS 或调小任务并发数"
+            )
+        return self
 
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
@@ -259,11 +319,18 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     RATE_LIMIT_ANON: int = Field(60, env="RATE_LIMIT_ANON")
     RATE_LIMIT_EXPENSIVE_AUTH: int = Field(60, env="RATE_LIMIT_EXPENSIVE_AUTH")
     RATE_LIMIT_EXPENSIVE_ANON: int = Field(15, env="RATE_LIMIT_EXPENSIVE_ANON")
+    # admin/superuser 分档（4× 普通预算）：admin 查看大量任务列表/详情时避免误触限流
+    RATE_LIMIT_AUTH_ADMIN: int = Field(1200, env="RATE_LIMIT_AUTH_ADMIN")
+    RATE_LIMIT_EXPENSIVE_AUTH_ADMIN: int = Field(240, env="RATE_LIMIT_EXPENSIVE_AUTH_ADMIN")
     RATE_LIMIT_WINDOW: int = Field(60, env="RATE_LIMIT_WINDOW")
     RATE_LIMIT_FAIL_OPEN: bool = Field(True, env="RATE_LIMIT_FAIL_OPEN")
     RATE_LIMIT_REDIS_ERROR_STATUS: int = Field(503, env="RATE_LIMIT_REDIS_ERROR_STATUS")
     WS_MAX_CONNECTIONS_PER_IP: int = Field(20, env="WS_MAX_CONNECTIONS_PER_IP")
     WS_MAX_MESSAGES_PER_MINUTE: int = Field(120, env="WS_MAX_MESSAGES_PER_MINUTE")
+    # 按用户（user_id）的 WS 连接上限——NAT 安全（不同于按 IP，办公室多人共享 IP 不会互相挤占）。
+    # admin/superuser 需要同时盯多个任务，给更高分档。
+    WS_MAX_CONNECTIONS_PER_USER: int = Field(16, env="WS_MAX_CONNECTIONS_PER_USER")
+    WS_MAX_CONNECTIONS_PER_USER_ADMIN: int = Field(64, env="WS_MAX_CONNECTIONS_PER_USER_ADMIN")
     # Cap in-memory per-IP message counter entries to avoid unbounded growth
     WS_MAX_TRACKED_IPS_FOR_COUNTERS: int = Field(2000, ge=100, le=100000, env="WS_MAX_TRACKED_IPS_FOR_COUNTERS")
 

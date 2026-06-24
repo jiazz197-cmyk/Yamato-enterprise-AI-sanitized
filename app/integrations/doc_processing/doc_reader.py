@@ -30,11 +30,9 @@ logger = logging.getLogger(__name__)
 
 try:
     from paddleocr import PaddleOCR
-    import paddle
     PADDLE_AVAILABLE = True
 except ImportError:  # pragma: no cover
     PaddleOCR = None  # type: ignore
-    paddle = None
     PADDLE_AVAILABLE = False
 
 
@@ -175,24 +173,20 @@ class PdfParser:
                 gpu_device = int(os.environ.get("LOCAL_MODEL_GPU_DEVICE", "0"))
                 logger.info(f"正在初始化 PaddleOCR（用于扫描版 PDF），使用 GPU:{gpu_device}...")
                 
-                # 设置 Paddle 使用指定的 GPU 设备
-                if paddle is not None:
-                    paddle.set_device(f'gpu:{gpu_device}')
-                    logger.info(f"Paddle 设备已设置为 GPU:{gpu_device}")
-                
                 # [note] 设置环境变量以禁用可能导致兼容性问题的优化
                 # 这些设置可以绕过某些 PaddlePaddle 版本兼容性问题
                 os.environ['FLAGS_use_mkldnn'] = '0'  # 禁用 MKL-DNN 优化
                 os.environ['FLAGS_use_cudnn'] = '1'   # 使用 cuDNN（GPU 环境）
-                
+
                 # 初始化 PaddleOCR
                 # PaddleOCR 3.x 版本说明：
-                # - use_gpu 参数已被移除，PaddleOCR 会自动检测并使用 GPU
-                # - 通过 paddle.set_device() 已经设置了 GPU 设备
-                # - 只需要传递最基本的参数即可
+                # - use_gpu / use_angle_cls 参数已被移除（旧 2.x 参数）
+                # - paddle.set_device() 对其内部 paddle.inference predictor 不生效，
+                #   必须通过 device 参数显式指定，才能让内部 predictor 用正确的 GPU
                 self.ocr = PaddleOCR(
-                    use_angle_cls=True,  # 启用文字方向分类
-                    lang="ch"            # 中文识别
+                    lang="ch",                       # 中文识别
+                    device=f"gpu:{gpu_device}",      # PaddleOCR 3.x 设备参数
+                    use_textline_orientation=True,   # 启用文字方向分类（3.x 替代 use_angle_cls）
                 )
                 
                 self.enable_ocr = True
@@ -252,7 +246,7 @@ class PdfParser:
                 try:
                     image_path = os.path.join(self.save_dir, f"page_{idx + 1}.png")
                     page.to_image(resolution=300).original.save(image_path)
-                    result = self.ocr.ocr(image_path, cls=True) or []
+                    result = self.ocr.ocr(image_path) or []
                     ocr_text = "\n".join(seg[1][0] for line in result for seg in line)
                     chunks.append(ocr_text)
                 finally:

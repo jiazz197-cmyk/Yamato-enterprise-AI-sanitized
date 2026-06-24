@@ -11,7 +11,9 @@ from fastapi import APIRouter, Depends
 
 from app.adapters.sqlserver_queries import PdmBomQueryAdapter, PdmMatchQueryAdapter, U8BomInventoryQueryAdapter
 from app.core.config import settings
+from app.core.exceptions import ExternalServiceError
 from app.core.security import get_current_user_detached
+from app.integrations.sqlserver.exceptions import U8RootFailureBreakerError
 from app.ports.contracts.identity import CurrentUserPort
 from app.ports.dto.sqlserver_queries import PdmBomCommand, PdmMatchCommand, U8BomInventoryCommand
 from app.schemas.sqlserver import PdmBomRequest, QueryResponse, U8BomInventoryRequest
@@ -22,15 +24,21 @@ router = APIRouter()
 _u8 = U8BomInventoryQueryAdapter()
 _pdm = PdmBomQueryAdapter()
 _pdm_match = PdmMatchQueryAdapter()
+# 同步查询 API 的执行器：大小对齐 EXECUTOR_MAX_WORKERS（已由 config validator
+# 保证 ≥ U8_BOM_MAX_CONCURRENT_TASKS），否则多人同时点"查 BOM"时任务会卡在这个
+# 执行器队列里"看戏"，根本到不了 per-user / 全局 BOM 信号量。
+# 注意：SQLSERVER_QUERY_MAX_WORKERS 不用在这里——它只管 PDM matcher 的查询内并行。
 _sqlserver_query_executor = ThreadPoolExecutor(
-    max_workers=settings.SQLSERVER_QUERY_MAX_WORKERS,
+    max_workers=settings.EXECUTOR_MAX_WORKERS,
     thread_name_prefix="sqlserver_query_",
 )
 
 
-async def _run_sqlserver_query(func, *args) -> QueryResponse:
+async def _run_sqlserver_query(func, *args, **kwargs) -> QueryResponse:
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_sqlserver_query_executor, partial(func, *args))
+    return await loop.run_in_executor(
+        _sqlserver_query_executor, partial(func, *args, **kwargs)
+    )
 
 
 @router.post("/u8/bom-inventory", response_model=QueryResponse, summary="U8 BOM + Inventory 递归查询")
@@ -43,7 +51,17 @@ async def query_u8_bom_inventory(
         parent_inv_codes=payload.parent_inv_codes,
         max_depth=payload.max_depth,
     )
-    return await _run_sqlserver_query(RunU8BomInventoryQueryUseCase(_u8).execute, cmd)
+    # 传入调用者 id 作为 per-user 并发限流的 key（单人最多 2 个并发 BOM 查询）。
+    try:
+        return await _run_sqlserver_query(
+            RunU8BomInventoryQueryUseCase(_u8).execute, cmd, user_key=_current_user.id
+        )
+    except U8RootFailureBreakerError as exc:
+        failed_sample = ", ".join(exc.failed_root_codes[:10]) or "未知"
+        raise ExternalServiceError(
+            "U8 SQLServer",
+            f"U8 数据库连续故障，查询中止。已跳过根: {failed_sample}",
+        ) from exc
 
 
 @router.post("/pdm/bom/old", response_model=QueryResponse, summary="PDM BOM_016 条件查询（旧版）")

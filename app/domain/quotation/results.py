@@ -34,9 +34,12 @@ class Phase2Result:
 
     u8_result: Dict[str, Any]
     u8_result_by_type: Dict[str, Any] = field(default_factory=dict)
+    # 故障隔离时被跳过的根编码（DB 层超时/锁/死锁），供任务层向用户上报部分数据缺失。
+    failed_root_codes: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "u8_result": self.u8_result,
             "u8_result_by_type": self.u8_result_by_type,
+            "failed_root_codes": self.failed_root_codes,
         }

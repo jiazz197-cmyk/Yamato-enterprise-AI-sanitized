@@ -10,10 +10,12 @@ from sklearn.feature_extraction.text import CountVectorizer
 
 try:
     from keybert import KeyBERT
+    from sentence_transformers import SentenceTransformer
 
     KEYBERT_AVAILABLE = True
 except ImportError:
     KeyBERT = None
+    SentenceTransformer = None
     KEYBERT_AVAILABLE = False
 
 from .exceptions import EmbeddingError, TextSplitError
@@ -41,10 +43,18 @@ class TagGenerator:
 
             if KEYBERT_AVAILABLE:
                 try:
-                    self.keyword_model = KeyBERT(model=model_name)
+                    # KeyBERT 不直接收 device，需先构造指定 device 的 SentenceTransformer
+                    # 再传入，否则 sentence-transformers 默认落到 cuda:0
+                    embedder = SentenceTransformer(model_name, device=self.device)
+                    self.keyword_model = KeyBERT(model=embedder)
                 except Exception:
                     logger.warning("KeyBERT 指定模型加载失败，尝试默认模型", exc_info=True)
-                    self.keyword_model = KeyBERT()
+                    try:
+                        fallback_embedder = SentenceTransformer("all-MiniLM-L6-v2", device=self.device)
+                        self.keyword_model = KeyBERT(model=fallback_embedder)
+                    except Exception:
+                        logger.warning("KeyBERT 默认模型加载失败", exc_info=True)
+                        self.keyword_model = KeyBERT()
             else:
                 self.keyword_model = None
 

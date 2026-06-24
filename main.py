@@ -15,16 +15,7 @@ if not os.environ.get("_GPU_INITIALIZED"):
     
     os.environ.setdefault("FLAGS_use_mkldnn", "0")
     os.environ.setdefault("FLAGS_use_cudnn", "1")
-    
-    try:
-        import paddle
-        paddle.set_device(f'gpu:{LOCAL_GPU_DEVICE}')
-        print(f"[success] Paddle 设备已设置为 GPU:{LOCAL_GPU_DEVICE}")
-    except ImportError:
-        print("[info] Paddle 不可用，跳过 GPU 设置")
-    except Exception as e:
-        print(f"[warning] 设置 Paddle GPU 失败: {e}")
-    
+
     try:
         import torch
         if torch.cuda.is_available():
@@ -53,7 +44,7 @@ from app.api.v1.tags import OPENAPI_TAG_METADATA
 from app.core.cache import redis_manager
 from app.core.config import settings
 from app.core.exceptions import APIException
-from app.core.logging import setup_logging
+from app.core.logging import get_logger, setup_logging
 from app.core.middleware.middleware_cache import CacheMiddleware
 from app.core.middleware.monitoring import MonitoringMiddleware
 from app.core.middleware.rate_limit import RateLimitMiddleware
@@ -61,6 +52,8 @@ from app.core.middleware.request_size import RequestSizeMiddleware
 from app.core.middleware.security_headers import SecurityHeadersMiddleware
 from app.integrations.monitoring.health_check import health_service
 from app.integrations.monitoring.prometheus import metrics as prometheus_metrics
+
+logger = get_logger("main")
 
 
 def require_metrics_access(x_api_key: str | None = Header(default=None, alias="X-API-KEY")) -> None:
@@ -179,9 +172,9 @@ async def lifespan(app: FastAPI):
             set_quotation_dispatch_loop,
         )
         set_quotation_dispatch_loop(main_loop)
-        print("[success] 报价任务调度主事件循环已注册")
+        logger.info("报价任务调度主事件循环已注册")
     except Exception as e:
-        print(f"[warning] 报价任务调度主事件循环注册失败: {e}")
+        logger.warning("报价任务调度主事件循环注册失败: %s", e)
     
     try:
         from app.core.database import init_db_tables
@@ -290,8 +283,8 @@ async def lifespan(app: FastAPI):
             set_quotation_dispatch_loop,
         )
         set_quotation_dispatch_loop(None)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("关闭报价任务调度循环失败: %s", e)
     
     def force_exit(signum=None, frame=None):
         print("\n[warning] 关闭超时，强制退出")

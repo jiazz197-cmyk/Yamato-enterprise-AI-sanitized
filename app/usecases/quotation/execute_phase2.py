@@ -34,6 +34,8 @@ class ExecuteQuotationPhase2Command:
     code_type: Optional[str] = None
     progress_callback: ProgressCallback = None
     cancel_checker: CancelChecker = None
+    # 任务归属用户 id，用作 U8 BOM 每用户并发限流的 key（单人最多 N 个并发 BOM 查询）。
+    owner_id: Optional[str] = None
 
 
 class ExecuteQuotationPhase2UseCase:
@@ -123,6 +125,7 @@ class ExecuteQuotationPhase2UseCase:
             response = self._u8_query.run(
                 U8BomInventoryCommand(parent_inv_codes=parent_inv_codes, max_depth=_U8_MAX_DEPTH),
                 cancel_checker=cancel,
+                user_key=cmd.owner_id,
             )
         except QueryCancelledError as exc:
             raise QuotationPipelineCancelledError("U8 查询已取消") from exc
@@ -132,6 +135,14 @@ class ExecuteQuotationPhase2UseCase:
         u8_result = response_to_dict(response)
         total = u8_result.get("total") if isinstance(u8_result, dict) else None
         items = u8_result.get("items") if isinstance(u8_result, dict) else None
+        failed_root_codes: List[str] = (
+            u8_result.get("failed_root_codes") if isinstance(u8_result, dict) else None
+        ) or []
+        if failed_root_codes:
+            logger.warning(
+                "Phase2 U8 查询部分根节点失败已跳过: failed=%s, sample=%s",
+                len(failed_root_codes), failed_root_codes[:10],
+            )
         logger.info(
             "Phase2 U8 查询完成: total=%s, items_len=%s",
             total,
@@ -168,6 +179,7 @@ class ExecuteQuotationPhase2UseCase:
         return Phase2Result(
             u8_result=u8_result,
             u8_result_by_type=u8_result_by_type,
+            failed_root_codes=failed_root_codes,
         )
 
     def _execute_project_mode(
@@ -194,8 +206,12 @@ class ExecuteQuotationPhase2UseCase:
         shallow_response = self._u8_query.run(
             U8BomInventoryCommand(parent_inv_codes=",".join(converted_u8_codes), max_depth=1),
             cancel_checker=cancel,
+            user_key=cmd.owner_id,
         )
         shallow_result = response_to_dict(shallow_response)
+        project_failed_root_codes: List[str] = list(
+            shallow_result.get("failed_root_codes") or []
+        )
 
         logger.info(
             "Phase2 项目编码浅层查询完成: total=%s",
@@ -229,11 +245,13 @@ class ExecuteQuotationPhase2UseCase:
                 child_response = self._u8_query.run(
                     U8BomInventoryCommand(parent_inv_codes=child_code, max_depth=_U8_MAX_DEPTH),
                     cancel_checker=cancel,
+                    user_key=cmd.owner_id,
                 )
             except QueryCancelledError as exc:
                 raise QuotationPipelineCancelledError("U8 查询已取消") from exc
 
             child_result = response_to_dict(child_response)
+            project_failed_root_codes.extend(child_result.get("failed_root_codes") or [])
 
             all_query_results.append({
                 "code": child_code,
@@ -297,9 +315,16 @@ class ExecuteQuotationPhase2UseCase:
             "items": all_items,
         }
 
+        if project_failed_root_codes:
+            logger.warning(
+                "Phase2 项目编码 U8 查询部分根节点失败已跳过: failed=%s, sample=%s",
+                len(project_failed_root_codes), project_failed_root_codes[:10],
+            )
+
         return Phase2Result(
             u8_result=u8_result,
             u8_result_by_type=u8_result_by_type,
+            failed_root_codes=project_failed_root_codes,
         )
 
     def _extract_first_level_children(

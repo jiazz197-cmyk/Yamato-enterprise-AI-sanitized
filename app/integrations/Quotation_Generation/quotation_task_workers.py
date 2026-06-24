@@ -26,6 +26,7 @@ from app.adapters.quotation.deps import (
 from app.domain.quotation.entities import QuotationTaskStatus
 from app.domain.quotation.exceptions import QuotationPipelineCancelledError, QuotationPipelineError
 from app.domain.quotation.partid_mapping import convert_partids_to_u8_codes
+from app.integrations.sqlserver.exceptions import U8RootFailureBreakerError
 from app.usecases.quotation.build_workbook import BuildQuotationWorkbookCommand
 from app.usecases.quotation.execute_phase1 import ExecuteQuotationPhase1Command
 from app.usecases.quotation.execute_phase2 import ExecuteQuotationPhase2Command
@@ -495,6 +496,8 @@ def process_quotation_task_phase2_background(
         phase2_uc = build_execute_quotation_phase2_use_case()
         manual_types = existing_payload.get("manual_partid_types")
         code_type = existing_payload.get("code_type")
+        # 取任务归属用户作为 per-user BOM 并发限流 key（dispatch 时已缓存）。
+        owner_id = task_owner_registry.peek_cache(task_id) or ""
         phase2_result = phase2_uc.execute(
             ExecuteQuotationPhase2Command(
                 pdm_partids=selected_partids,
@@ -505,6 +508,7 @@ def process_quotation_task_phase2_background(
                 code_type=code_type,
                 progress_callback=update_progress,
                 cancel_checker=token.is_cancelled,
+                owner_id=owner_id or None,
             )
         )
 
@@ -527,6 +531,7 @@ def process_quotation_task_phase2_background(
             if isinstance(phase2_result.u8_result_by_type, dict)
             else {}
         )
+        failed_root_codes = phase2_result.failed_root_codes or []
         final_payload: Dict[str, Any] = {
             "keywords_payload": existing_payload.get("keywords_payload"),
             "approved_partids": selected_partids,
@@ -534,6 +539,8 @@ def process_quotation_task_phase2_background(
             "u8_result_by_type": _u8_by_type_summary(full_u8_by_type),
             "cleanup": cleanup_result,
         }
+        if failed_root_codes:
+            final_payload["failed_root_codes"] = failed_root_codes
 
         xlsx_path, xlsx_name = _upload_u8_result_by_type_xlsx_to_minio(
             task_id=task_id,
@@ -549,7 +556,14 @@ def process_quotation_task_phase2_background(
             final_payload["u8_result_by_type_xlsx_minio_path"] = xlsx_path
             final_payload["u8_result_by_type_xlsx_filename"] = xlsx_name
 
-        completed_message = "任务完成（U8 BOM Inventory 已返回）"
+        if failed_root_codes:
+            sample = ", ".join(failed_root_codes[:10])
+            completed_message = (
+                f"任务完成（U8 BOM Inventory 已返回，但 {len(failed_root_codes)} 个根节点"
+                f"因数据库超时/锁被跳过，结果可能不完整。被跳过根: {sample}）"
+            )
+        else:
+            completed_message = "任务完成（U8 BOM Inventory 已返回）"
         _persistence.patch_task_fields_sync(
             task_id,
             {
@@ -580,6 +594,27 @@ def process_quotation_task_phase2_background(
         )
         loop.run_until_complete(thread_tm.update_status(task_id, "cancelled", "任务已取消"))
         return {"status": "cancelled", "task_id": task_id}
+
+    except U8RootFailureBreakerError as exc:
+        # 系统性故障（连续根节点失败）：把被跳过的根上报给用户，任务标记失败。
+        logger.error(f"报价任务 Phase2 系统性故障 {task_id}: {exc}", exc_info=True)
+        failed_sample = ", ".join(exc.failed_root_codes[:10]) or "未知"
+        error_message = f"U8 数据库连续故障，任务中止。已跳过根: {failed_sample}"
+        cleanup_result = cleanup_task_files_by_id_sync(task_id)
+        existing_payload["cleanup"] = cleanup_result
+        existing_payload["failed_root_codes"] = exc.failed_root_codes
+        _persistence.patch_task_fields_sync(
+            task_id,
+            {
+                "status": QuotationTaskStatus.failed.value,
+                "message": "U8 数据库连续故障，任务中止",
+                "error": error_message,
+                "completed_at": datetime.utcnow(),
+                "result_payload": existing_payload,
+            },
+        )
+        loop.run_until_complete(thread_tm.fail_task(task_id, error_message, "U8 数据库连续故障"))
+        return {"status": "error", "task_id": task_id, "error": error_message}
 
     except Exception as exc:
         logger.error(f"报价任务 Phase2 执行失败 {task_id}: {exc}", exc_info=True)
