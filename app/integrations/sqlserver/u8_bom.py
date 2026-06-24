@@ -11,6 +11,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from app.core.config import settings
@@ -21,7 +22,11 @@ from app.integrations.sqlserver.client import (
     get_sql_client_pool,
     pooled_client,
 )
-from app.integrations.sqlserver.exceptions import QueryCancelledError, raise_if_cancelled
+from app.integrations.sqlserver.exceptions import (
+    QueryCancelledError,
+    U8RootFailureBreakerError,
+    raise_if_cancelled,
+)
 
 logger = get_logger("database.sqlserver")
 
@@ -376,6 +381,27 @@ def _is_sqlserver_deadlock_error(exc: BaseException) -> bool:
             return True
     text = str(exc)
     return "1205" in text and "deadlock" in text.lower()
+
+
+# 可跳过的根查询错误码（pymssql 把 SQL Server 错误号放在 args[0]）：
+# 20003 = 读超时，20047 = 锁超时，1205 = 死锁（_is_sqlserver_deadlock_error 覆盖）。
+# 仅这些 DB/ERP 层瞬时故障允许故障隔离；代码缺陷（KeyError/AttributeError 等）
+# 不在此列，应原样上抛暴露。
+_U8_SKIP_ROOT_ERROR_CODES: tuple[int, ...] = (20003, 20047, 1205)
+
+
+def _is_recoverable_root_failure(exc: BaseException) -> bool:
+    """判断异常是否属于可"跳过该根继续其余根"的可恢复 DB 层故障。
+
+    仅通过结构化 error code（pymssql args[0]）和死锁文本特征判定；
+    不使用 str(exc) 模糊匹配，避免含数字串的非 DB 异常被误判为可恢复。
+    """
+    if _is_sqlserver_deadlock_error(exc):
+        return True
+    for arg in getattr(exc, "args", ()):
+        if isinstance(arg, int) and arg in _U8_SKIP_ROOT_ERROR_CODES:
+            return True
+    return False
 
 
 def _query_with_deadlock_retry(
@@ -1024,14 +1050,26 @@ def _walk_one_root(
             diag.thread_exit()
 
 
+@dataclass
+class U8BomQueryResult:
+    """U8 BOM 查询结果 + 被跳过的失败根编码（部分失败可见性）。"""
+
+    rows: List[Dict[str, Any]]
+    failed_root_codes: List[str] = field(default_factory=list)
+
+    @property
+    def partial(self) -> bool:
+        return bool(self.failed_root_codes)
+
+
 def _query_u8_bom_inventory(
     parent_codes: List[str],
     max_depth: int,
     cancel_checker: Optional[Callable[[], bool]] = None,
     user_key: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+) -> U8BomQueryResult:
     if not parent_codes:
-        return []
+        return U8BomQueryResult(rows=[], failed_root_codes=[])
 
     parallel_workers = max(1, min(settings.U8_BOM_PARALLEL_WORKERS, len(parent_codes)))
 
@@ -1055,6 +1093,8 @@ def _query_u8_bom_inventory(
         # 故障隔离 + 熔断：单根失败时跳过该根继续其余根（任务带部分结果完成）；
         # 连续 _MAX_CONSECUTIVE_ROOT_FAILURES 个根失败则判定系统性故障并中止任务，
         # 避免 ERP 不可用时每个根各自熬满查询超时而放大 DB 负载。串行/并行路径共用。
+        # 仅对可恢复的 DB 层故障（超时 20003 / 锁 20047 / 死锁 1205）做隔离，
+        # 代码缺陷（KeyError/AttributeError 等）不属可恢复，原样上抛暴露。
         failed_root_codes: List[str] = []
         consecutive_failures = 0
 
@@ -1111,8 +1151,16 @@ def _query_u8_bom_inventory(
                 except QueryCancelledError:
                     raise
                 except Exception as exc:
-                    if _on_root_failure(root_code, exc):
+                    # 仅可恢复的 DB 层故障（超时/锁/死锁）才隔离跳过；
+                    # 代码缺陷（KeyError 等）原样上抛，避免被静默掩盖。
+                    if not _is_recoverable_root_failure(exc):
                         raise
+                    if _on_root_failure(root_code, exc):
+                        raise U8RootFailureBreakerError(
+                            f"U8 BOM 连续 {consecutive_failures} 个根节点失败，"
+                            f"判定系统性故障，中止任务。已跳过根: {failed_root_codes[:10]}",
+                            failed_root_codes,
+                        ) from exc
                     continue
                 _on_root_success()
                 per_root_rows[root_code] = rows
@@ -1148,12 +1196,22 @@ def _query_u8_bom_inventory(
                             f.cancel()
                         raise
                     except Exception as exc:
+                        # 仅可恢复的 DB 层故障（超时/锁/死锁）才隔离跳过；
+                        # 代码缺陷（KeyError 等）原样上抛，避免被静默掩盖。
+                        if not _is_recoverable_root_failure(exc):
+                            for f in future_map:
+                                f.cancel()
+                            raise
                         # 故障隔离：单根失败不致命，跳过该根继续其余根；
                         # 仅当判定系统性故障（连续失败达上限）时才取消兄弟并上抛。
                         if _on_root_failure(root_code, exc):
                             for f in future_map:
                                 f.cancel()
-                            raise
+                            raise U8RootFailureBreakerError(
+                                f"U8 BOM 连续 {consecutive_failures} 个根节点失败，"
+                                f"判定系统性故障，中止任务。已跳过根: {failed_root_codes[:10]}",
+                                failed_root_codes,
+                            ) from exc
                         continue
                     _on_root_success()
                     per_root_rows[root_code] = rows
@@ -1200,7 +1258,7 @@ def _query_u8_bom_inventory(
             parallel_workers,
             pool.created_count,
         )
-        return result_rows
+        return U8BomQueryResult(rows=result_rows, failed_root_codes=failed_root_codes)
     finally:
         # 共享连接池不在请求结束时关闭（进程级单例）；连接由 pooled_client 归还。
         if slot_held:

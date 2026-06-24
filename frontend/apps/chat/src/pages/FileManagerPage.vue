@@ -1466,8 +1466,7 @@ const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promi
     listRefreshSuccessiveFailures = 0
     listRefreshBackoffMultiplier = 1
   } catch (error) {
-    listRefreshSuccessiveFailures += 1
-    listRefreshBackoffMultiplier = Math.min(listRefreshBackoffMultiplier + 1, 3)
+    // stale-epoch 的请求已被取代，不计入退避阶梯，直接丢弃。
     if (!isCurrentEpoch(requestEpoch)) {
       logDiag('load_tasks_error_ignored_stale_epoch', {
         requestId,
@@ -1477,11 +1476,13 @@ const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promi
       return
     }
 
-    if ((error as { name?: string })?.name === 'AbortError') {
+    const isAbortError = (error as { name?: string })?.name === 'AbortError'
+    let abortReason: string | null = null
+    if (isAbortError) {
       loadTasksAbortErrorCount += 1
       const isTimeout = controller.signal.aborted && loadTasksTimeoutId === null
       const isUnmount = isPageUnmounted
-      const abortReason = isUnmount ? 'unmount' : isTimeout ? 'timeout' : 'force_refresh'
+      abortReason = isUnmount ? 'unmount' : isTimeout ? 'timeout' : 'force_refresh'
       logDiag('load_tasks_abort_error_observed', {
         requestId,
         requestEpoch,
@@ -1492,6 +1493,14 @@ const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promi
       })
     }
 
+    // 仅真实失败（网络错误 / 超时）计入退避阶梯；
+    // unmount / force_refresh 的 abort 不属于真实失败，不应触发退避。
+    const countedAsFailure = !isAbortError || abortReason === 'timeout'
+    if (countedAsFailure) {
+      listRefreshSuccessiveFailures += 1
+      listRefreshBackoffMultiplier = Math.min(listRefreshBackoffMultiplier + 1, 3)
+    }
+
     logDiagError('load_tasks_failed', error, {
       requestId,
       requestEpoch,
@@ -1499,9 +1508,13 @@ const loadTasks = async (options?: { force?: boolean; silent?: boolean }): Promi
       elapsedMs: Date.now() - startedAt,
       visibilityState: document.visibilityState,
       online: getNavigatorOnline(),
+      abortReason,
+      countedAsFailure,
+      successiveFailures: listRefreshSuccessiveFailures,
+      backoffMultiplier: listRefreshBackoffMultiplier,
     })
     if (!options?.silent) {
-      if ((error as { name?: string })?.name === 'AbortError') {
+      if (isAbortError) {
         errorMessage.value = '加载任务超时，请稍后刷新'
       } else {
         errorMessage.value = (error as { message?: string })?.message ?? '加载任务失败'
@@ -1564,22 +1577,35 @@ const scheduleNextListRefresh = (justSucceeded: boolean): void => {
     listRefreshTimerId = null
   }
   const activeTaskCount = tasks.value.filter((t) => ACTIVE_STATUSES.includes(t.status)).length
-  const wsDegraded = activeTaskCount > 0 && wsMap.size < activeTaskCount
+  // WS 覆盖 = 已建连（wsMap）或正在建连队列中（wsConnectQueuedTaskIds）。
+  // 仅当活动任务未被 WS 覆盖（失败冷却 / 超 live cap / 未建连完成）时才算 degraded，
+  // 避免握手进行中误判为 degraded 而触发不必要的快速轮询。
+  const wsCovered = wsMap.size + wsConnectQueuedTaskIds.size
+  const wsDegraded = activeTaskCount > 0 && wsCovered < activeTaskCount
   const delayMs = computeListRefreshDelayMs(
     listRefreshSuccessiveFailures,
     listRefreshBackoffMultiplier,
     activeTaskCount,
     wsDegraded,
   )
-  logDiagCritical('list_refresh_backoff_scheduled', {
-    delayMs,
-    successiveFailures: listRefreshSuccessiveFailures,
-    backoffMultiplier: listRefreshBackoffMultiplier,
-    activeTaskCount,
-    wsDegraded,
-    wsConnections: wsMap.size,
-    justSucceeded,
-  })
+  // 仅在真正退避（successiveFailures > 0）时按 critical 级别告警；
+  // 常规排程（含正常 60s 安全网与 WS 降级快速档）走 info 级别，避免正常加载误报为关键错误。
+  const isBackoff = listRefreshSuccessiveFailures > 0
+  const refreshLogger = isBackoff ? logDiagCritical : logDiag
+  refreshLogger(
+    isBackoff ? 'list_refresh_backoff_scheduled' : 'list_refresh_next_scheduled',
+    {
+      delayMs,
+      successiveFailures: listRefreshSuccessiveFailures,
+      backoffMultiplier: listRefreshBackoffMultiplier,
+      activeTaskCount,
+      wsDegraded,
+      wsConnections: wsMap.size,
+      wsQueued: wsConnectQueuedTaskIds.size,
+      wsCovered: wsMap.size + wsConnectQueuedTaskIds.size,
+      justSucceeded,
+    },
+  )
   listRefreshTimerId = window.setTimeout(() => {
     listRefreshTimerId = null
     void loadTasks({ silent: true })

@@ -14,7 +14,7 @@ class _FlakyClient:
         self.failures = failures
         self.calls = 0
 
-    def query(self, sql: str) -> list[dict[str, Any]]:
+    def query(self, sql: str, params: Any = None) -> list[dict[str, Any]]:
         self.calls += 1
         if self.calls <= self.failures:
             raise _DeadlockError(1205, b"Transaction was deadlocked on lock resources")

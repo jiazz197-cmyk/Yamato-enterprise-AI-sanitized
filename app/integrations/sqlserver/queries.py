@@ -7,15 +7,22 @@ from typing import Any, Callable, Dict, List, Optional
 from app.core.config import settings
 from app.core.exceptions import ExternalServiceError, ValidationError
 from app.core.logging import get_logger
-from app.schemas.sqlserver import PdmBomRequest, QueryResponse, U8BomInventoryRequest
-
+from app.integrations.sqlserver.exceptions import (
+    QueryCancelledError,
+    U8RootFailureBreakerError,
+    raise_if_cancelled,
+)
 from app.domain.quotation.keyword_mapping import (
     detect_product_type,
     expand_keyword_mapping,
 )
 from app.domain.quotation.keyword_normalizer import normalize_pdm_keywords
 from app.integrations.sqlserver.client import close_sql_client, get_sql_client
-from app.integrations.sqlserver.exceptions import QueryCancelledError, raise_if_cancelled
+from app.schemas.sqlserver import (
+    PdmBomRequest,
+    QueryResponse,
+    U8BomInventoryRequest,
+)
 from app.integrations.sqlserver.pdm_bom import (
     deduplicate_pdm_result_rows,
     match_row_to_candidates,
@@ -41,21 +48,27 @@ def run_u8_bom_inventory_query(
         raise ValidationError("parent_inv_codes 不能为空")
 
     try:
-        raw_rows = _query_u8_bom_inventory(
+        result = _query_u8_bom_inventory(
             parent_codes,
             payload.max_depth,
             cancel_checker=cancel_checker,
             user_key=user_key,
         )
-        rows = format_u8_output_rows(raw_rows)
+        rows = format_u8_output_rows(result.rows)
         logger.debug(
-            "U8 查询完成: parent_codes=%s, raw_rows=%s, output_rows=%s",
+            "U8 查询完成: parent_codes=%s, raw_rows=%s, output_rows=%s, failed_roots=%s",
             len(parent_codes),
-            len(raw_rows),
+            len(result.rows),
             len(rows),
+            len(result.failed_root_codes),
         )
-        return QueryResponse(total=len(rows), items=rows)
-    except (ValidationError, QueryCancelledError):
+        return QueryResponse(
+            total=len(rows),
+            items=rows,
+            failed_root_codes=result.failed_root_codes,
+            partial=result.partial,
+        )
+    except (ValidationError, QueryCancelledError, U8RootFailureBreakerError):
         raise
     except Exception as exc:
         logger.error("U8 查询失败: %s", exc, exc_info=True)

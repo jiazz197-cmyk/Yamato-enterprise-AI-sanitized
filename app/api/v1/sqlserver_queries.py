@@ -11,7 +11,9 @@ from fastapi import APIRouter, Depends
 
 from app.adapters.sqlserver_queries import PdmBomQueryAdapter, PdmMatchQueryAdapter, U8BomInventoryQueryAdapter
 from app.core.config import settings
+from app.core.exceptions import ExternalServiceError
 from app.core.security import get_current_user_detached
+from app.integrations.sqlserver.exceptions import U8RootFailureBreakerError
 from app.ports.contracts.identity import CurrentUserPort
 from app.ports.dto.sqlserver_queries import PdmBomCommand, PdmMatchCommand, U8BomInventoryCommand
 from app.schemas.sqlserver import PdmBomRequest, QueryResponse, U8BomInventoryRequest
@@ -50,9 +52,16 @@ async def query_u8_bom_inventory(
         max_depth=payload.max_depth,
     )
     # 传入调用者 id 作为 per-user 并发限流的 key（单人最多 2 个并发 BOM 查询）。
-    return await _run_sqlserver_query(
-        RunU8BomInventoryQueryUseCase(_u8).execute, cmd, user_key=_current_user.id
-    )
+    try:
+        return await _run_sqlserver_query(
+            RunU8BomInventoryQueryUseCase(_u8).execute, cmd, user_key=_current_user.id
+        )
+    except U8RootFailureBreakerError as exc:
+        failed_sample = ", ".join(exc.failed_root_codes[:10]) or "未知"
+        raise ExternalServiceError(
+            "U8 SQLServer",
+            f"U8 数据库连续故障，查询中止。已跳过根: {failed_sample}",
+        ) from exc
 
 
 @router.post("/pdm/bom/old", response_model=QueryResponse, summary="PDM BOM_016 条件查询（旧版）")

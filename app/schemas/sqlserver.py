@@ -56,3 +56,6 @@ class QueryResponse(BaseModel):
     total: int
     items: List[Dict[str, Any]]
     components: List[Dict[str, Any]] = []
+    # 故障隔离时被跳过的根编码（DB 层超时/锁/死锁），供调用方/用户感知部分数据缺失。
+    failed_root_codes: List[str] = []
+    partial: bool = False

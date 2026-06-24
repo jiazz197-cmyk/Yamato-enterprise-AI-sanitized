@@ -22,7 +22,7 @@ class _FakeU8Query:
         self._by_parent = by_parent
         self.commands: list[Any] = []
 
-    def run(self, command: Any, cancel_checker: Any = None) -> _FakeU8Response:
+    def run(self, command: Any, cancel_checker: Any = None, user_key: Any = None) -> _FakeU8Response:
         self.commands.append(command)
         payload = self._by_parent.get(command.parent_inv_codes, {"total": 0, "items": []})
         return _FakeU8Response(payload)
