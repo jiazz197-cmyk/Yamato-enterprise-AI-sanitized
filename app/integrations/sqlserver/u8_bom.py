@@ -426,47 +426,35 @@ def _query_u8_bom_inventory(
                         NULLIF(LTRIM(RTRIM(vp.cInvCode)), '')
                     ) AS PartInvCode
                 FROM v_bas_part vp
-            ),
-            RawData AS (
-                SELECT
-                    parent.PartInvCode AS ParentInvCode,
-                    child.PartInvCode AS ChildInvCode,
-                    oc.BomId,
-                    b.ModifyDate,
-                    b.ModifyTime,
-                    oc.SortSeq,
-                    oc.BaseQtyN,
-                    oc.BaseQtyD,
-                    oc.CompScrap,
-                    CAST(1.0 * oc.BaseQtyN / NULLIF(oc.BaseQtyD, 0) AS DECIMAL(38,12)) AS QtyPer,
-                    ic.cInvName,
-                    ic.iInvSprice,
-                    ic.iInvNcost,
-                    ic.cInvStd,
-                    ic.cInvDepCode,
-                    ic.cDefWareHouse,
-                    ic.bForeExpland,
-                    ic.iSupplyType,
-                    child.PartId AS ChildPartId,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY parent.PartInvCode, child.PartInvCode
-                        ORDER BY b.ModifyDate DESC, b.ModifyTime DESC, oc.SortSeq
-                    ) AS rn
-                FROM PartMap parent
-                JOIN bom_parent bp ON bp.ParentId = parent.PartId
-                JOIN bom_opcomponent oc ON oc.BomId = bp.BomId
-                JOIN bom_bom b ON b.BomId = bp.BomId AND b.Status = 3
-                JOIN PartMap child ON child.PartId = oc.ComponentId
-                    LEFT JOIN Inventory ic ON ic.cInvCode = child.PartInvCode
-                    WHERE parent.PartInvCode = %s
-                )
+            )
             SELECT
-                ParentInvCode, ChildInvCode, BomId, ModifyDate, ModifyTime,
-                SortSeq, BaseQtyN, BaseQtyD, CompScrap, QtyPer,
-                cInvName, iInvSprice, iInvNcost, cInvStd, cInvDepCode, cDefWareHouse, bForeExpland, iSupplyType, ChildPartId
-            FROM RawData
-            WHERE rn = 1
-            ORDER BY SortSeq, ChildInvCode
+                parent.PartInvCode AS ParentInvCode,
+                child.PartInvCode AS ChildInvCode,
+                oc.BomId,
+                b.ModifyDate,
+                b.ModifyTime,
+                oc.SortSeq,
+                oc.BaseQtyN,
+                oc.BaseQtyD,
+                oc.CompScrap,
+                CAST(1.0 * oc.BaseQtyN / NULLIF(oc.BaseQtyD, 0) AS DECIMAL(38,12)) AS QtyPer,
+                ic.cInvName,
+                ic.iInvSprice,
+                ic.iInvNcost,
+                ic.cInvStd,
+                ic.cInvDepCode,
+                ic.cDefWareHouse,
+                ic.bForeExpland,
+                ic.iSupplyType,
+                child.PartId AS ChildPartId
+            FROM PartMap parent
+            JOIN bom_parent bp ON bp.ParentId = parent.PartId
+            JOIN bom_opcomponent oc ON oc.BomId = bp.BomId
+            JOIN bom_bom b ON b.BomId = bp.BomId AND b.Status = 3
+            JOIN PartMap child ON child.PartId = oc.ComponentId
+                LEFT JOIN Inventory ic ON ic.cInvCode = child.PartInvCode
+                WHERE parent.PartInvCode = %s
+            ORDER BY oc.SortSeq, child.PartInvCode
         """
         rows = _query_with_deadlock_retry(
             client,
@@ -494,7 +482,6 @@ def _query_u8_bom_inventory(
         parent_code: str,
         level: int,
         cumulative_qty: float,
-        visited_part_ids: set[str],
     ) -> None:
         if level > max_depth:
             return
@@ -504,11 +491,7 @@ def _query_u8_bom_inventory(
             return
 
         for child in children:
-            child_part_id = str(child.get("ChildPartId") or "").strip()
             child_inv_code = str(child.get("ChildInvCode") or "").strip()
-
-            if child_part_id and child_part_id in visited_part_ids:
-                continue
 
             qty_per = to_float(child.get("QtyPer"), 0.0)
             child_cumulative_qty = cumulative_qty * qty_per
@@ -544,10 +527,6 @@ def _query_u8_bom_inventory(
                 }
             )
 
-            next_visited = set(visited_part_ids)
-            if child_part_id:
-                next_visited.add(child_part_id)
-
             # 4/7 开头的编码不再继续向下展开
             if child_inv_code and child_inv_code.startswith(("4", "7")):
                 continue
@@ -559,7 +538,6 @@ def _query_u8_bom_inventory(
                     parent_code=child_inv_code,
                     level=level + 1,
                     cumulative_qty=child_cumulative_qty,
-                    visited_part_ids=next_visited,
                 )
 
     try:
@@ -578,7 +556,6 @@ def _query_u8_bom_inventory(
                 parent_code=root_code,
                 level=1,
                 cumulative_qty=1.0,
-                visited_part_ids=set(),
             )
             rows_added = len(result_rows) - before
             if rows_added == 0:

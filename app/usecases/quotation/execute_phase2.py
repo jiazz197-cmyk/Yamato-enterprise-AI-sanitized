@@ -318,8 +318,7 @@ class ExecuteQuotationPhase2UseCase:
             - purchased_items: 外购件/末级行（浅层查询的完整行数据）
         """
         items = shallow_result.get("items", [])
-        children: List[Dict[str, Any]] = []  # [{code, qty}]
-        children_set: Set[str] = set()
+        children: List[Dict[str, Any]] = []  # [{code, qty, name}]
         purchased_items: List[Dict[str, Any]] = []
 
         for item in items:
@@ -358,9 +357,7 @@ class ExecuteQuotationPhase2UseCase:
             is_virtual = supply_type == "虚拟件"
 
             if is_virtual:
-                if child_code not in children_set:
-                    children.append({"code": child_code, "qty": qty, "name": child_name})
-                    children_set.add(child_code)
+                children.append({"code": child_code, "qty": qty, "name": child_name})
             else:
                 purchased_items.append(item)
 
