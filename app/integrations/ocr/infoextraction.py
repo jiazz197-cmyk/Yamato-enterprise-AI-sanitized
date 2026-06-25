@@ -1,4 +1,5 @@
 import json
+import threading
 import httpx
 from typing import Dict, Any, Optional, List, Callable
 import re
@@ -6,6 +7,40 @@ import time
 
 from app.core.config import settings
 from app.core.http_client import get_http_client
+from app.core.logging import get_logger
+
+logger = get_logger("ocr.infoextraction")
+
+
+# Module-level lazy shared sync httpx.Client for the OCR dotsocr endpoint.
+# Previously extract_layout_info opened a new Client (new TCP/TLS pool) per call,
+# which under concurrent quotation tasks caused heavy handshake overhead. The
+# shared client reuses connections. Created lazily on first use (worker thread);
+# guarded by a lock. Per-call timeout still applied via client.post(timeout=...).
+_sync_ocr_client: Optional[httpx.Client] = None
+_sync_ocr_client_lock = threading.Lock()
+
+
+def _get_sync_ocr_client() -> httpx.Client:
+    global _sync_ocr_client
+    if _sync_ocr_client is None:
+        with _sync_ocr_client_lock:
+            if _sync_ocr_client is None:
+                _sync_ocr_client = httpx.Client(
+                    limits=httpx.Limits(max_connections=20, max_keepalive=10),
+                )
+    return _sync_ocr_client
+
+
+def close_sync_ocr_client() -> None:
+    """Close the shared sync OCR client (call on application shutdown)."""
+    global _sync_ocr_client
+    if _sync_ocr_client is not None:
+        try:
+            _sync_ocr_client.close()
+        except Exception:
+            pass
+        _sync_ocr_client = None
 
 
 def _ocr_payload(image_url: str) -> dict:
@@ -101,8 +136,11 @@ def extract_layout_info(
     payload = _ocr_payload(image_url)
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(rt, connect=ct)) as client:
-            response = client.post(api_url, headers=headers, json=payload)
+        client = _get_sync_ocr_client()
+        response = client.post(
+            api_url, headers=headers, json=payload,
+            timeout=httpx.Timeout(rt, connect=ct),
+        )
     except httpx.TimeoutException as e:
         raise RuntimeError(
             f"OCR API request timed out (connect={ct}s, read={rt}s): {e}"
@@ -327,9 +365,13 @@ def extract_info_with_retry(image_url: str, api_url: str = "http://localhost:80/
                 if attempt >= max_retries:
                     break
         
-        except Exception:
+        except Exception as e:
             if attempt >= max_retries:
                 raise
+            logger.debug(
+                "extract_info_with_retry 中间失败 attempt=%s/%s err=%s",
+                attempt, max_retries, e,
+            )
     
     error_msg = f"无法提取完整内容，请重新上传重试。经过 {max_retries} 次尝试后仍有以下部分缺失或为空: {', '.join(last_empty_sections)}"
     raise ValueError(error_msg)

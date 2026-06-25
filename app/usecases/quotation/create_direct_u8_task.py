@@ -67,40 +67,51 @@ class CreateDirectU8TaskUseCase:
             content_type="application/pdf",
         )
 
-        file_id = await self._task_repo.create_file_record(
-            file_name=unique_name,
-            unique_name=unique_name,
-            minio_path=minio_path,
-            content_type="application/pdf",
-            file_size=1,
-            uploader=cmd.owner_username,
-        )
+        # After the placeholder PDF uploads, any failure before create_task
+        # commits would orphan it. Wrap the persist section to reclaim.
+        try:
+            file_id = await self._task_repo.create_file_record(
+                file_name=unique_name,
+                unique_name=unique_name,
+                minio_path=minio_path,
+                content_type="application/pdf",
+                file_size=1,
+                uploader=cmd.owner_username,
+            )
 
-        task_name = (cmd.task_name or "").strip() or "直接U8查询"
-        task_id = await self._task_state.create_task(
-            task_type="quotation_generation",
-            metadata={
-                "owner_username": cmd.owner_username,
-                "owner_ip": cmd.owner_ip,
-                "file_id": file_id,
-                "file_name": unique_name,
-                "task_name": task_name,
-            },
-        )
+            task_name = (cmd.task_name or "").strip() or "直接U8查询"
+            task_id = await self._task_state.create_task(
+                task_type="quotation_generation",
+                metadata={
+                    "owner_username": cmd.owner_username,
+                    "owner_ip": cmd.owner_ip,
+                    "file_id": file_id,
+                    "file_name": unique_name,
+                    "task_name": task_name,
+                },
+            )
 
-        await self._task_repo.create_task(
-            task_id=task_id,
-            owner_id=cmd.owner_id,
-            owner_username=cmd.owner_username,
-            owner_ip=cmd.owner_ip,
-            role_snapshot=cmd.role_snapshot,
-            uploaded_file_id=file_id,
-            uploaded_file_name=unique_name,
-            display_name=task_name,
-            uploaded_file_minio_path=minio_path,
-            uploaded_file_content_type="application/pdf",
-            uploaded_file_size=1,
-        )
+            await self._task_repo.create_task(
+                task_id=task_id,
+                owner_id=cmd.owner_id,
+                owner_username=cmd.owner_username,
+                owner_ip=cmd.owner_ip,
+                role_snapshot=cmd.role_snapshot,
+                uploaded_file_id=file_id,
+                uploaded_file_name=unique_name,
+                display_name=task_name,
+                uploaded_file_minio_path=minio_path,
+                uploaded_file_content_type="application/pdf",
+                uploaded_file_size=1,
+            )
+        except Exception:
+            try:
+                from app.core.async_storage import async_delete_from_minio
+                await async_delete_from_minio(minio_path)
+                logger.warning("创建直传U8任务失败后回删占位 PDF: %s", minio_path)
+            except Exception as cleanup_err:
+                logger.error("回删占位 PDF 失败 path=%s err=%s", minio_path, cleanup_err)
+            raise
 
         self._task_execution.set_task_owner(task_id, cmd.owner_id)
 

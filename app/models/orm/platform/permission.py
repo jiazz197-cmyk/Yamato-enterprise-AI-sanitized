@@ -1,4 +1,4 @@
-from datetime import datetime
+from app.core.time_utils import utcnow_naive
 
 from sqlalchemy import Column, Integer, String, DateTime
 from sqlalchemy.orm import relationship
@@ -13,8 +13,8 @@ class Permission(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(64), unique=True, index=True, nullable=False)
     description = Column(String(256), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
     roles = relationship(
         "Role",
         secondary=role_permission_table,

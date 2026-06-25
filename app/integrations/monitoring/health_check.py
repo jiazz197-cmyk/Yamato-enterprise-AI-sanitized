@@ -4,12 +4,12 @@
 """
 import asyncio
 import logging
-from datetime import datetime
 from typing import Dict, Any
 
 from app.core.cache import redis_manager
 from app.core.database import check_db_connection_async
 from app.core.logging import get_logger
+from app.core.time_utils import utcnow
 
 logger = get_logger("monitoring.health_check")
 
@@ -82,7 +82,7 @@ class HealthCheckService:
         """构造成功响应"""
         result = {
             "status": "healthy",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": utcnow().isoformat()
         }
         if latency_ms is not None:
             result["latency_ms"] = round(latency_ms, 2)
@@ -93,19 +93,19 @@ class HealthCheckService:
         return {
             "status": "unhealthy",
             "error": error,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": utcnow().isoformat()
         }
     
     async def _check_redis_async(self) -> Dict[str, Any]:
         """异步检查 Redis 连接（带超时）"""
         try:
-            start = datetime.now()
+            start = utcnow()
             # 使用 asyncio.wait_for 添加超时控制
             await asyncio.wait_for(
                 redis_manager.redis_client.ping(),
                 timeout=self.check_timeout
             )
-            latency = (datetime.now() - start).total_seconds() * 1000
+            latency = (utcnow() - start).total_seconds() * 1000
             return self._success_result(latency)
         except asyncio.TimeoutError:
             logger.warning(f"Redis 健康检查超时 (>{self.check_timeout}s)")
@@ -117,12 +117,12 @@ class HealthCheckService:
     async def _check_postgresql_async(self) -> Dict[str, Any]:
         """异步检查 PostgreSQL 连接（带超时）"""
         try:
-            start = datetime.now()
+            start = utcnow()
             ok = await asyncio.wait_for(
                 check_db_connection_async(),
                 timeout=self.check_timeout,
             )
-            latency = (datetime.now() - start).total_seconds() * 1000
+            latency = (utcnow() - start).total_seconds() * 1000
             if ok:
                 return self._success_result(latency)
             return self._error_result("connection check failed")

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import IO, Optional, Generator, Dict, Tuple
 
+import urllib3
 from minio import Minio
 from minio.error import S3Error
 
@@ -26,6 +27,21 @@ STREAM_CHUNK_SIZE = 1 * 1024 * 1024
 
 class MinioUploadError(Exception):
     """Raised when an upload to MinIO fails (service unavailable or S3/IO error)."""
+
+
+def _build_http_client(connect_sec: float = 10.0, read_sec: Optional[float] = None) -> urllib3.PoolManager:
+    """urllib3 PoolManager with explicit connect/read timeouts.
+
+    Injected into Minio(http_client=...) so that stalled get_object / put_object
+    reads do not block worker threads indefinitely. Without this, minio-py uses
+    urllib3 defaults (no read timeout) and a hung MinIO can hang a worker forever.
+    """
+    read = read_sec if read_sec is not None else float(settings.MINIO_DOWNLOAD_TIMEOUT_SEC)
+    return urllib3.PoolManager(
+        timeout=urllib3.Timeout(connect=float(connect_sec), read=read),
+        cert_reqs="CERT_REQUIRED",
+        maxsize=10,
+    )
 
 
 class MinioClientPool:
@@ -60,9 +76,10 @@ class MinioClientPool:
                 secret_key=MINIO_SECRET_KEY,
                 secure=secure,
                 region=settings.MINIO_REGION,
+                http_client=_build_http_client(),
             )
             logger.debug(f"创建 MinIO 客户端: 线程 {threading.current_thread().name}")
-        
+
         return self._local.client
     
     def ensure_bucket(self, bucket_name: str = MINIO_BUCKET_NAME) -> bool:
@@ -147,6 +164,7 @@ def get_minio_client_for_presign() -> Minio:
         secure=secure,
         # Without region, minio-py calls GET /bucket?location= against this endpoint (breaks if host is e.g. minio and not resolvable here)
         region=settings.MINIO_REGION,
+        http_client=_build_http_client(),
     )
 
 
@@ -270,21 +288,40 @@ def upload_stream_to_minio(
         raise MinioUploadError(f"流式上传异常: {e}") from e
 
 
-def delete_from_minio(file_name: str) -> bool:
-    """remove_object；异常返回 False。"""
+def resolve_bucket_for_object(object_name: str) -> str:
+    """Infer the MinIO bucket for an object by its key prefix.
+
+    OCR temp artifacts (``temp/...``, ``images/...``) are uploaded via
+    ``_target_bucket()`` (i.e. ``MINIO_OCR_TEMP_BUCKET`` when configured, else
+    the default bucket). All other objects live in the default bucket. This
+    mirrors the upload-side routing in app/integrations/ocr/image2url.py so that
+    deletes hit the same bucket the object was written to — without requiring a
+    bucket column on FileResource/QuotationTask.
+    """
+    if not object_name:
+        return MINIO_BUCKET_NAME
+    ocr_bucket = settings.MINIO_OCR_TEMP_BUCKET
+    if ocr_bucket and (object_name.startswith("temp/") or object_name.startswith("images/")):
+        return ocr_bucket
+    return MINIO_BUCKET_NAME
+
+
+def delete_from_minio(file_name: str, bucket: Optional[str] = None) -> bool:
+    """remove_object；异常返回 False。bucket 为 None 时按 object_name 前缀推断。"""
+    target_bucket = bucket or resolve_bucket_for_object(file_name)
     try:
         client = get_minio_client()
         client.remove_object(
-            bucket_name=MINIO_BUCKET_NAME,
+            bucket_name=target_bucket,
             object_name=file_name,
         )
-        logger.debug(f"删除对象成功: {file_name}")
+        logger.debug(f"删除对象成功: {file_name} (bucket={target_bucket})")
         return True
     except S3Error as err:
-        logger.error(f"删除 MinIO 对象失败: {err}")
+        logger.error(f"删除 MinIO 对象失败: {err} (bucket={target_bucket}, object={file_name})")
         return False
     except Exception as e:
-        logger.error(f"删除对象异常: {e}")
+        logger.error(f"删除对象异常: {e} (bucket={target_bucket}, object={file_name})")
         return False
 
 
@@ -332,32 +369,7 @@ def save_file_from_minio(
         if temp_file and Path(temp_file.name).exists():
             try:
                 Path(temp_file.name).unlink()
-            except:
-                pass
+            except Exception as unlink_err:
+                logger.warning(f"清理下载临时文件失败: {unlink_err}")
         logger.error(f"下载文件失败: {exc}")
         raise RuntimeError(f"下载文件失败: {exc}") from exc
-
-
-def download_to_file(object_name: str, local_path: str) -> Path:
-    """fget_object；父目录不存在则创建。"""
-    try:
-        client = get_minio_client()
-        file_path = Path(local_path)
-        
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        client.fget_object(
-            MINIO_BUCKET_NAME, 
-            object_name, 
-            str(file_path)
-        )
-        
-        logger.debug(f"下载文件到: {file_path}")
-        return file_path
-        
-    except S3Error as err:
-        logger.error(f"从 MinIO 下载文件失败: {err}")
-        raise RuntimeError(f"从 MinIO 下载文件失败: {err}") from err
-    except Exception as e:
-        logger.error(f"下载文件异常: {e}")
-        raise RuntimeError(f"下载文件异常: {e}") from e

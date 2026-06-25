@@ -41,6 +41,18 @@ async def _run_sqlserver_query(func, *args, **kwargs) -> QueryResponse:
     )
 
 
+def shutdown_sqlserver_query_executor() -> None:
+    """Best-effort shutdown of the module-level SQLServer query thread pool.
+
+    Called from the application lifespan shutdown so pending query workers are
+    released instead of lingering until interpreter exit.
+    """
+    try:
+        _sqlserver_query_executor.shutdown(wait=False)
+    except Exception:
+        pass
+
+
 @router.post("/u8/bom-inventory", response_model=QueryResponse, summary="U8 BOM + Inventory 递归查询")
 async def query_u8_bom_inventory(
     payload: U8BomInventoryRequest,

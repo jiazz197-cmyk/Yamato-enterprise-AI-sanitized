@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import uuid
 
 from app.core.config import settings
+from app.core.logging import get_logger
+from app.core.storage import delete_from_minio
 from app.domain.quotation import (
     Phase1Result,
     QuotationPipelineCancelledError,
@@ -23,6 +25,8 @@ from app.domain.exceptions import QueryCancelledError
 from app.ports.domains.sqlserver_queries import PdmMatchQueryPort
 from app.ports.dto.sqlserver_queries import PdmMatchCommand
 from app.usecases.quotation._utils import response_to_dict
+
+logger = get_logger("quotation.phase1")
 
 
 @dataclass
@@ -74,48 +78,65 @@ class ExecuteQuotationPhase1UseCase:
             cancel_checker=cancel,
         )
 
-        # Step 2: OCR 纯文本提取
-        self._emit_progress(cb, 25, "正在提取PDF文字")
-        self._check_cancel(cancel)
-        text_result = self._ocr_text.extract_text(
-            pdf_bytes=cmd.pdf_bytes,
-            cancel_checker=cancel,
-        )
-
-        if not text_result.text:
-            raise QuotationPipelineCancelledError(
-                f"PDF 文字提取失败 (method={text_result.extract_method})"
-            )
-
-        # Step 3: 解析 + 转换
-        self._emit_progress(cb, 35, "正在解析规格参数并生成部件列表")
-        self._check_cancel(cancel)
-        parse_result = self._spec_parse.parse_and_convert(
-            ocr_text=text_result.text,
-            cancel_checker=cancel,
-        )
-
-        specs = parse_result["specs"]
-        keywords_payload = parse_result["keywords_payload"]
-
-        # Step 4: PDM 匹配查询
-        pdm_query_summary = summarize_pdm_query_params(keywords_payload)
-        self._emit_progress(
-            cb, 40, f"正在执行 PDM 匹配查询 | 参数: {pdm_query_summary}"
-        )
-        self._check_cancel(cancel)
-
+        # Steps 2-4 may fail AFTER the temp image is already on MinIO. If they do,
+        # the worker's cleanup cannot recover the path (Phase1Result is never
+        # returned), so the temp image would orphan. Delete it here on failure and
+        # re-raise so the worker still records the failure.
         try:
-            response = self._pdm_match.run(
-                PdmMatchCommand(keywords=specs),
+            # Step 2: OCR 纯文本提取
+            self._emit_progress(cb, 25, "正在提取PDF文字")
+            self._check_cancel(cancel)
+            text_result = self._ocr_text.extract_text(
+                pdf_bytes=cmd.pdf_bytes,
                 cancel_checker=cancel,
             )
-        except QueryCancelledError as exc:
-            raise QuotationPipelineCancelledError("PDM 查询已取消") from exc
 
-        self._check_cancel(cancel)
-        pdm_result = response_to_dict(response)
-        pdm_partids = collect_pdm_partids(pdm_result)
+            if not text_result.text:
+                raise QuotationPipelineCancelledError(
+                    f"PDF 文字提取失败 (method={text_result.extract_method})"
+                )
+
+            # Step 3: 解析 + 转换
+            self._emit_progress(cb, 35, "正在解析规格参数并生成部件列表")
+            self._check_cancel(cancel)
+            parse_result = self._spec_parse.parse_and_convert(
+                ocr_text=text_result.text,
+                cancel_checker=cancel,
+            )
+
+            specs = parse_result["specs"]
+            keywords_payload = parse_result["keywords_payload"]
+
+            # Step 4: PDM 匹配查询
+            pdm_query_summary = summarize_pdm_query_params(keywords_payload)
+            self._emit_progress(
+                cb, 40, f"正在执行 PDM 匹配查询 | 参数: {pdm_query_summary}"
+            )
+            self._check_cancel(cancel)
+
+            try:
+                response = self._pdm_match.run(
+                    PdmMatchCommand(keywords=specs),
+                    cancel_checker=cancel,
+                )
+            except QueryCancelledError as exc:
+                raise QuotationPipelineCancelledError("PDM 查询已取消") from exc
+
+            self._check_cancel(cancel)
+            pdm_result = response_to_dict(response)
+            pdm_partids = collect_pdm_partids(pdm_result)
+        except Exception:
+            # Best-effort cleanup of the just-uploaded temp image; never mask the
+            # original exception.
+            try:
+                delete_from_minio(upload.object_path)
+            except Exception as cleanup_err:
+                logger.warning(
+                    "Phase1 失败后清理临时图失败 path=%s err=%s",
+                    upload.object_path, cleanup_err,
+                )
+            raise
+
 
         self._emit_progress(cb, 50, "PDM 查询完成，等待用户审核")
 

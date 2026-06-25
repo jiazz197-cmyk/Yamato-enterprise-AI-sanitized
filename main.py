@@ -320,7 +320,21 @@ async def lifespan(app: FastAPI):
             print("[success] 线程池已关闭")
         except Exception as e:
             print(f"[warning] 关闭线程池时出错: {e}")
-        
+
+        try:
+            from app.api.v1.sqlserver_queries import shutdown_sqlserver_query_executor
+            shutdown_sqlserver_query_executor()
+            print("[success] SQLServer 查询线程池已关闭")
+        except Exception as e:
+            print(f"[warning] 关闭 SQLServer 查询线程池时出错: {e}")
+
+        try:
+            from app.integrations.ocr.infoextraction import close_sync_ocr_client
+            close_sync_ocr_client()
+            print("[success] OCR 同步 HTTP 客户端已关闭")
+        except Exception as e:
+            print(f"[warning] 关闭 OCR 同步 HTTP 客户端时出错: {e}")
+
         try:
             from app.core.task_manager import task_manager
             await asyncio.wait_for(task_manager.remove_all_observers(), timeout=1.0)

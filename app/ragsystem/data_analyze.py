@@ -4,7 +4,6 @@ import ast
 import asyncio
 import json
 import os
-from datetime import datetime
 from enum import Enum
 from typing import List, Dict, Any, Union, Tuple
 
@@ -16,6 +15,11 @@ import polars as pl
 from polars import Utf8
 from polars.selectors import numeric
 from pydantic import BaseModel
+
+from app.core.logging import get_logger
+from app.core.time_utils import utcnow_naive
+
+logger = get_logger("ragsystem.data_analyze")
 
 
 class AnalysisTask(Enum):
@@ -91,7 +95,8 @@ class DataAnalyzer:
     def _correlations(self, data: pl.DataFrame) -> List[Dict[str, Any]]:
         try:
             return data.select(numeric()).corr().to_dicts()
-        except:
+        except Exception as e:
+            logger.debug("计算相关性失败，返回空列表: %s", e)
             return []
 
 
@@ -115,7 +120,7 @@ class DataVisualizer:
         return fig
 
     def _ts(self) -> str:
-        return datetime.now().strftime("%Y%m%d%H%M%S")
+        return utcnow_naive().strftime("%Y%m%d%H%M%S")
 
     def _save_html_and_png(self, fig: go.Figure, prefix: str) -> Tuple[str, Union[str, None]]:
         ts = self._ts()
@@ -131,6 +136,7 @@ class DataVisualizer:
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html)
         png_name = None
+        png_path = None
         if self.save_png:
             png_name = f"{prefix}_{ts}.png"
             png_path = os.path.join(self.output_dir, png_name)
@@ -442,7 +448,7 @@ class DataAnalyst:
                         cleaned[k] = None
                     else:
                         try: cleaned[k] = float(v)
-                        except: cleaned[k] = v
+                        except (ValueError, TypeError): cleaned[k] = v
                 cleaned_rows.append(cleaned)
             df = pl.DataFrame(cleaned_rows)
             if headers:
@@ -538,7 +544,7 @@ async def main():
     except json.JSONDecodeError:
         try:
             data_source = ast.literal_eval(inp)
-        except:
+        except (ValueError, SyntaxError):
             file_path = inp
             if file_path.endswith(".csv"):
                 data_source = file_path

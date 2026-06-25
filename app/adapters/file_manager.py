@@ -92,6 +92,13 @@ class SqlAlchemyFileManagerAdapter(FileManagerPort):
                 return _to_dto(file_record)
             except Exception:
                 await db.rollback()
+                # Compensating delete: the MinIO object was already uploaded but
+                # the DB commit failed — reclaim it so it does not become an orphan.
+                try:
+                    await async_delete_from_minio(minio_path)
+                    logger.warning("DB 落库失败后回删 MinIO 对象: %s", minio_path)
+                except Exception as cleanup_err:
+                    logger.error("回删 MinIO 对象失败 path=%s err=%s", minio_path, cleanup_err)
                 raise
 
     async def get_file_or_not_found(self, file_id: int) -> FileRecordDTO:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from app.core.executor import executor_manager
+from app.core.executor import attach_future_result_logger, executor_manager
 from app.core.task_owner_registry import task_owner_registry
 from app.integrations.ocr.image_upload_tasks import background_image_upload_task
 from app.integrations.ocr.pdf2image import get_pdf_page_count
@@ -48,7 +48,7 @@ class PdfConvertJobAdapter(PdfConvertJobPort):
     ) -> str:
         task_id = executor_manager.generate_task_id("pdf_convert")
         task_owner_registry.cache(task_id, owner_id)
-        executor_manager.submit_task(
+        future = executor_manager.submit_task(
             task_id,
             background_pdf_convert_task,
             task_id,
@@ -62,6 +62,7 @@ class PdfConvertJobAdapter(PdfConvertJobPort):
             file_name_prefix,
             normalized_uploader,
         )
+        attach_future_result_logger(future, task_id)
         return task_id
 
 
@@ -76,7 +77,7 @@ class ImageUploadJobAdapter(ImageUploadJobPort):
     ) -> str:
         task_id = executor_manager.generate_task_id("image_upload")
         task_owner_registry.cache(task_id, owner_id)
-        executor_manager.submit_task(
+        future = executor_manager.submit_task(
             task_id,
             background_image_upload_task,
             task_id,
@@ -85,6 +86,7 @@ class ImageUploadJobAdapter(ImageUploadJobPort):
             content_type,
             file_name_prefix,
         )
+        attach_future_result_logger(future, task_id)
         return task_id
 
 

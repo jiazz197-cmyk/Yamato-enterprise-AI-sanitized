@@ -319,7 +319,7 @@ async def revise_closing_form(
         image_urls=[url for url in (form_data.image_url_1, form_data.image_url_2) if url],
     )
     try:
-        result = await ReviseClosingFormUseCase(_persistence).execute(form_id, current_user, cmd)
+        result = await ReviseClosingFormUseCase(_persistence, _image_storage).execute(form_id, current_user, cmd)
         return ClosingFormReviseResponse(success=result.success, message=result.message)
     except (NotFoundError, ValidationError, APIException):
         raise
@@ -380,7 +380,7 @@ async def delete_rejected_closing_form(
     current_user: CurrentUserPort = Depends(require_roles(ROLE_ADMIN, ROLE_SUPERUSER)),
 ):
     try:
-        result = await DeleteRejectedClosingFormUseCase(_persistence).execute(form_id, current_user)
+        result = await DeleteRejectedClosingFormUseCase(_persistence, _image_storage).execute(form_id, current_user)
         return ClosingFormDeleteResponse(
             success=result.success, message=result.message, deleted_id=result.deleted_id
         )

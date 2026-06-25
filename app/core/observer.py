@@ -2,10 +2,11 @@
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 import logging
+
+from app.core.time_utils import utcnow
 
 logger = logging.getLogger("app.observer")
 
@@ -26,7 +27,7 @@ class TaskEvent:
     event_type: TaskEventType
     task_id: str
     task_type: str
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: str = field(default_factory=lambda: utcnow().isoformat())
     
     status: Optional[str] = None
     progress: Optional[int] = None

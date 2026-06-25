@@ -1,6 +1,7 @@
 """logging.dictConfig 与 app.* 命名 logger。"""
 import logging
 import logging.config
+import logging.handlers
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -66,13 +67,21 @@ LOGGER_ROUTES: Dict[str, str] = {
 
 
 def _file_handler(filename: str) -> Dict[str, Any]:
+    """RotatingFileHandler so long-running processes do not fill the disk.
+
+    Rotates at LOG_MAX_BYTES (default 10MB) keeping LOG_BACKUP_COUNT (default 5)
+    backup copies. Previously this used a plain append-only FileHandler which grew
+    without bound.
+    """
     target = LOG_DIR / filename
     return {
         "formatter": "plain",
-        "class": "logging.FileHandler",
+        "class": "logging.handlers.RotatingFileHandler",
         "filename": str(target),
         "mode": "a",
         "encoding": "utf-8",
+        "maxBytes": int(getattr(settings, "LOG_MAX_BYTES", 10 * 1024 * 1024)),
+        "backupCount": int(getattr(settings, "LOG_BACKUP_COUNT", 5)),
     }
 
 

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 
 from app.core.exceptions import APIException
+from app.core.time_utils import utcnow_naive
 from app.ports.contracts.tasking import TaskDispatchPort, TaskExecutionPort, TaskStatePort
 from app.ports.domains.quotation import QuotationTaskRepoPort
 
@@ -54,7 +54,7 @@ class CancelQuotationTaskUseCase:
                     "status": "cancelled",
                     "message": "任务已取消",
                     "error": "用户取消",
-                    "completed_at": datetime.utcnow(),
+                    "completed_at": utcnow_naive(),
                 },
             )
             await self._task_state.update_status(cmd.task_id, "cancelled", "任务已取消")
@@ -71,7 +71,7 @@ class CancelQuotationTaskUseCase:
                     "status": "cancelled",
                     "message": "任务已取消（审核阶段）",
                     "error": "用户取消",
-                    "completed_at": datetime.utcnow(),
+                    "completed_at": utcnow_naive(),
                     "awaiting_approval_at": None,
                     "result_payload": payload,
                 },
@@ -88,7 +88,7 @@ class CancelQuotationTaskUseCase:
                     "status": "cancelled",
                     "message": "任务已取消（执行器未持有该任务）",
                     "error": "用户取消",
-                    "completed_at": datetime.utcnow(),
+                    "completed_at": utcnow_naive(),
                 },
             )
             await self._task_state.update_status(cmd.task_id, "cancelled", "任务已取消")

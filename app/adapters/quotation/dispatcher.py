@@ -7,13 +7,12 @@ as part of Clean Architecture Phase 1 refactoring.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
-
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.core.time_utils import utcnow_naive
 from app.core.logging import get_logger
 from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
 from app.ports.domains.quotation import DispatchCandidate, QuotationDispatchPort
@@ -110,7 +109,7 @@ class QuotationDispatcherAdapter(QuotationDispatchPort):
             if not selected_tasks:
                 return []
 
-            now = datetime.utcnow()
+            now = utcnow_naive()
             for task in selected_tasks:
                 task.status = QuotationTaskStatus.running.value
                 task.started_at = now

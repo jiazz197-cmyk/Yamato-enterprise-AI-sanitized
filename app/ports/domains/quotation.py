@@ -211,3 +211,6 @@ class QuotationTaskRetentionPort(Protocol):
 
     async def expire_awaiting_approval_tasks(self, ttl_hours: int = 24) -> int:
         ...
+
+    async def reclaim_stale_running_tasks(self, timeout_sec: int = 1800) -> int:
+        ...

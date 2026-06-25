@@ -1,7 +1,7 @@
 """Persistent quotation generation task model."""
 
 import enum
-from datetime import datetime
+from app.core.time_utils import utcnow_naive
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Text
 
@@ -45,9 +45,9 @@ class QuotationTask(Base):
     result_payload = Column(JSON, nullable=True)
     error = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utcnow_naive, nullable=False)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive, nullable=False)
     awaiting_approval_at = Column(DateTime, nullable=True)
 

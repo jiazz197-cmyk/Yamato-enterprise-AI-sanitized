@@ -37,3 +37,7 @@ tests/output/
 .claude/
 .understand-anything/
 understand-anything/
+
+# macOS / editor junk
+.DS_Store
+**/.DS_Store

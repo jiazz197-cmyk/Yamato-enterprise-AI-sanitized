@@ -108,6 +108,21 @@ def background_pdf_convert_task(
                     except Exception as e:
                         logger.error("保存文件记录到数据库失败: %s", e, exc_info=True)
                         db_session.rollback()
+                        # Compensating delete: the image was already uploaded to
+                        # MinIO but the DB record failed — reclaim it so it does
+                        # not orphan. upload_file_to_minio wrote to the OCR temp
+                        # bucket (or default); delete_from_minio infers the bucket
+                        # from the temp/ prefix.
+                        try:
+                            from app.core.storage import delete_from_minio
+                            delete_from_minio(unique_filename)
+                            logger.warning("DB 落库失败后回删 MinIO 临时图: %s", unique_filename)
+                        except Exception as cleanup_err:
+                            logger.error("回删 MinIO 临时图失败 path=%s err=%s", unique_filename, cleanup_err)
+                        # Nullify url/file_id so downstream consumers don't
+                        # reference a now-deleted MinIO object.
+                        url = None
+                        file_id = None
                     filename = unique_filename
                 images_info.append(
                     ImageInfo(

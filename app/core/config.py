@@ -156,6 +156,14 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     POSTGRES_DB: str = Field("pgdb", env="POSTGRES_DB")
     POSTGRES_PORT: int = Field(5432, env="POSTGRES_PORT")
 
+    # Connection pool tuning (consumed by app/core/database.py via getattr)
+    DB_POOL_SIZE: int = Field(10, ge=1, le=100, env="DB_POOL_SIZE")
+    DB_MAX_OVERFLOW: int = Field(20, ge=0, le=200, env="DB_MAX_OVERFLOW")
+    DB_POOL_TIMEOUT: int = Field(30, ge=1, le=300, env="DB_POOL_TIMEOUT")
+    DB_POOL_RECYCLE: int = Field(3600, ge=60, le=86400, env="DB_POOL_RECYCLE")
+    # Background executor thread pool size (consumed by app/core/executor.py via getattr)
+    EXECUTOR_MAX_WORKERS: int = Field(4, ge=1, le=64, env="EXECUTOR_MAX_WORKERS")
+
     # SQL Server（U8 / PDM）
     U8_SQLSERVER_HOST: str = Field("127.0.0.1", env="U8_SQLSERVER_HOST")
     U8_SQLSERVER_PORT: int = Field(1433, env="U8_SQLSERVER_PORT")
@@ -176,6 +184,9 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     # PDM matcher 四路召回的"查询内"并行度（与跨请求并发无关）。不用于同步查询 API
     # 执行器（那个用 EXECUTOR_MAX_WORKERS）。
     SQLSERVER_QUERY_MAX_WORKERS: int = Field(2, ge=1, le=8, env="SQLSERVER_QUERY_MAX_WORKERS")
+    # Circuit breaker for U8/PDM SQLServer (failure isolation, 20003 timeout protection)
+    SQLSERVER_CB_FAIL_THRESHOLD: int = Field(5, ge=1, le=100, env="SQLSERVER_CB_FAIL_THRESHOLD")
+    SQLSERVER_CB_OPEN_SEC: int = Field(60, ge=5, le=3600, env="SQLSERVER_CB_OPEN_SEC")
 
     # U8 BOM 树展开并行度：单个 BOM 任务内嵌 ThreadPoolExecutor 的 worker 数
     # （每个根编码子树一个 worker）。注意：采用全局共享连接池后，本值不再决定
@@ -290,6 +301,11 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     # Opt-in only: if True, set anonymous s3:GetObject on MINIO_OCR_ANONYMOUS_BUCKET (never on default bucket)
     MINIO_OCR_ENABLE_ANONYMOUS_BUCKET: bool = Field(False, env="MINIO_OCR_ENABLE_ANONYMOUS_BUCKET")
     MINIO_OCR_ANONYMOUS_BUCKET: Optional[str] = Field(default=None, env="MINIO_OCR_ANONYMOUS_BUCKET")
+    # MinIO download socket timeout (protects worker threads from MinIO stalls)
+    MINIO_DOWNLOAD_TIMEOUT_SEC: float = Field(60.0, ge=5.0, le=600.0, env="MINIO_DOWNLOAD_TIMEOUT_SEC")
+    # MinIO orphan reconciliation (scan bucket vs DB, delete unreferenced objects)
+    MINIO_RECONCILE_INTERVAL_SEC: int = Field(3600, ge=300, le=86400, env="MINIO_RECONCILE_INTERVAL_SEC")
+    MINIO_RECONCILE_GRACE_SEC: int = Field(900, ge=60, le=86400, env="MINIO_RECONCILE_GRACE_SEC")
 
     OCR_HTTP_CONNECT_TIMEOUT: float = Field(10.0, ge=1.0, le=300.0, env="OCR_HTTP_CONNECT_TIMEOUT")
     OCR_HTTP_READ_TIMEOUT: float = Field(300.0, ge=5.0, le=3600.0, env="OCR_HTTP_READ_TIMEOUT")
@@ -342,6 +358,16 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     QUOTATION_RETENTION_TARGET: int = Field(50, ge=1, le=5000, env="QUOTATION_RETENTION_TARGET")
     QUOTATION_RETENTION_INTERVAL_SEC: int = Field(300, ge=60, le=86400, env="QUOTATION_RETENTION_INTERVAL_SEC")
     QUOTATION_AWAITING_APPROVAL_TTL_HOURS: int = Field(24, ge=1, le=168, env="QUOTATION_AWAITING_APPROVAL_TTL_HOURS")
+    # Reclaim quotation tasks stuck in running longer than this (worker hang protection)
+    QUOTATION_RUNNING_TIMEOUT_SEC: int = Field(1800, ge=60, le=86400, env="QUOTATION_RUNNING_TIMEOUT_SEC")
+
+    # task_owner_registry in-memory cache bounds (prevents unbounded growth)
+    TASK_OWNER_CACHE_TTL_SEC: int = Field(86400, ge=60, le=604800, env="TASK_OWNER_CACHE_TTL_SEC")
+    TASK_OWNER_CACHE_MAX: int = Field(5000, ge=100, le=100000, env="TASK_OWNER_CACHE_MAX")
+
+    # Log rotation
+    LOG_MAX_BYTES: int = Field(10 * 1024 * 1024, ge=1024 * 1024, env="LOG_MAX_BYTES")
+    LOG_BACKUP_COUNT: int = Field(5, ge=1, le=50, env="LOG_BACKUP_COUNT")
 
     # Headless document conversion; abort hung soffice processes
     LIBREOFFICE_SUBPROCESS_TIMEOUT_SEC: int = Field(300, ge=30, le=3600, env="LIBREOFFICE_SUBPROCESS_TIMEOUT_SEC")

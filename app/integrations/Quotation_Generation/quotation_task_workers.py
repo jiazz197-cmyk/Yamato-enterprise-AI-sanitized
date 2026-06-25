@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from app.core.task_manager import TaskManager, task_manager
 from app.core.executor import CancellationToken, executor_manager
 from app.core.logging import get_logger
+from app.core.time_utils import utcnow_naive
 from app.adapters.quotation.dispatcher import quotation_dispatcher
 from app.adapters.quotation.task_persistence import QuotationTaskPersistenceAdapter
 from app.core.storage import save_file_from_minio, upload_stream_to_minio
@@ -89,6 +90,7 @@ def _upload_u8_result_by_type_xlsx_to_minio(
                 summary_selection_items=summary_selection_items,
                 raw_extracted_info=raw_extracted_info,
                 keywords_payload=keywords_payload,
+                # Intentionally Asia/Shanghai — report generation timestamps must reflect local business timezone
                 generated_at=datetime.now(ZoneInfo("Asia/Shanghai")),
                 partid_quantities=partid_quantities,
                 cancel_checker=cancel_checker,
@@ -294,6 +296,9 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
     existing_payload: Dict[str, Any] = {}
     uploaded_file_minio_path = ""
     uploaded_file_name = ""
+    # Track the temp image path from Phase1 so cancel/exception branches can pass
+    # it to cleanup even when it was never persisted to DB (prevents orphan).
+    phase1_temp_image_path: Optional[str] = None
 
     try:
         task_data = _persistence.get_task_payload_sync(task_id)
@@ -339,6 +344,7 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
                 cancel_checker=token.is_cancelled,
             )
         )
+        phase1_temp_image_path = phase1_result.temp_image_minio_path
 
         result_payload = dict(existing_payload)
         result_payload.update(phase1_result.to_dict())
@@ -352,12 +358,18 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
                     "progress": 99,
                     "message": "PDM 查询未返回任何 PARTID",
                     "error": error_message,
-                    "completed_at": datetime.utcnow(),
+                    "completed_at": utcnow_naive(),
                     "temp_image_minio_path": phase1_result.temp_image_minio_path,
                     "result_payload": result_payload,
                 },
             )
             loop.run_until_complete(thread_tm.fail_task(task_id, error_message, "PDM 查询未返回任何 PARTID"))
+            # PDM-empty is a terminal failure: clean up uploaded PDF + temp image
+            # immediately rather than leaving them for retention.
+            cleanup_result = cleanup_task_files_by_id_sync(
+                task_id, extra_minio_paths=[phase1_temp_image_path] if phase1_temp_image_path else None
+            )
+            logger.info("Phase1 PDM-empty cleanup: task_id=%s result=%s", task_id, cleanup_result)
             return {"status": "error", "task_id": task_id, "error": error_message}
 
         converted_u8_codes, pdm_to_u8_mappings = convert_partids_to_u8_codes(
@@ -380,7 +392,7 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
                 "temp_image_minio_path": phase1_result.temp_image_minio_path,
                 "result_payload": result_payload,
                 "error": None,
-                "awaiting_approval_at": datetime.utcnow(),
+                "awaiting_approval_at": utcnow_naive(),
             },
         )
 
@@ -393,7 +405,10 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
         return {"status": "awaiting_approval", "task_id": task_id}
 
     except QuotationPipelineCancelledError as exc:
-        cleanup_result = cleanup_task_files_by_id_sync(task_id)
+        cleanup_result = cleanup_task_files_by_id_sync(
+            task_id,
+            extra_minio_paths=[phase1_temp_image_path] if phase1_temp_image_path else None,
+        )
         existing_payload["cleanup"] = cleanup_result
         _persistence.patch_task_fields_sync(
             task_id,
@@ -401,7 +416,7 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
                 "status": QuotationTaskStatus.cancelled.value,
                 "message": "任务已取消",
                 "error": str(exc),
-                "completed_at": datetime.utcnow(),
+                "completed_at": utcnow_naive(),
                 "result_payload": existing_payload,
             },
         )
@@ -410,7 +425,10 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
 
     except Exception as exc:
         logger.error(f"报价任务 Phase1 执行失败 {task_id}: {exc}", exc_info=True)
-        cleanup_result = cleanup_task_files_by_id_sync(task_id)
+        cleanup_result = cleanup_task_files_by_id_sync(
+            task_id,
+            extra_minio_paths=[phase1_temp_image_path] if phase1_temp_image_path else None,
+        )
         existing_payload["cleanup"] = cleanup_result
         _persistence.patch_task_fields_sync(
             task_id,
@@ -418,7 +436,7 @@ def process_quotation_task_background(token: CancellationToken, task_id: str) ->
                 "status": QuotationTaskStatus.failed.value,
                 "message": "Phase1 执行失败",
                 "error": str(exc),
-                "completed_at": datetime.utcnow(),
+                "completed_at": utcnow_naive(),
                 "result_payload": existing_payload,
             },
         )
@@ -438,6 +456,9 @@ def process_quotation_task_phase2_background(
     thread_tm = TaskManager.create_thread_safe_instance()
     existing_payload: Dict[str, Any] = {}
     uploaded_file_name = ""
+    # Track the xlsx path so the exception handler can reclaim it even when the
+    # patch that would persist it to DB never ran (prevents orphan).
+    phase2_xlsx_path: Optional[str] = None
 
     try:
         task_data = _persistence.get_task_payload_sync(task_id)
@@ -555,6 +576,7 @@ def process_quotation_task_phase2_background(
         if xlsx_path and xlsx_name:
             final_payload["u8_result_by_type_xlsx_minio_path"] = xlsx_path
             final_payload["u8_result_by_type_xlsx_filename"] = xlsx_name
+            phase2_xlsx_path = xlsx_path
 
         if failed_root_codes:
             sample = ", ".join(failed_root_codes[:10])
@@ -572,7 +594,7 @@ def process_quotation_task_phase2_background(
                 "message": completed_message,
                 "result_payload": final_payload,
                 "error": None,
-                "completed_at": datetime.utcnow(),
+                "completed_at": utcnow_naive(),
             },
         )
 
@@ -580,7 +602,10 @@ def process_quotation_task_phase2_background(
         return {"status": "success", "task_id": task_id}
 
     except QuotationPipelineCancelledError as exc:
-        cleanup_result = cleanup_task_files_by_id_sync(task_id)
+        cleanup_result = cleanup_task_files_by_id_sync(
+            task_id,
+            extra_minio_paths=[phase2_xlsx_path] if phase2_xlsx_path else None,
+        )
         existing_payload["cleanup"] = cleanup_result
         _persistence.patch_task_fields_sync(
             task_id,
@@ -588,7 +613,7 @@ def process_quotation_task_phase2_background(
                 "status": QuotationTaskStatus.cancelled.value,
                 "message": "任务已取消",
                 "error": str(exc),
-                "completed_at": datetime.utcnow(),
+                "completed_at": utcnow_naive(),
                 "result_payload": existing_payload,
             },
         )
@@ -609,7 +634,7 @@ def process_quotation_task_phase2_background(
                 "status": QuotationTaskStatus.failed.value,
                 "message": "U8 数据库连续故障，任务中止",
                 "error": error_message,
-                "completed_at": datetime.utcnow(),
+                "completed_at": utcnow_naive(),
                 "result_payload": existing_payload,
             },
         )
@@ -618,13 +643,21 @@ def process_quotation_task_phase2_background(
 
     except Exception as exc:
         logger.error(f"报价任务 Phase2 执行失败 {task_id}: {exc}", exc_info=True)
+        # Reclaim MinIO artifacts (uploaded PDF, temp image, and any xlsx already
+        # uploaded before the failure). Previously this branch skipped cleanup,
+        # orphaning the xlsx when patch_task_fields_sync failed after upload.
+        cleanup_result = cleanup_task_files_by_id_sync(
+            task_id,
+            extra_minio_paths=[phase2_xlsx_path] if phase2_xlsx_path else None,
+        )
+        existing_payload["cleanup"] = cleanup_result
         _persistence.patch_task_fields_sync(
             task_id,
             {
                 "status": QuotationTaskStatus.failed.value,
                 "message": "Phase2 执行失败",
                 "error": str(exc),
-                "completed_at": datetime.utcnow(),
+                "completed_at": utcnow_naive(),
                 "result_payload": existing_payload,
             },
         )

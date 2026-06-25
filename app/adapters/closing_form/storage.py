@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
 from app.core.config import settings
+from app.core.time_utils import utcnow_naive
 from app.core.logging import get_logger
 from app.core.storage import MinioUploadError, delete_from_minio, upload_stream_to_minio
 
@@ -19,7 +19,7 @@ class ClosingFormStorageAdapter:
     def upload_image(self, file_stream, original_filename: str, content_type: str, uploader: str) -> str:
         prefix = settings.CLOSING_FORM_IMAGE_PREFIX
         ext = Path(original_filename).suffix or ".jpg"
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = utcnow_naive().strftime("%Y%m%d_%H%M%S")
         unique_name = f"{ts}_{uuid4().hex}{ext}"
         object_name = f"{prefix}/{uploader}_{unique_name}"
 

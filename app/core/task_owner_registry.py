@@ -15,10 +15,12 @@ are async to avoid blocking the event loop on DB/Redis I/O.
 from __future__ import annotations
 
 import threading
-from typing import Dict, List, Optional, Protocol
+import time
+from typing import Dict, List, Optional, Protocol, Tuple
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.logging import get_logger
 from app.core.task_manager import task_manager
@@ -88,29 +90,74 @@ class _DocProcessingOwnerLookup:
 
 
 class TaskOwnerRegistry:
-    """In-memory cache fronted by an ordered chain of source-of-truth providers."""
+    """In-memory cache fronted by an ordered chain of source-of-truth providers.
+
+    The cache stores (owner_id, inserted_ts) and is bounded by a TTL and a hard
+    size cap so that long-running processes with many short-lived OCR/doc tasks
+    do not accumulate entries forever (the forget() path only covers quotation
+    tasks purged via retention)."""
 
     def __init__(self, lookups: List[TaskOwnerLookup]):
-        self._cache: Dict[str, str] = {}
+        # task_id -> (owner_id, monotonic_inserted_ts)
+        self._cache: Dict[str, Tuple[str, float]] = {}
         self._lock = threading.Lock()
         self._lookups: List[TaskOwnerLookup] = list(lookups)
+
+    def _ttl_sec(self) -> float:
+        return float(getattr(settings, "TASK_OWNER_CACHE_TTL_SEC", 86400))
+
+    def _max_entries(self) -> int:
+        return int(getattr(settings, "TASK_OWNER_CACHE_MAX", 5000))
+
+    def _evict_expired_locked(self, now_ts: float) -> None:
+        """Drop entries older than TTL. Caller holds the lock."""
+        ttl = self._ttl_sec()
+        if ttl <= 0:
+            return
+        expired = [tid for tid, (_, ts) in self._cache.items() if now_ts - ts > ttl]
+        for tid in expired:
+            self._cache.pop(tid, None)
+
+    def _enforce_cap_locked(self) -> None:
+        """If over the hard cap, evict the oldest entries by inserted ts."""
+        cap = self._max_entries()
+        if len(self._cache) <= cap:
+            return
+        # Sort by inserted ts ascending and drop the oldest surplus.
+        surplus = len(self._cache) - cap
+        ordered = sorted(self._cache.items(), key=lambda kv: kv[1][1])
+        for tid, _ in ordered[:surplus]:
+            self._cache.pop(tid, None)
 
     def cache(self, task_id: str, owner_id: str) -> None:
         """Warm the cache with an owner_id (no-op for empty strings)."""
         normalized = str(owner_id or "").strip()
         if not normalized:
             return
+        now_ts = time.monotonic()
         with self._lock:
-            self._cache[task_id] = normalized
+            self._evict_expired_locked(now_ts)
+            self._cache[task_id] = (normalized, now_ts)
+            self._enforce_cap_locked()
 
     def forget(self, task_id: str) -> None:
         with self._lock:
             self._cache.pop(task_id, None)
 
     def peek_cache(self, task_id: str) -> str:
-        """Sync cache-only read. Returns empty string on miss."""
+        """Sync cache-only read. Returns empty string on miss / expired entry."""
+        now_ts = time.monotonic()
+        ttl = self._ttl_sec()
         with self._lock:
-            return self._cache.get(task_id, "")
+            entry = self._cache.get(task_id)
+            if entry is None:
+                return ""
+            owner_id, ts = entry
+            if ttl > 0 and now_ts - ts > ttl:
+                # Expired — drop and report miss.
+                self._cache.pop(task_id, None)
+                return ""
+            return owner_id
 
     async def resolve(self, task_id: str) -> Optional[str]:
         """Cache -> first matching provider. Backfills cache on hit."""

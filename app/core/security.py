@@ -1,13 +1,14 @@
 """API Key、JWT、密码哈希及角色依赖。"""
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any, Callable
+
+from app.core.time_utils import utcnow
 
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, Security, status
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from fastapi.security.api_key import APIKeyHeader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,7 +41,7 @@ def create_access_token(
     role 非空时写入 ``role`` claim，供限流中间件按角色分级（无需 DB 查询）。
     鉴权仍以 ``sub`` + DB 权威查询为准（见 get_current_user），role claim 仅用于限流分档。
     """
-    expire = datetime.now(timezone.utc) + (
+    expire = utcnow() + (
         expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     payload: dict[str, Any] = {"sub": str(subject), "exp": expire}
@@ -193,27 +194,5 @@ def require_permission(perm: str) -> Callable:
                 detail="Insufficient permissions",
             )
         return current_user
-
-    return dependency
-
-
-API_KEY_NAME = "X-API-KEY"
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
-
-
-async def verify_api_key(api_key_header_value: str = Security(api_key_header)) -> str:
-    """验证 Header 中的 API Key。"""
-    if api_key_header_value and api_key_header_value == settings.INTERNAL_API_KEY:
-        return api_key_header_value
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Invalid API Key",
-    )
-
-
-def require_api_key() -> Callable:
-    """返回 FastAPI 依赖，用于路由级别校验 API Key。"""
-    async def dependency(_: str = Depends(verify_api_key)) -> str:
-        return _
 
     return dependency
