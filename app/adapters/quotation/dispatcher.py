@@ -101,6 +101,14 @@ class QuotationDispatcherAdapter(QuotationDispatchPort):
 
                 current_ip_running = running_by_ip.get(owner_ip, 0)
                 if current_ip_running >= self._max_running_per_ip:
+                    logger.debug(
+                        "IP 配额已满，跳过排队任务: task_id=%s owner_id=%s owner_ip=%s running=%s/%s",
+                        task.task_id,
+                        task.owner_id,
+                        owner_ip,
+                        current_ip_running,
+                        self._max_running_per_ip,
+                    )
                     continue
 
                 selected_tasks.append(task)
@@ -124,6 +132,27 @@ class QuotationDispatcherAdapter(QuotationDispatchPort):
         """Move queued tasks to running state when owner/IP has free slots."""
         async with AsyncSessionLocal() as db:
             return await self._dequeue_for_owner(db, owner_id)
+
+    async def list_queued_owners(self) -> list[str]:
+        """Return distinct owner_ids that currently have queued tasks.
+
+        Per-IP quota is a cross-owner shared resource: when a task completes and
+        frees an IP slot, every owner sharing that IP must be reconsidered, not
+        only the completing task's own owner. The global re-dispatch sweep uses
+        this list to avoid starving queued tasks that belong to a different
+        owner (which the per-owner done-callback cannot reach).
+        """
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(QuotationTask.owner_id)
+                .where(QuotationTask.status == QuotationTaskStatus.queued.value)
+                .group_by(QuotationTask.owner_id)
+            )
+            return [
+                str(oid).strip()
+                for oid in result.scalars().all()
+                if oid and str(oid).strip()
+            ]
 
 
 quotation_dispatcher = QuotationDispatcherAdapter(

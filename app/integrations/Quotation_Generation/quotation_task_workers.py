@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -199,9 +200,7 @@ async def _dispatch_quotation_queue_for_owner_async(owner_id: str) -> None:
                 item.task_id,
             )
             task_owner_registry.cache(item.task_id, item.owner_id)
-            future.add_done_callback(
-                lambda _, owner_id=item.owner_id: dispatch_quotation_queue_for_owner(owner_id)
-            )
+            future.add_done_callback(lambda _: dispatch_quotation_queue_global())
         except Exception as exc:
             logger.error(f"提交报价任务到执行器失败 {item.task_id}: {exc}", exc_info=True)
             # Directly await – we are already in an async context.
@@ -226,6 +225,90 @@ def dispatch_quotation_queue_for_owner(owner_id: str) -> None:
         _dispatch_quotation_queue_for_owner_async(owner_id),
         log_label="报价队列调度",
         owner_id=owner_id,
+    )
+
+
+async def _dispatch_quotation_queue_global_async() -> None:
+    """Global re-dispatch sweep across ALL owners with queued work.
+
+    Per-IP quota is a cross-owner SHARED resource.  The per-owner done-callback
+    only re-checks the completing task's own owner, so queued tasks that belong
+    to a DIFFERENT owner but share the same ``owner_ip`` can starve indefinitely
+    once an IP slot frees up (e.g. several users behind the same nginx/NAT IP).
+    This sweep fixes that by reconsidering every owner that currently has queued
+    tasks — each ``dequeue_for_owner`` re-validates both owner and IP quotas, so
+    it is safe and idempotent.
+    """
+    try:
+        owners = await quotation_dispatcher.list_queued_owners()
+    except Exception as exc:
+        logger.error(f"全局报价队列调度失败（列举排队 owner）: {exc}", exc_info=True)
+        return
+    if not owners:
+        return
+    logger.debug("全局报价队列重调度: owners=%s", owners)
+    for owner_id in owners:
+        await _dispatch_quotation_queue_for_owner_async(owner_id)
+
+
+# ── Global dispatch debounce ─────────────────────────────────────────────
+# done-callbacks fire from executor worker threads.  Without coalescing, a
+# burst of ~K near-simultaneous completions (EXECUTOR_MAX_WORKERS up to ~30)
+# each schedules a redundant full owner-scan on the main loop — O(K*M) DB
+# roundtrips for M queued owners.  The debounce collapses any burst within
+# `_GLOBAL_DISPATCH_DEBOUNCE_SEC` into a single sweep: the first call arms a
+# short timer on the main loop; subsequent calls during the window are dropped
+# (the armed sweep already covers all currently-queued owners at sweep time).
+# A completion arriving *during* the sweep re-arms a follow-up sweep because
+# `_debounce_pending` is cleared right before the sweep runs.
+_GLOBAL_DISPATCH_DEBOUNCE_SEC = 0.3
+_debounce_lock = threading.Lock()
+_debounce_pending: bool = False
+
+
+async def _debounced_global_dispatch_async() -> None:
+    """Wait the debounce window, then run one global sweep.
+
+    The pending flag is cleared *before* the sweep so a completion arriving
+    during the sweep arms a follow-up sweep (no lost re-dispatch).  Each sweep
+    re-scans all queued owners, so dropping calls during the window is safe.
+    """
+    global _debounce_pending
+    await asyncio.sleep(_GLOBAL_DISPATCH_DEBOUNCE_SEC)
+    with _debounce_lock:
+        _debounce_pending = False
+    await _dispatch_quotation_queue_global_async()
+
+
+def dispatch_quotation_queue_global() -> None:
+    """Schedule a (debounced) global re-dispatch sweep on the main event loop.
+
+    Called from executor done-callbacks (worker threads).  Burst completions
+    coalesce into a single sweep ``_GLOBAL_DISPATCH_DEBOUNCE_SEC`` after the
+    first call.  See ``_dispatch_quotation_queue_global_async``.
+    """
+    global _debounce_pending
+    dispatch_loop = _quotation_dispatch_loop
+    if dispatch_loop is None or dispatch_loop.is_closed():
+        # Loop unavailable (e.g. shutdown): bypass the debounce and let
+        # _schedule_dispatch_coro handle/log it, so we never leave
+        # _debounce_pending stuck True (which would block all future dispatch).
+        _schedule_dispatch_coro(
+            _dispatch_quotation_queue_global_async(),
+            log_label="报价队列全局调度",
+            owner_id="*",
+        )
+        return
+    with _debounce_lock:
+        if _debounce_pending:
+            # A sweep is already armed; it will cover all queued owners at its
+            # run time, so this call can be safely dropped.
+            return
+        _debounce_pending = True
+    _schedule_dispatch_coro(
+        _debounced_global_dispatch_async(),
+        log_label="报价队列全局调度",
+        owner_id="*",
     )
 
 
@@ -678,7 +761,7 @@ async def _dispatch_quotation_phase2_async(task_id: str, owner_id: str) -> None:
             task_id,
         )
         task_owner_registry.cache(task_id, owner_id)
-        future.add_done_callback(lambda _, oid=owner_id: dispatch_quotation_queue_for_owner(oid))
+        future.add_done_callback(lambda _: dispatch_quotation_queue_global())
     except Exception as exc:
         logger.error(f"Phase2 提交执行器失败 {task_id}: {exc}", exc_info=True)
         # Directly await – we are in an async context.  The sync bridge

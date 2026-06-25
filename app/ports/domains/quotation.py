@@ -195,6 +195,10 @@ class QuotationDispatchPort(Protocol):
     async def dequeue_for_owner(self, owner_id: str) -> list[DispatchCandidate]:
         ...
 
+    async def list_queued_owners(self) -> list[str]:
+        """Distinct owner_ids with queued tasks (for cross-owner IP-quota sweep)."""
+        ...
+
 
 class QuotationTaskPurgePort(Protocol):
     """Abstraction for purging quotation task records and associated resources."""
