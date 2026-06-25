@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Dict
 
 from sqlalchemy import select
 
 from app.core.database import AsyncSessionLocal
 from app.core.logging import get_logger
+from app.core.time_utils import utcnow_naive
 from app.models.orm.quotation_task import QuotationTask, QuotationTaskStatus
 
 logger = get_logger("quotation.task_persistence")
@@ -33,7 +33,7 @@ class QuotationTaskPersistenceAdapter:
                 task.progress = min(task.progress, 99)
                 task.error = error_message
                 task.message = "任务提交执行器失败"
-                task.completed_at = datetime.utcnow()
+                task.completed_at = utcnow_naive()
                 await db.commit()
             except Exception as exc:
                 await db.rollback()
@@ -131,7 +131,7 @@ class QuotationTaskPersistenceAdapter:
                 task.progress = min(task.progress, 99)
                 task.error = error_message
                 task.message = "任务提交执行器失败"
-                task.completed_at = datetime.utcnow()
+                task.completed_at = utcnow_naive()
                 db.commit()
             except Exception as exc:
                 db.rollback()

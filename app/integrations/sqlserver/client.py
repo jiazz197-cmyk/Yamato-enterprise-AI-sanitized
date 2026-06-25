@@ -11,6 +11,7 @@ import threading
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
+from app.core.circuit_breaker import CircuitBreakerOpenError, get_breaker
 from app.core.config import settings
 from app.core.exceptions import ExternalServiceError
 from app.core.logging import get_logger
@@ -53,6 +54,12 @@ def _run_pymssql_query(conn: Any, sql: str, params: Any = None) -> List[Dict[str
     return [dict(row) for row in rows]
 
 
+def _breaker_name(conf: Dict[str, Any]) -> str:
+    """Stable backend identifier for the circuit breaker (U8 vs PDM differ by database)."""
+    db = conf.get("database") or conf.get("server") or "sqlserver"
+    return f"sqlserver:{db}"
+
+
 def get_sql_client(config: Dict[str, Any]):
     """Prefer sqlserver_tools, fall back to pymssql."""
     try:
@@ -72,11 +79,15 @@ def get_sql_client(config: Dict[str, Any]):
 
     class _PymssqlClient:
         """Reuses a single pymssql connection across queries to avoid repeated
-        TCP/TLS/auth handshakes (each handshake costs multiple seconds)."""
+        TCP/TLS/auth handshakes (each handshake costs multiple seconds).
+
+        Calls are guarded by a per-backend circuit breaker so that a timing-out
+        backend (e.g. U8 20003) fast-fails instead of stalling worker threads."""
 
         def __init__(self, conf: Dict[str, Any]):
             self.conf = conf
             self._conn: Any = None
+            self._breaker = get_breaker(_breaker_name(conf))
 
         def _ensure_conn(self) -> Any:
             if self._conn is None:
@@ -84,11 +95,16 @@ def get_sql_client(config: Dict[str, Any]):
             return self._conn
 
         def query(self, sql: str, params: Any = None) -> List[Dict[str, Any]]:
+            # Fast-fail when the backend breaker is open (failure isolation).
+            self._breaker.before_call()
             try:
                 conn = self._ensure_conn()
-                return _run_pymssql_query(conn, sql, params)
+                result = _run_pymssql_query(conn, sql, params)
+                self._breaker.record_success()
+                return result
             except Exception:
                 self.close()
+                self._breaker.record_failure()
                 raise
 
         def close(self) -> None:
@@ -323,3 +339,10 @@ def close_sql_client(client: Any) -> None:
             closer()
         except Exception:
             pass
+
+
+__all__ = [
+    "get_sql_client",
+    "close_sql_client",
+    "CircuitBreakerOpenError",
+]

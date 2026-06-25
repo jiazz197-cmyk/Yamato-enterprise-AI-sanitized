@@ -1,6 +1,6 @@
 """SQLAlchemy 2.0：Engine、SessionLocal、AsyncSessionLocal、Base 与表初始化。"""
-from contextlib import asynccontextmanager, contextmanager
-from typing import AsyncGenerator, Generator, Optional
+from contextlib import asynccontextmanager
+from typing import Optional
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -76,30 +76,6 @@ def receive_checkout(dbapi_conn, connection_record, connection_proxy):
     logger.debug("连接已从池中获取")
 
 
-def check_db_connection() -> bool:
-    """SELECT 1 探活。"""
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        logger.info("数据库连接健康检查通过")
-        return True
-    except Exception as e:
-        logger.error(f"数据库连接健康检查失败: {e}")
-        return False
-
-
-def get_pool_status() -> dict:
-    """连接池占用概况，供监控用。"""
-    pool_obj = engine.pool
-    return {
-        "pool_size": pool_obj.size(),
-        "checked_in": pool_obj.checkedin(),
-        "checked_out": pool_obj.checkedout(),
-        "overflow": pool_obj.overflow(),
-        "total": pool_obj.size() + pool_obj.overflow(),
-    }
-
-
 async def check_db_connection_async() -> bool:
     """SELECT 1 探活（异步）。"""
     try:
@@ -110,46 +86,6 @@ async def check_db_connection_async() -> bool:
     except Exception as e:
         logger.error(f"异步数据库连接健康检查失败: {e}")
         return False
-
-
-async def get_pool_status_async() -> dict:
-    """异步连接池占用概况，供监控用。"""
-    pool_obj = async_engine.pool
-    return {
-        "pool_size": pool_obj.size(),
-        "checked_in": pool_obj.checkedin(),
-        "checked_out": pool_obj.checkedout(),
-        "overflow": pool_obj.overflow(),
-        "total": pool_obj.size() + pool_obj.overflow(),
-    }
-
-
-@asynccontextmanager
-async def get_async_db_context() -> AsyncGenerator[AsyncSession, None]:
-    """非 FastAPI 场景用的 async with 会话（commit/rollback）。"""
-    async with AsyncSessionLocal() as db:
-        try:
-            yield db
-            await db.commit()
-        except Exception as e:
-            await db.rollback()
-            logger.error(f"异步数据库操作失败: {e}")
-            raise
-
-
-@contextmanager
-def get_db_context() -> Generator[Session, None, None]:
-    """非 FastAPI 场景用的 with 会话（commit/rollback/close）。"""
-    db = SessionLocal()
-    try:
-        yield db
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        logger.error(f"数据库操作失败: {e}")
-        raise
-    finally:
-        db.close()
 
 
 def init_db_tables():

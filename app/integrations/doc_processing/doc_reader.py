@@ -6,7 +6,6 @@ import sys
 import tempfile
 import time
 import uuid
-from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
@@ -25,6 +24,7 @@ from .exceptions import DocumentParseError
 from .text_splitter import TagGenerator, TokenAwareTextSplitter, ExcelHeaderPreservingSplitter
 
 from app.core.config import settings
+from app.core.time_utils import utc_from_timestamp, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -446,7 +446,7 @@ class HtmlParser:
         text = html_text.extract_text(doc.summary(html_partial=True))
         metadata = {
             "title": doc.short_title(),
-            "processed_at": datetime.now().isoformat(),
+            "processed_at": utcnow().isoformat(),
         }
         return f"{metadata['title']}\n{text}", []
 
@@ -533,11 +533,11 @@ class DocumentProcessor:
             "source": "",
             "file_type": "",
             "file_size": 0,
-            "created_time": datetime.now().isoformat(),
-            "modified_time": datetime.now().isoformat(),
+            "created_time": utcnow().isoformat(),
+            "modified_time": utcnow().isoformat(),
             "title": "",
             "author": "未知",
-            "processing_time": datetime.now().isoformat(),
+            "processing_time": utcnow().isoformat(),
             "chunk_count": 0,
         }
 
@@ -549,8 +549,8 @@ class DocumentProcessor:
                         "source": os.path.basename(file_input),
                         "file_type": os.path.splitext(file_input)[1][1:].lower(),
                         "file_size": file_stats.st_size,
-                        "created_time": datetime.fromtimestamp(file_stats.st_ctime).isoformat(),
-                        "modified_time": datetime.fromtimestamp(file_stats.st_mtime).isoformat(),
+                        "created_time": utc_from_timestamp(file_stats.st_ctime).isoformat(),
+                        "modified_time": utc_from_timestamp(file_stats.st_mtime).isoformat(),
                         "title": os.path.splitext(os.path.basename(file_input))[0],
                     }
                 )

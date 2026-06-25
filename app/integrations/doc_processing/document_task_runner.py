@@ -5,10 +5,9 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -16,8 +15,10 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.executor import CancellationToken
+from app.core.time_utils import utcnow_naive
 from app.core.logging import get_logger
 from app.core.async_storage import (
+    async_delete_from_minio,
     async_stat_object,
     async_upload_stream_to_minio,
 )
@@ -38,10 +39,11 @@ async def upload_and_register_documents(
         if not getattr(file, "filename", None):
             logger.warning("跳过没有文件名的文件")
             continue
+        minio_path: Optional[str] = None
         try:
             suffix = Path(file.filename).suffix
             unique_id = uuid.uuid4().hex
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = utcnow_naive().strftime("%Y%m%d_%H%M%S")
             unique_name = f"{timestamp}_{unique_id}{suffix}"
             minio_path = f"documents/{unique_name}"
             file_size = getattr(file, "size", None) or -1
@@ -69,6 +71,14 @@ async def upload_and_register_documents(
         except Exception as e:
             logger.error("上传文件失败 %s: %s", getattr(file, "filename", ""), e, exc_info=True)
             await db.rollback()
+            # Compensating delete: if the MinIO upload succeeded but the DB commit
+            # failed, reclaim the object so it does not orphan. minio_path is only
+            # defined after the upload assignment above.
+            try:
+                await async_delete_from_minio(minio_path)
+                logger.warning("DB 落库失败后回删 MinIO 对象: %s", minio_path)
+            except Exception as cleanup_err:
+                logger.error("回删 MinIO 对象失败 path=%s err=%s", minio_path, cleanup_err)
     return file_ids
 
 

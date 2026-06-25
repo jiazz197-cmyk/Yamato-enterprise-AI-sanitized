@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from datetime import timedelta
 from pathlib import Path
 from typing import IO, Optional
@@ -18,6 +17,7 @@ from app.core.storage import (
     MinioUploadError,
     _minio_host_and_secure_for_app,
     _parse_s3_endpoint_for_presign,
+    resolve_bucket_for_object,
 )
 
 logger = get_logger("async_storage")
@@ -107,24 +107,6 @@ async def async_stat_object(object_name: str, bucket: str = MINIO_BUCKET_NAME):
     return await client.stat_object(bucket, object_name)
 
 
-async def async_upload_to_minio(file_path: str, file_name: str) -> str:
-    try:
-        if not await AsyncMinioClientPool.ensure_bucket():
-            raise MinioUploadError("MinIO service unavailable")
-        client = await AsyncMinioClientPool.get_client()
-        await client.fput_object(MINIO_BUCKET_NAME, file_name, file_path)
-        logger.debug("Uploaded file: %s", file_name)
-        return file_name
-    except MinioUploadError:
-        raise
-    except S3Error as err:
-        logger.error("Upload to MinIO failed: %s", err)
-        raise MinioUploadError(f"上传文件到 MinIO 失败: {err}") from err
-    except Exception as e:
-        logger.error("Upload exception: %s", e)
-        raise MinioUploadError(f"上传文件异常: {e}") from e
-
-
 async def async_upload_stream_to_minio(
     file_stream: IO[bytes],
     file_name: str,
@@ -164,65 +146,34 @@ async def async_upload_stream_to_minio(
         raise MinioUploadError(f"流式上传异常: {e}") from e
 
 
-async def async_delete_from_minio(file_name: str) -> bool:
+async def async_delete_from_minio(file_name: str, bucket: Optional[str] = None) -> bool:
+    """remove_object; returns False on error. bucket=None infers from object_name prefix."""
+    target_bucket = bucket or resolve_bucket_for_object(file_name)
     try:
         client = await AsyncMinioClientPool.get_client()
-        await client.remove_object(bucket_name=MINIO_BUCKET_NAME, object_name=file_name)
-        logger.debug("Deleted object: %s", file_name)
+        await client.remove_object(bucket_name=target_bucket, object_name=file_name)
+        logger.debug("Deleted object: %s (bucket=%s)", file_name, target_bucket)
         return True
     except S3Error as err:
-        logger.error("Delete MinIO object failed: %s", err)
+        logger.error("Delete MinIO object failed: %s (bucket=%s, object=%s)", err, target_bucket, file_name)
         return False
     except Exception as e:
-        logger.error("Delete object exception: %s", e)
+        logger.error("Delete object exception: %s (bucket=%s, object=%s)", e, target_bucket, file_name)
         return False
 
 
-async def async_save_file_from_minio(
-    object_name: str,
-    temp_prefix: str = "minio_download_",
-) -> Path:
-    temp_file = tempfile.NamedTemporaryFile(
-        prefix=temp_prefix,
-        delete=False,
-        suffix=Path(object_name).suffix,
-    )
-    temp_path = Path(temp_file.name)
-    temp_file.close()
-    response = None
-    try:
-        client = await AsyncMinioClientPool.get_client()
-        response = await client.get_object(MINIO_BUCKET_NAME, object_name)
-        with temp_path.open("wb") as f:
-            async for chunk in response.content.iter_chunked(STREAM_CHUNK_SIZE):
-                f.write(chunk)
-        logger.debug("Downloaded to temp file: %s", temp_path)
-        return temp_path
-    except Exception as exc:
-        if temp_path.exists():
-            temp_path.unlink(missing_ok=True)
-        logger.error("Download file failed: %s", exc)
-        raise RuntimeError(f"Download file failed: {exc}") from exc
-    finally:
-        if response is not None:
-            try:
-                response.close()
-            except Exception:
-                pass
+async def async_list_objects(prefix: str, bucket: Optional[str] = None) -> list[tuple[str, object]]:
+    """List objects under prefix. Returns list of (object_name, last_modified).
 
-
-async def async_download_to_file(object_name: str, local_path: str) -> Path:
-    try:
-        client = await AsyncMinioClientPool.get_client()
-        file_path = Path(local_path)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        await client.fget_object(MINIO_BUCKET_NAME, object_name, str(file_path))
-        logger.debug("Downloaded file to: %s", file_path)
-        return file_path
-    except S3Error as err:
-        raise RuntimeError(f"Download from MinIO failed: {err}") from err
-    except Exception as e:
-        raise RuntimeError(f"Download exception: {e}") from e
+    Used by the orphan reconciliation sweep (minio_reconcile). bucket defaults to
+    the inference resolver so callers can pass a bare prefix.
+    """
+    target_bucket = bucket or resolve_bucket_for_object(prefix)
+    client = await AsyncMinioClientPool.get_client()
+    result: list[tuple[str, object]] = []
+    async for obj in client.list_objects(target_bucket, prefix=prefix, recursive=True):
+        result.append((obj.object_name, obj.last_modified))
+    return result
 
 
 async def async_presigned_get_object(

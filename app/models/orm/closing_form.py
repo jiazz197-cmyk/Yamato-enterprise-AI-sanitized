@@ -1,4 +1,4 @@
-from datetime import datetime
+from app.core.time_utils import utcnow_naive
 
 from sqlalchemy import Column, DateTime, Integer, String, Text
 
@@ -15,6 +15,6 @@ class PendingForm(Base):
     uploader = Column(String(128), nullable=False, index=True)
     upload_time = Column(String(32), nullable=False)
     status = Column(String(32), nullable=False, default="pending", server_default="pending")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
     image_url_1 = Column(String(512), nullable=True)
     image_url_2 = Column(String(512), nullable=True)

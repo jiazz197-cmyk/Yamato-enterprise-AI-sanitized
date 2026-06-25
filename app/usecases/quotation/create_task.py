@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
 from app.core.exceptions import APIException
 from app.core.logging import get_logger
+from app.core.time_utils import utcnow_naive
 from app.ports.contracts.tasking import TaskDispatchPort, TaskExecutionPort, TaskStatePort
 from app.ports.domains.quotation import FileStoragePort, QuotationTaskRepoPort, QuotationTaskRetentionPort
 
@@ -66,7 +66,7 @@ class CreateQuotationTaskUseCase:
             raise APIException("文件超过大小限制", status_code=413, error_code="FILE_TOO_LARGE")
 
         suffix = Path(cmd.file_name or "document.pdf").suffix or ".pdf"
-        unique_name = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex}{suffix}"
+        unique_name = f"{utcnow_naive().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex}{suffix}"
         minio_path = f"quotation/uploads/{unique_name}"
         display_name = str(cmd.task_name or "").strip() or (cmd.file_name or unique_name)
 
@@ -76,43 +76,57 @@ class CreateQuotationTaskUseCase:
             content_type=content_type,
         )
 
-        stored_file_id = await self._task_repo.create_file_record(
-            file_name=cmd.file_name or unique_name,
-            unique_name=unique_name,
-            minio_path=minio_path,
-            content_type=content_type,
-            file_size=len(cmd.file_bytes),
-            uploader=cmd.owner_username,
-        )
+        # After the MinIO upload succeeds, any failure before create_task commits
+        # would leave the uploaded PDF as an orphan (create_file_record only
+        # flushes; create_task is the commit point). Wrap the persist section so
+        # we can reclaim the object on failure.
+        try:
+            stored_file_id = await self._task_repo.create_file_record(
+                file_name=cmd.file_name or unique_name,
+                unique_name=unique_name,
+                minio_path=minio_path,
+                content_type=content_type,
+                file_size=len(cmd.file_bytes),
+                uploader=cmd.owner_username,
+            )
 
-        task_id = await self._task_state.create_task(
-            task_type="quotation_generation",
-            # owner_id is intentionally NOT replicated here: the authoritative
-            # source for quotation_generation_* tasks is the `quotation_tasks` row,
-            # resolved via TaskOwnerRegistry. owner_username/owner_ip stay only as
-            # human-readable context for event broadcasts and logs.
-            metadata={
-                "owner_username": cmd.owner_username,
-                "owner_ip": cmd.owner_ip,
-                "file_id": stored_file_id,
-                "file_name": cmd.file_name or unique_name,
-                "task_name": display_name,
-            },
-        )
+            task_id = await self._task_state.create_task(
+                task_type="quotation_generation",
+                # owner_id is intentionally NOT replicated here: the authoritative
+                # source for quotation_generation_* tasks is the `quotation_tasks` row,
+                # resolved via TaskOwnerRegistry. owner_username/owner_ip stay only as
+                # human-readable context for event broadcasts and logs.
+                metadata={
+                    "owner_username": cmd.owner_username,
+                    "owner_ip": cmd.owner_ip,
+                    "file_id": stored_file_id,
+                    "file_name": cmd.file_name or unique_name,
+                    "task_name": display_name,
+                },
+            )
 
-        task = await self._task_repo.create_task(
-            task_id=task_id,
-            owner_id=cmd.owner_id,
-            owner_username=cmd.owner_username,
-            owner_ip=cmd.owner_ip,
-            role_snapshot=cmd.role_snapshot,
-            uploaded_file_id=stored_file_id,
-            uploaded_file_name=cmd.file_name or unique_name,
-            display_name=display_name,
-            uploaded_file_minio_path=minio_path,
-            uploaded_file_content_type=content_type,
-            uploaded_file_size=len(cmd.file_bytes),
-        )
+            task = await self._task_repo.create_task(
+                task_id=task_id,
+                owner_id=cmd.owner_id,
+                owner_username=cmd.owner_username,
+                owner_ip=cmd.owner_ip,
+                role_snapshot=cmd.role_snapshot,
+                uploaded_file_id=stored_file_id,
+                uploaded_file_name=cmd.file_name or unique_name,
+                display_name=display_name,
+                uploaded_file_minio_path=minio_path,
+                uploaded_file_content_type=content_type,
+                uploaded_file_size=len(cmd.file_bytes),
+            )
+        except Exception:
+            # Compensating delete: reclaim the uploaded PDF.
+            try:
+                from app.core.async_storage import async_delete_from_minio
+                await async_delete_from_minio(minio_path)
+                logger.warning("创建报价任务失败后回删已上传 PDF: %s", minio_path)
+            except Exception as cleanup_err:
+                logger.error("回删已上传 PDF 失败 path=%s err=%s", minio_path, cleanup_err)
+            raise
 
         self._task_execution.set_task_owner(task_id, cmd.owner_id)
         self._task_dispatch.dispatch_owner_queue(cmd.owner_id)

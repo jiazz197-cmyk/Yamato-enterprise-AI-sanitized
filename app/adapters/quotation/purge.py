@@ -16,7 +16,7 @@ from app.models.orm.quotation_task import QuotationTask
 from app.ports.domains.quotation import QuotationTaskPurgePort
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
-_RETENTION_PURGE_STATUSES = _TERMINAL_STATUSES | {"awaiting_approval"}
+_RETENTION_PURGE_STATUSES = _TERMINAL_STATUSES | {"awaiting_approval", "running"}
 
 
 class QuotationTaskPurgeAdapter(QuotationTaskPurgePort):
@@ -47,9 +47,19 @@ class QuotationTaskPurgeAdapter(QuotationTaskPurgePort):
 
         try:
             import asyncio
-            asyncio.ensure_future(task_manager.delete_task(task_id))
-        except Exception:
-            pass
+            fut = asyncio.ensure_future(task_manager.delete_task(task_id))
+
+            def _log_delete_failure(f):
+                try:
+                    exc = f.exception()
+                except asyncio.CancelledError:
+                    return
+                if exc is not None:
+                    logger.warning(f"清理 TaskManager 任务失败 task_id={task_id}: {exc}")
+
+            fut.add_done_callback(_log_delete_failure)
+        except Exception as exc:
+            logger.warning(f"调度 TaskManager 任务清理失败 task_id={task_id}: {exc}")
 
         await session.delete(task)
         await session.commit()

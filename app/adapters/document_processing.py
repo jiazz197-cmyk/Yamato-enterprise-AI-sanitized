@@ -6,7 +6,7 @@ from typing import Any, List
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.executor import executor_manager
+from app.core.executor import attach_future_result_logger, executor_manager
 from app.integrations.doc_processing.document_task_runner import (
     process_documents_background,
     upload_and_register_documents,
@@ -40,3 +40,6 @@ class DocumentProcessWorkerAdapter(DocumentProcessWorkerPort):
             chunk_size,
             chunk_overlap,
         )
+        future = executor_manager.get_task_future(task_id)
+        if future is not None:
+            attach_future_result_logger(future, task_id)

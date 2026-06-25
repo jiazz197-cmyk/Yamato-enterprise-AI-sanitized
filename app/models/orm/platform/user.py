@@ -1,6 +1,6 @@
 import enum
 import uuid
-from datetime import datetime
+from app.core.time_utils import utcnow_naive
 
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey
 from sqlalchemy import Enum as SAEnum
@@ -26,8 +26,8 @@ class User(Base):
     password = Column(String(128), nullable=False)
     is_active = Column(Boolean, default=True)
     role = Column(SAEnum(UserRole, name="userrole"), nullable=False, default=UserRole.user)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
     roles = relationship(
         "Role",
         secondary=user_role_table,
@@ -43,7 +43,7 @@ class UserLoginHistory(Base):
     __tablename__ = 'user_login_history'
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(PgUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    login_time = Column(DateTime, default=datetime.utcnow)
+    login_time = Column(DateTime, default=utcnow_naive)
     ip = Column(String(64), nullable=True)
     device = Column(String(128), nullable=True)
 
@@ -63,4 +63,4 @@ class UserSubscription(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(PgUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
     product_id = Column(Integer, nullable=False)
-    subscribe_time = Column(DateTime, default=datetime.utcnow)
+    subscribe_time = Column(DateTime, default=utcnow_naive)

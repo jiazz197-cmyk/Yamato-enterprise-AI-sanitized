@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Optional
+
+from app.core.time_utils import utcnow_naive
 
 
 def format_closing_form_text(
@@ -41,7 +42,7 @@ def format_closing_form_text(
     - ALL fields always included (even if empty)
     - Date falls back to now() if not provided
     """
-    date_str = order_date or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    date_str = order_date or utcnow_naive().strftime("%Y-%m-%d %H:%M:%S")
     parts = [
         f"日期：{date_str}",
         f"成交时间：{deal_time or ''}",

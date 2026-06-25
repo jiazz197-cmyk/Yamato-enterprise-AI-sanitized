@@ -129,8 +129,13 @@ class RejectClosingFormUseCase:
 class ReviseClosingFormUseCase:
     """Owns the revision business flow: validate ownership & status → update form."""
 
-    def __init__(self, persistence: ClosingFormPersistencePort):
+    def __init__(
+        self,
+        persistence: ClosingFormPersistencePort,
+        image_storage: ClosingFormImageStoragePort,
+    ):
         self._persistence = persistence
+        self._image_storage = image_storage
 
     async def execute(
         self, form_id: int, current_user: CurrentUserPort, cmd: ClosingFormCommand
@@ -143,6 +148,14 @@ class ReviseClosingFormUseCase:
         if row["uploader"] != current_user.username:
             raise ValidationError("只能修改自己提交的表单")
 
+        # Capture old image URLs before overwrite so we can delete the ones that
+        # are being replaced (otherwise revise orphans the old MinIO images).
+        old_urls = {
+            row.get("image_url_1"),
+            row.get("image_url_2"),
+        }
+        new_urls = {cmd.image_url_1, cmd.image_url_2}
+
         formatted_text = cmd.to_formatted_text()
         await self._persistence.update_pending_form(
             form_id=form_id,
@@ -150,6 +163,11 @@ class ReviseClosingFormUseCase:
             image_url_1=cmd.image_url_1,
             image_url_2=cmd.image_url_2,
         )
+
+        # Delete old images no longer referenced by the new submission.
+        replaced = [u for u in old_urls if u and u not in new_urls]
+        if replaced:
+            self._image_storage.delete_form_images(*replaced)
 
         logger.info("表单已修改重提: form_id=%s, user=%s", form_id, current_user.username)
         return ClosingFormReviseResult(success=True, message="修改已提交，等待审批")
@@ -200,8 +218,13 @@ class DeleteApprovedClosingFormUseCase:
 
 
 class DeleteRejectedClosingFormUseCase:
-    def __init__(self, persistence: ClosingFormPersistencePort):
+    def __init__(
+        self,
+        persistence: ClosingFormPersistencePort,
+        image_storage: ClosingFormImageStoragePort,
+    ):
         self._persistence = persistence
+        self._image_storage = image_storage
 
     async def execute(
         self, form_id: int, current_user: CurrentUserPort
@@ -211,6 +234,13 @@ class DeleteRejectedClosingFormUseCase:
             raise NotFoundError("记录不存在")
         if status not in ("rejected", "pending_revision"):
             raise ValidationError("仅允许删除不通过或待修改状态的表单")
+        # Delete any images still attached to the row before removing it. A
+        # rejected row's images were already nulled at reject time, but a
+        # pending_revision row may carry new images uploaded during revise —
+        # those would orphan if we only delete the DB row.
+        row = await self._persistence.get_pending_form(form_id)
+        if row is not None:
+            self._image_storage.delete_form_images(row.get("image_url_1"), row.get("image_url_2"))
         await self._persistence.delete_pending_form(form_id)
         logger.info("删除不通过表单: form_id=%s, deleted_by=%s", form_id, current_user.username)
         return ClosingFormDeleteResult(success=True, message="删除成功", deleted_id=str(form_id))

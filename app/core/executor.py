@@ -10,7 +10,6 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, Future
 from typing import Dict, Optional, Callable, Any, TYPE_CHECKING
-from functools import wraps
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -52,16 +51,6 @@ class CancellationToken:
     def is_cancelled(self) -> bool:
         """是否已请求取消（Event 查询，开销小）。"""
         return self._event.is_set()
-
-
-def cancellable(fn: Callable) -> Callable:
-    """可选装饰器：标明首参为 CancellationToken，便于阅读和静态提示。"""
-    @wraps(fn)
-    def wrapper(token: CancellationToken, *args, **kwargs):
-        return fn(token, *args, **kwargs)
-    
-    wrapper._is_cancellable = True
-    return wrapper
 
 
 class ExecutorManager:
@@ -146,8 +135,8 @@ class ExecutorManager:
             return self._task_manager.generate_task_id(task_type)
         else:
             import uuid
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            from app.core.time_utils import utcnow_naive
+            timestamp = utcnow_naive().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             return f"{task_type}_{timestamp}_{uuid.uuid4().hex[:8]}"
     
     @property
@@ -263,8 +252,8 @@ class ExecutorManager:
                     logger.debug(f"任务 {task_id} token 清理延迟（锁被占用）")
                     try:
                         threading.Timer(0.1, self._delayed_cleanup, args=(task_id,)).start()
-                    except:
-                        pass
+                    except Exception as timer_err:
+                        logger.warning(f"任务 {task_id} 延迟清理 Timer 启动失败: {timer_err}")
                     return
                 
                 try:
@@ -387,3 +376,21 @@ class ExecutorManager:
 
 
 executor_manager = ExecutorManager()
+
+
+def attach_future_result_logger(future: Future, task_id: str) -> Future:
+    """Attach a done-callback that retrieves and logs any exception on ``future``.
+
+    OCR/doc tasks are submitted with auto_sync=False (no TaskManager writeback),
+    and their result is consumed lazily via polling (get_task_future().result()).
+    If nobody polls a task that raised, Python emits "exception was never
+    retrieved" warnings and the failure is invisible. This callback marks the
+    exception retrieved and logs it, so failures always surface in the logs even
+    when the caller abandons the task.
+    """
+    def _on_done(fut: Future) -> None:
+        exc = fut.exception()
+        if exc is not None:
+            logger.error("后台任务异常退出 task_id=%s: %s", task_id, exc, exc_info=exc)
+    future.add_done_callback(_on_done)
+    return future

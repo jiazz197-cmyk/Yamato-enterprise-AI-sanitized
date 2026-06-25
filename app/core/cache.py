@@ -1,13 +1,14 @@
 """异步 Redis：通用 KV、API 缓存键、简易限流、任务状态等。"""
 import hashlib
 import json
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Optional, Dict
 
 import redis.asyncio as redis
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.time_utils import utcnow_naive
 
 logger = get_logger("cache")
 
@@ -150,7 +151,7 @@ class AsyncRedisManager:
                     "current": 1,
                     "limit": limit,
                     "remaining": limit - 1,
-                    "reset_time": datetime.utcnow() + timedelta(seconds=window)
+                    "reset_time": utcnow_naive() + timedelta(seconds=window)
                 }
             current = int(current)
             if current >= limit:
@@ -161,7 +162,7 @@ class AsyncRedisManager:
                     "current": current,
                     "limit": limit,
                     "remaining": 0,
-                    "reset_time": datetime.utcnow() + timedelta(seconds=ttl)
+                    "reset_time": utcnow_naive() + timedelta(seconds=ttl)
                 }
             new_count = await self.redis_client.incr(key)
             ttl = await self.redis_client.ttl(key)
@@ -171,7 +172,7 @@ class AsyncRedisManager:
                 "current": new_count,
                 "limit": limit,
                 "remaining": limit - new_count,
-                "reset_time": datetime.utcnow() + timedelta(seconds=ttl)
+                "reset_time": utcnow_naive() + timedelta(seconds=ttl)
             }
         except Exception as e:
             logger.error(f"Error checking rate limit for {identifier}: {e}")
@@ -180,7 +181,7 @@ class AsyncRedisManager:
                 "current": 0,
                 "limit": limit,
                 "remaining": limit,
-                "reset_time": datetime.utcnow() + timedelta(seconds=window)
+                "reset_time": utcnow_naive() + timedelta(seconds=window)
             }
 
     async def set_job_status(self, job_id: str, status: str, progress: int = 0,
@@ -189,7 +190,7 @@ class AsyncRedisManager:
         job_data = {
             "status": status,
             "progress": progress,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": utcnow_naive().isoformat(),
             "metadata": metadata or {}
         }
         ttl = ttl or settings.CACHE_JOB_STATUS_TTL
@@ -223,7 +224,7 @@ class AsyncRedisManager:
             "uploaded_size": uploaded_size,
             "progress": int((uploaded_size / total_size) * 100) if total_size > 0 else 0,
             "status": status,
-            "updated_at": datetime.utcnow().isoformat()
+            "updated_at": utcnow_naive().isoformat()
         }
         return await self.set(progress_key, progress_data, ttl)
 

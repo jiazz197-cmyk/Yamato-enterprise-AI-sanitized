@@ -15,8 +15,9 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, asdict
-from datetime import datetime
 from typing import Dict, Any, Optional, Literal, List
+
+from app.core.time_utils import utcnow, utcnow_naive
 
 from app.core.logging import get_logger
 
@@ -201,7 +202,7 @@ class TaskManager:
 
     def generate_task_id(self, task_type: str) -> str:
         """生成任务ID"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        timestamp = utcnow_naive().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         return f"{task_type}_{timestamp}_{uuid.uuid4().hex[:8]}"
     
     # ==================== 观察者模式接口 ====================
@@ -222,10 +223,10 @@ class TaskManager:
             ```python
             # 注册接收所有事件的观察者
             await task_manager.register_observer(MyObserver())
-            
+
             # 注册只接收完成和失败事件的观察者
             await task_manager.register_observer(
-                AlertObserver(),
+                MyObserver(),
                 event_types=[TaskEventType.TASK_COMPLETED, TaskEventType.TASK_FAILED]
             )
             ```
@@ -349,7 +350,7 @@ class TaskManager:
                 task_id=task_id,
                 task_type=task_type,
                 status="pending",
-                created_at=datetime.now().isoformat(),
+                created_at=utcnow().isoformat(),
                 metadata=metadata or {}
             )
 
@@ -382,7 +383,7 @@ class TaskManager:
                 return False
 
             task_status.status = "running"
-            task_status.started_at = datetime.now().isoformat()
+            task_status.started_at = utcnow().isoformat()
             task_status.progress = 0
 
             success = await self._save_task_status(task_status)
@@ -478,7 +479,7 @@ class TaskManager:
                 return False
 
             task_status.status = "completed"
-            task_status.completed_at = datetime.now().isoformat()
+            task_status.completed_at = utcnow().isoformat()
             task_status.progress = 100
             task_status.message = message
             task_status.result = result
@@ -509,7 +510,7 @@ class TaskManager:
                 return False
 
             task_status.status = "failed"
-            task_status.completed_at = datetime.now().isoformat()
+            task_status.completed_at = utcnow().isoformat()
             task_status.message = message
             task_status.error = error
 

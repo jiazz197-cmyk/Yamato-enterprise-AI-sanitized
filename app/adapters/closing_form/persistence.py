@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import text
 
 from app.core.database import AsyncSessionLocal
+from app.core.time_utils import utcnow_naive
 from app.core.logging import get_logger
 from app.integrations.closing_form.constants import (
     CLOSING_FORM_TABLE,
@@ -23,7 +23,7 @@ class ClosingFormPersistence:
 
     async def submit_pending(self, form_text_raw: str, uploader: str, image_url_1: Optional[str], image_url_2: Optional[str]) -> dict:
         form_text = clean_text_for_postgres(form_text_raw)
-        upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        upload_time = utcnow_naive().strftime("%Y-%m-%d %H:%M:%S")
         async with AsyncSessionLocal() as db:
             await db.execute(
                 text(
@@ -146,7 +146,7 @@ class ClosingFormPersistence:
 
     async def update_pending_form(self, form_id: int, form_text: str, image_url_1: Optional[str], image_url_2: Optional[str]) -> None:
         form_text_clean = clean_text_for_postgres(form_text)
-        upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        upload_time = utcnow_naive().strftime("%Y-%m-%d %H:%M:%S")
         async with AsyncSessionLocal() as db:
             await db.execute(
                 text(
