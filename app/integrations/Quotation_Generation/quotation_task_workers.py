@@ -634,7 +634,7 @@ def process_quotation_task_phase2_background(
                 "status": QuotationTaskStatus.failed.value,
                 "message": "U8 数据库连续故障，任务中止",
                 "error": error_message,
-                "completed_at": datetime.utcnow(),
+                "completed_at": utcnow_naive(),
                 "result_payload": existing_payload,
             },
         )
