@@ -19,18 +19,44 @@ except ImportError:
     KEYBERT_AVAILABLE = False
 
 from .exceptions import EmbeddingError, TextSplitError
+from .model_pool import BoundedInstancePool
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-class TagGenerator:
-    """负责从文本中提取关键词标签"""
+def _simple_tags(text: str, num_tags: int) -> List[str]:
+    """CPU 兜底标签提取（CountVectorizer，无模型依赖）。
+
+    模块级函数，供 TagGenerator 代理在池满/降级时，以及 worker 内部异常时复用。
+    """
+    try:
+        vectorizer = CountVectorizer(max_features=num_tags * 2, stop_words=None, ngram_range=(1, 2))
+        X = vectorizer.fit_transform([text])
+        feature_names = vectorizer.get_feature_names_out()
+        word_counts = X.toarray()[0]
+        word_freq = dict(zip(feature_names, word_counts))
+        sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
+        return [word for word, _ in sorted_words[:num_tags]]
+    except Exception:
+        logger.exception("简单标签提取失败")
+        return []
+
+
+class _TagGeneratorWorker:
+    """真实加载模型的标签生成器（SentenceTransformer + KeyBERT + keyphrase pipeline）。
+
+    实例由全局 ``_taggen_pool`` 持有并复用；自身推理为只读，无内部状态变更。
+    ``extract_tags`` 内部已 try/except 并自带 ``_simple_tags`` 降级，正常运行不抛错，
+    故池中实例在正常归还时 release（不丢弃，避免昂贵的模型重建）。
+    """
 
     def __init__(self, model_name: str = "paraphrase-multilingual-MiniLM-L12-v2", device: str = "auto"):
         try:
             # 从环境变量读取 GPU 设备配置
             gpu_device_id = int(os.environ.get("LOCAL_MODEL_GPU_DEVICE", "0"))
-            
+
             if device == "auto":
                 if torch.cuda.is_available():
                     self.device = f"cuda:{gpu_device_id}"
@@ -103,24 +129,50 @@ class TagGenerator:
                 tags = list(set(tags))
 
             if len(tags) < num_tags:
-                tags.extend(self._extract_simple_tags(text, num_tags - len(tags)))
+                tags.extend(_simple_tags(text, num_tags - len(tags)))
             return tags[:num_tags]
         except Exception as exc:
             logger.warning("标签生成失败，使用降级策略: %s", exc, exc_info=True)
-            return self._extract_simple_tags(text, num_tags)
+            return _simple_tags(text, num_tags)
 
-    def _extract_simple_tags(self, text: str, num_tags: int) -> List[str]:
-        try:
-            vectorizer = CountVectorizer(max_features=num_tags * 2, stop_words=None, ngram_range=(1, 2))
-            X = vectorizer.fit_transform([text])
-            feature_names = vectorizer.get_feature_names_out()
-            word_counts = X.toarray()[0]
-            word_freq = dict(zip(feature_names, word_counts))
-            sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
-            return [word for word, _ in sorted_words[:num_tags]]
-        except Exception:
-            logger.exception("简单标签提取失败")
+
+# 全局有界池：所有文档处理任务共享 max_size 个 worker，把 TagGenerator 的
+# ~1.9GB 显存占用封顶为常数（max_size 份），而非每任务一份线性增长。
+_taggen_pool = BoundedInstancePool(
+    factory=_TagGeneratorWorker,
+    max_size=settings.TAGGENERATOR_POOL_MAX_SIZE,
+    name="tag_generator",
+    logger=logger,
+)
+
+
+class TagGenerator:
+    """标签生成器代理（薄壳）：``extract_tags`` 时从全局池借一个 worker 委托。
+
+    保留原 ``__init__(model_name, device)`` 签名以兼容 pipeline.py 的构造调用，
+    但自身不再加载任何模型——模型由 ``_taggen_pool`` 中的 worker 持有并复用。
+    池满超时 / 借取失败时退化为 CPU ``_simple_tags``，文档仍可处理。
+    """
+
+    def __init__(self, model_name: str = "paraphrase-multilingual-MiniLM-L12-v2", device: str = "auto"):
+        # 代理不加载模型；参数仅为兼容旧签名，由 worker 内部按环境变量取 device。
+        self._model_name = model_name
+        self._device = device
+
+    def extract_tags(self, text: str, num_tags: int = 5, diversity: float = 0.5) -> List[str]:
+        if not text.strip():
             return []
+        try:
+            with _taggen_pool.acquire(
+                timeout=settings.TAGGENERATOR_ACQUIRE_TIMEOUT_SEC
+            ) as worker:
+                if worker is None:
+                    # 池满超时 / 创建失败 → CPU 兜底，不阻断文档处理。
+                    return _simple_tags(text, num_tags)
+                return worker.extract_tags(text, num_tags, diversity)
+        except Exception as e:
+            logger.warning("TagGenerator 降级到简单标签: %s", e)
+            return _simple_tags(text, num_tags)
 
 
 class TokenAwareTextSplitter:

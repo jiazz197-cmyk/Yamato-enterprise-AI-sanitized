@@ -336,6 +336,15 @@ async def lifespan(app: FastAPI):
             print(f"[warning] 关闭 OCR 同步 HTTP 客户端时出错: {e}")
 
         try:
+            from app.integrations.doc_processing.doc_reader import _paddleocr_pool
+            from app.integrations.doc_processing.text_splitter import _taggen_pool
+            _paddleocr_pool.close()
+            _taggen_pool.close()
+            print("[success] 文档处理模型池已关闭")
+        except Exception as e:
+            print(f"[warning] 关闭文档处理模型池时出错: {e}")
+
+        try:
             from app.core.task_manager import task_manager
             await asyncio.wait_for(task_manager.remove_all_observers(), timeout=1.0)
             print("[success] 观察者已清理")

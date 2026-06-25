@@ -226,6 +226,26 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
         60, ge=1, le=600, env="U8_BOM_POOL_ACQUIRE_TIMEOUT_SEC"
     )
 
+    # 文档处理重模型有界池上限。PaddleOCR / TagGenerator 各自一个全局池，
+    # checkout 互斥（一实例一线程）既绕开 PaddleOCR 线程安全问题，又把 GPU
+    # 显存占用从“随任务数线性增长”封顶为常数上限（5×0.8 + 5×1.9 ≈ 13.5GB）。
+    # PaddleOCR 池实例数上限；0 = 禁用 OCR（PDF 仅走 pdfplumber 文本提取）。
+    PADDLEOCR_POOL_MAX_SIZE: int = Field(
+        5, ge=0, le=32, env="PADDLEOCR_POOL_MAX_SIZE"
+    )
+    # 从 PaddleOCR 池借一个实例的最长等待秒数；超时该页跳过 OCR（降级路径，不致命）。
+    PADDLEOCR_ACQUIRE_TIMEOUT_SEC: int = Field(
+        30, ge=1, le=300, env="PADDLEOCR_ACQUIRE_TIMEOUT_SEC"
+    )
+    # TagGenerator（SentenceTransformer + keyphrase pipeline）池实例数上限。
+    TAGGENERATOR_POOL_MAX_SIZE: int = Field(
+        5, ge=1, le=32, env="TAGGENERATOR_POOL_MAX_SIZE"
+    )
+    # 从 TagGenerator 池借一个实例的最长等待秒数；超时退化为 CPU 简单标签。
+    TAGGENERATOR_ACQUIRE_TIMEOUT_SEC: int = Field(
+        30, ge=1, le=300, env="TAGGENERATOR_ACQUIRE_TIMEOUT_SEC"
+    )
+
     @model_validator(mode="after")
     def _validate_u8_bom_concurrency(self):
         """共享连接池模型下的并发一致性校验。

@@ -22,6 +22,7 @@ import langchain_compat  # noqa: F401
 
 from .exceptions import DocumentParseError
 from .text_splitter import TagGenerator, TokenAwareTextSplitter, ExcelHeaderPreservingSplitter
+from .model_pool import BoundedInstancePool
 
 from app.core.config import settings
 from app.core.time_utils import utc_from_timestamp, utcnow
@@ -34,6 +35,36 @@ try:
 except ImportError:  # pragma: no cover
     PaddleOCR = None  # type: ignore
     PADDLE_AVAILABLE = False
+
+
+def _create_paddleocr():
+    """池工厂：懒构造一个 PaddleOCR 实例。PaddleOCR 不可用时返回 None。
+
+    环境变量 FLAGS_use_mkldnn / FLAGS_use_cudnn 与 main.py 启动时设置一致，此处
+    再设是幂等的，兼容不经 main.py 直接 import 的场景（如测试）。"""
+    if not PADDLE_AVAILABLE:
+        return None
+    gpu_device = int(os.environ.get("LOCAL_MODEL_GPU_DEVICE", "0"))
+    os.environ['FLAGS_use_mkldnn'] = '0'  # 禁用 MKL-DNN 优化（兼容性）
+    os.environ['FLAGS_use_cudnn'] = '1'   # 使用 cuDNN（GPU 环境）
+    logger.info("正在创建 PaddleOCR 实例（GPU:%s）...", gpu_device)
+    # PaddleOCR 3.x：use_gpu/use_angle_cls 已移除；device 显式指定 GPU，
+    # use_textline_orientation 替代旧 use_angle_cls。
+    return PaddleOCR(
+        lang="ch",
+        device=f"gpu:{gpu_device}",
+        use_textline_orientation=True,
+    )
+
+
+# 全局有界池：checkout 互斥既绕开 PaddleOCR.ocr() 线程安全问题，又把显存占用
+# 封顶为 max_size 份。max_size=0 时池禁用（PaddleOCR_POOL_MAX_SIZE）。
+_paddleocr_pool = BoundedInstancePool(
+    factory=_create_paddleocr,
+    max_size=settings.PADDLEOCR_POOL_MAX_SIZE,
+    name="paddleocr",
+    logger=logger,
+)
 
 
 def file_to_stream(file_path: Union[str, os.PathLike], keep_filename: bool = True) -> BytesIO:
@@ -163,52 +194,20 @@ class PdfParser:
     def __init__(self, save_dir: str = "paddle_ocr_images", enable_ocr: bool = True):
         self.save_dir = save_dir
         os.makedirs(save_dir, exist_ok=True)
-        self.enable_ocr = False
-        self.ocr = None
-        
-        # 尝试初始化 OCR（如果启用且可用）
-        if enable_ocr and PADDLE_AVAILABLE:
-            try:
-                # 从环境变量读取 GPU 设备配置
-                gpu_device = int(os.environ.get("LOCAL_MODEL_GPU_DEVICE", "0"))
-                logger.info(f"正在初始化 PaddleOCR（用于扫描版 PDF），使用 GPU:{gpu_device}...")
-                
-                # [note] 设置环境变量以禁用可能导致兼容性问题的优化
-                # 这些设置可以绕过某些 PaddlePaddle 版本兼容性问题
-                os.environ['FLAGS_use_mkldnn'] = '0'  # 禁用 MKL-DNN 优化
-                os.environ['FLAGS_use_cudnn'] = '1'   # 使用 cuDNN（GPU 环境）
-
-                # 初始化 PaddleOCR
-                # PaddleOCR 3.x 版本说明：
-                # - use_gpu / use_angle_cls 参数已被移除（旧 2.x 参数）
-                # - paddle.set_device() 对其内部 paddle.inference predictor 不生效，
-                #   必须通过 device 参数显式指定，才能让内部 predictor 用正确的 GPU
-                self.ocr = PaddleOCR(
-                    lang="ch",                       # 中文识别
-                    device=f"gpu:{gpu_device}",      # PaddleOCR 3.x 设备参数
-                    use_textline_orientation=True,   # 启用文字方向分类（3.x 替代 use_angle_cls）
-                )
-                
-                self.enable_ocr = True
-                logger.info(f"[success] PaddleOCR 初始化成功，运行在 GPU:{gpu_device}")
-            except AttributeError as ae:
-                # 处理 PaddlePaddle 版本兼容性问题
-                logger.warning(f"[warning]  PaddleOCR 初始化失败（版本兼容性问题）: {ae}")
-                logger.info("提示：这可能是 PaddlePaddle 和 PaddleOCR 版本不匹配导致的")
-                logger.info("建议：paddlepaddle-gpu==2.6.0 + paddleocr==2.7.0 或更新组合")
-                logger.info("当前配置不影响普通 PDF 文本提取，只是无法处理扫描版 PDF")
-                self.ocr = None
-                self.enable_ocr = False
-            except Exception as e:
-                logger.warning(f"[warning]  PaddleOCR 初始化失败: {e}")
-                logger.info("提示：这不会影响普通 PDF 文本提取，只是无法处理扫描版 PDF")
-                self.ocr = None
-                self.enable_ocr = False
-        else:
+        # PaddleOCR 不再急切加载——改为按需从全局池借（见 _extract_text）。
+        # 这样 pdfplumber 能搞定的 PDF 不会白吃 ~0.8GB 显存。
+        self.enable_ocr = (
+            enable_ocr
+            and PADDLE_AVAILABLE
+            and settings.PADDLEOCR_POOL_MAX_SIZE > 0
+        )
+        if not self.enable_ocr:
             if not enable_ocr:
                 logger.info("PDF OCR 已手动禁用")
-            elif PaddleOCR is None:
+            elif not PADDLE_AVAILABLE:
                 logger.info("PaddleOCR 不可用，OCR 功能已禁用")
+            elif settings.PADDLEOCR_POOL_MAX_SIZE <= 0:
+                logger.info("PaddleOCR 池上限为 0，OCR 功能已禁用")
 
     def __call__(self, file_input: Union[str, bytes, os.PathLike, BytesIO]) -> Tuple[str, List[Dict]]:
         temp_path = None
@@ -241,17 +240,41 @@ class PdfParser:
                 if page_text and page_text.strip():
                     chunks.append(page_text)
                     continue
-                if self.ocr is None:
+                if not self.enable_ocr:
                     continue
+                # 文件名带 uuid 后缀，避免多线程同时处理不同 PDF 时 page_{idx}.png 互相覆盖。
+                image_path = os.path.join(
+                    self.save_dir, f"page_{idx + 1}_{uuid.uuid4().hex[:8]}.png"
+                )
                 try:
-                    image_path = os.path.join(self.save_dir, f"page_{idx + 1}.png")
                     page.to_image(resolution=300).original.save(image_path)
-                    result = self.ocr.ocr(image_path) or []
-                    ocr_text = "\n".join(seg[1][0] for line in result for seg in line)
-                    chunks.append(ocr_text)
+                    # 按页从全局池借一个 PaddleOCR 实例：checkout 互斥保证线程安全，
+                    # 池满超时 / 创建失败返回 None → 该页跳过 OCR（降级路径，不致命）。
+                    try:
+                        with _paddleocr_pool.acquire(
+                            timeout=settings.PADDLEOCR_ACQUIRE_TIMEOUT_SEC
+                        ) as ocr:
+                            if ocr is None:
+                                logger.warning(
+                                    "PaddleOCR 池满超时/不可用，跳过第 %d 页 OCR", idx + 1
+                                )
+                                chunks.append("")
+                            else:
+                                result = ocr.ocr(image_path) or []
+                                ocr_text = "\n".join(
+                                    seg[1][0] for line in result for seg in line
+                                )
+                                chunks.append(ocr_text)
+                    except Exception as e:
+                        # ocr() 抛错时池已 discard 该实例；该页降级为空，任务继续。
+                        logger.warning("第 %d 页 OCR 失败: %s", idx + 1, e)
+                        chunks.append("")
                 finally:
                     if os.path.exists(image_path):
-                        os.remove(image_path)
+                        try:
+                            os.remove(image_path)
+                        except OSError:
+                            pass
         return "\n".join(chunks)
 
 
