@@ -11,7 +11,7 @@ from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER
 from app.ports.contracts.executor_async import ExecutorAsyncTaskPort
 from app.ports.contracts.tasking import TaskStatePort
 
-logger = get_logger("document_processing_uc")
+logger = get_logger("document_processing.uc")
 
 
 @dataclass

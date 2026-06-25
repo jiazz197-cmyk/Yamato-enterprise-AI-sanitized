@@ -29,7 +29,7 @@ from app.usecases.async_executor.pdf_convert import (
 
 router = APIRouter()
 
-logger = get_logger("api.pdf2image")
+logger = get_logger("image2url.pdf2image")
 
 
 class PdfConvertRequest(BaseModel):

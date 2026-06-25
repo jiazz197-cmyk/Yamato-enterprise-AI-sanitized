@@ -219,7 +219,7 @@ onMounted(loadUsers)
   background: var(--yamato-color-bg-light);
   padding: 32px 32px 24px;
   box-sizing: border-box;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .user-manage-header {
@@ -298,8 +298,9 @@ onMounted(loadUsers)
   background: #ffffff;
   border-radius: var(--yamato-radius-lg);
   box-shadow: var(--yamato-shadow-card);
-  overflow: hidden;
+  overflow: auto;
   flex: 1;
+  min-height: 0;
 }
 
 .state-placeholder {
@@ -327,6 +328,9 @@ onMounted(loadUsers)
   background: rgba(0, 0, 0, 0.03);
   border-bottom: 1px solid var(--yamato-color-border-subtle);
   white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 
   &--actions {
     text-align: right;

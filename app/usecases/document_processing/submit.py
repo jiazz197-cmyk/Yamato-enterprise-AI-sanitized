@@ -11,7 +11,7 @@ from app.ports.contracts.identity import CurrentUserPort
 from app.ports.contracts.tasking import TaskExecutionPort, TaskStatePort
 from app.ports.domains.document_processing import DocumentProcessWorkerPort, DocumentRegistrationPort
 
-logger = get_logger("document_processing_uc")
+logger = get_logger("document_processing.uc")
 
 
 @dataclass

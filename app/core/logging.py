@@ -28,25 +28,27 @@ CATEGORY_FILES: Dict[str, str] = {
     "document_processing": "document_processing.log",
     "file_manager": "file_manager.log",
     "context_compression": "context_compression.log",
+    "rag": "rag.log",
+    "image2url": "image2url.log",
+    "storage": "storage.log",
+    "monitoring": "monitoring.log",
 }
 
 # key = logger 名去掉 "app." 前缀；value = category
+# 子 logger（含点号）会自动冒泡到已路由的父级，无需单独登记。
 LOGGER_ROUTES: Dict[str, str] = {
     "quotation": "quotation",
     "quotation_generation": "quotation",
     "quotation_dispatcher": "quotation",
     "u8_grouping": "quotation",
-    "adapters.quotation": "quotation",
     "task_manager": "task",
     "task_observers": "task",
     "task_owner_registry": "task",
     "executor": "task",
     "executor_task_query": "task",
-    "observer": "task",
     "auth": "security",
     "security": "security",
     "database": "database",
-    "integrations.sqlserver": "database",
     "diag": "diag",
     "requests": "requests",
     "websocket_notifier": "websocket",
@@ -54,14 +56,12 @@ LOGGER_ROUTES: Dict[str, str] = {
     "cache": "cache",
     "closing_form": "closing_form",
     "document_processing": "document_processing",
-    "document_processing_uc": "document_processing",
-    "integrations.doc_processing": "document_processing",
     "file_manager": "file_manager",
-    "file_manager_uc": "file_manager",
-    "adapters.file_manager": "file_manager",
-    "context_compression_uc": "context_compression",
-    "integrations.context_compression": "context_compression",
-    "api.v1.context_compression": "context_compression",
+    "context_compression": "context_compression",
+    "ragsystem": "rag",
+    "image2url": "image2url",
+    "storage": "storage",
+    "monitoring": "monitoring",
 }
 
 

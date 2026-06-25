@@ -12,7 +12,7 @@ from app.ports.contracts.identity import CurrentUserPort
 from app.ports.domains.file_manager import FileManagerPort
 from app.ports.dto.files import FileRecordDTO
 
-logger = get_logger("file_manager_uc")
+logger = get_logger("file_manager.uc")
 
 
 def _ensure_file_access(dto: FileRecordDTO, current_user: CurrentUserPort, *, detail: str) -> None:

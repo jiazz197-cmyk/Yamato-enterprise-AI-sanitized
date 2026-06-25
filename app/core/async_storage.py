@@ -20,7 +20,7 @@ from app.core.storage import (
     _parse_s3_endpoint_for_presign,
 )
 
-logger = get_logger("async_storage")
+logger = get_logger("storage.async")
 
 MINIO_ACCESS_KEY = settings.MINIO_ACCESS_KEY
 MINIO_SECRET_KEY = settings.MINIO_SECRET_KEY

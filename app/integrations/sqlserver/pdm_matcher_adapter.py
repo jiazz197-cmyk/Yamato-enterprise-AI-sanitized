@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 from app.core.config import settings
 from app.core.logging import get_logger
 
-logger = get_logger("integrations.sqlserver.pdm_matcher_adapter")
+logger = get_logger("database.sqlserver.pdm_matcher_adapter")
 
 _MAX_PER_COMPONENT = 20
 

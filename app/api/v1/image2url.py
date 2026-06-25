@@ -22,7 +22,7 @@ from app.usecases.async_executor.image_upload import SubmitImageUploadCommand, S
 
 router = APIRouter()
 
-logger = get_logger("api.image2url")
+logger = get_logger("image2url.api")
 
 
 class ImageUploadRequest(BaseModel):

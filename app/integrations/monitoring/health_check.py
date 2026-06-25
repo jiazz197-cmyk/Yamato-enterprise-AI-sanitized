@@ -11,7 +11,7 @@ from app.core.cache import redis_manager
 from app.core.database import check_db_connection_async
 from app.core.logging import get_logger
 
-logger = get_logger("health_check")
+logger = get_logger("monitoring.health_check")
 
 
 class HealthCheckService:

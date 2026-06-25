@@ -11,7 +11,7 @@ from app.core.security import normalize_self_user_identifier
 from app.ports.contracts.identity import CurrentUserPort, ROLE_SUPERUSER, ROLE_ADMIN
 from app.ports.domains.context_compression import ContextCompressorPort
 
-logger = get_logger("context_compression_uc")
+logger = get_logger("context_compression.uc")
 
 
 @dataclass
