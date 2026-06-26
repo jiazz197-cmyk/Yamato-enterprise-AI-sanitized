@@ -32,12 +32,25 @@ ok()   { printf '\033[1;32m[ok]\033[0m   %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 fail() { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; }
 
-# ── 2. 加载 .env ──
-if [[ -f "${ROOT}/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "${ROOT}/.env"
-  set +a
+# ── 2. 加载 .env（安全方式：仅导出 KEY=VALUE，不执行任意内容） ──
+# 不能用 source：.env 里有带空格的值（如 PROJECT_NAME=Project Yamato Shanghai）
+# 和注释文本，source 会把值当命令执行（status=127）。
+load_env() {
+  local file="$1" line key val
+  [[ -f "$file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # 跳过空行与注释
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    # 仅处理 KEY=VALUE 形式
+    [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
+    # 去掉首尾成对引号
+    if [[ "$val" =~ ^\"(.*)\"$ ]]; then val="${BASH_REMATCH[1]}"
+    elif [[ "$val" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"; fi
+    export "$key=$val"
+  done < "$file"
+}
+if load_env "${ROOT}/.env"; then
   log "已加载 .env"
 else
   warn "未找到 ${ROOT}/.env，使用 config.py 内置默认值"

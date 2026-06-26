@@ -275,8 +275,7 @@ async def lifespan(app: FastAPI):
     yield
     
     import signal
-    import sys
-    
+
     print("\n[shutdown] 开始关闭...")
     try:
         from app.integrations.Quotation_Generation.quotation_task_workers import (
