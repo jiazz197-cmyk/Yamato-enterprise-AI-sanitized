@@ -161,8 +161,6 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     DB_MAX_OVERFLOW: int = Field(20, ge=0, le=200, env="DB_MAX_OVERFLOW")
     DB_POOL_TIMEOUT: int = Field(30, ge=1, le=300, env="DB_POOL_TIMEOUT")
     DB_POOL_RECYCLE: int = Field(3600, ge=60, le=86400, env="DB_POOL_RECYCLE")
-    # Background executor thread pool size (consumed by app/core/executor.py via getattr)
-    EXECUTOR_MAX_WORKERS: int = Field(4, ge=1, le=64, env="EXECUTOR_MAX_WORKERS")
 
     # SQL Server（U8 / PDM）
     U8_SQLSERVER_HOST: str = Field("127.0.0.1", env="U8_SQLSERVER_HOST")
@@ -324,8 +322,8 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     # MinIO download socket timeout (protects worker threads from MinIO stalls)
     MINIO_DOWNLOAD_TIMEOUT_SEC: float = Field(60.0, ge=5.0, le=600.0, env="MINIO_DOWNLOAD_TIMEOUT_SEC")
     # MinIO orphan reconciliation (scan bucket vs DB, delete unreferenced objects)
-    MINIO_RECONCILE_INTERVAL_SEC: int = Field(3600, ge=300, le=86400, env="MINIO_RECONCILE_INTERVAL_SEC")
-    MINIO_RECONCILE_GRACE_SEC: int = Field(900, ge=60, le=86400, env="MINIO_RECONCILE_GRACE_SEC")
+    MINIO_RECONCILE_INTERVAL_SEC: int = Field(259200, ge=300, le=604800, env="MINIO_RECONCILE_INTERVAL_SEC")
+    MINIO_RECONCILE_GRACE_SEC: int = Field(259200, ge=60, le=604800, env="MINIO_RECONCILE_GRACE_SEC")
 
     OCR_HTTP_CONNECT_TIMEOUT: float = Field(10.0, ge=1.0, le=300.0, env="OCR_HTTP_CONNECT_TIMEOUT")
     OCR_HTTP_READ_TIMEOUT: float = Field(300.0, ge=5.0, le=3600.0, env="OCR_HTTP_READ_TIMEOUT")
