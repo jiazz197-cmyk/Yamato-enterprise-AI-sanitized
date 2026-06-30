@@ -81,7 +81,7 @@ async def query_pdm_bom_old(
     payload: PdmBomRequest,
     _current_user: CurrentUserPort = Depends(get_current_user_detached),
 ) -> QueryResponse:
-    """查询 pdm_change_me.BOM_016，支持单组关键词 AND 或多组关键词分批查询。需登录。"""
+    """查询 pdm.BOM_016，支持单组关键词 AND 或多组关键词分批查询。需登录。"""
     cmd = PdmBomCommand(keywords=payload.keywords)
     return await _run_sqlserver_query(RunPdmBomQueryUseCase(_pdm).execute, cmd)
 

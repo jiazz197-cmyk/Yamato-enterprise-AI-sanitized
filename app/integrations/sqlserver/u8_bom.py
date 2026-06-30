@@ -483,7 +483,7 @@ def _query_recordoutlist_prices(
                             PARTITION BY cinvcode
                             ORDER BY {order_by}
                         ) AS rn
-                    FROM UFDATA_CHANGE_ME.dbo.recordoutlist
+                    FROM {settings.U8_SQLSERVER_DATABASE}.dbo.recordoutlist
                     WHERE cinvcode IN ({placeholders})
                       AND iunitcost IS NOT NULL
                       AND iunitcost <> 0

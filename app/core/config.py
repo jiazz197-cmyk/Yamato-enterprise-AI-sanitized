@@ -165,14 +165,14 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     # SQL Server（U8 / PDM）
     U8_SQLSERVER_HOST: str = Field("127.0.0.1", env="U8_SQLSERVER_HOST")
     U8_SQLSERVER_PORT: int = Field(1433, env="U8_SQLSERVER_PORT")
-    U8_SQLSERVER_DATABASE: str = Field("UFDATA_CHANGE_ME", env="U8_SQLSERVER_DATABASE")
+    U8_SQLSERVER_DATABASE: str = Field("change_me_u8_database", env="U8_SQLSERVER_DATABASE")
     U8_SQLSERVER_USER: str = Field("sa", env="U8_SQLSERVER_USER")
     U8_SQLSERVER_PASSWORD: str = Field("change_me_u8_sqlserver_password", env="U8_SQLSERVER_PASSWORD")
     U8_SQLSERVER_ENCRYPT: bool = Field(False, env="U8_SQLSERVER_ENCRYPT")
 
     PDM_SQLSERVER_HOST: str = Field("127.0.0.1", env="PDM_SQLSERVER_HOST")
     PDM_SQLSERVER_PORT: int = Field(1433, env="PDM_SQLSERVER_PORT")
-    PDM_SQLSERVER_DATABASE: str = Field("pdm_change_me", env="PDM_SQLSERVER_DATABASE")
+    PDM_SQLSERVER_DATABASE: str = Field("change_me_pdm_database", env="PDM_SQLSERVER_DATABASE")
     PDM_SQLSERVER_USER: str = Field("sa", env="PDM_SQLSERVER_USER")
     PDM_SQLSERVER_PASSWORD: str = Field("change_me_pdm_sqlserver_password", env="PDM_SQLSERVER_PASSWORD")
     PDM_SQLSERVER_ENCRYPT: bool = Field(False, env="PDM_SQLSERVER_ENCRYPT")
