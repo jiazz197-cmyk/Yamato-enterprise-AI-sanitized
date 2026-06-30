@@ -81,9 +81,9 @@ class SingletonModelMeta(ModelMetaclass):
 class Settings(BaseSettings, metaclass=SingletonModelMeta):
     """单例配置：字段对应环境变量 / .env。"""
 
-    PROJECT_NAME: str = Field("AI Data Tool", env="PROJECT_NAME")
-    VERSION: str = Field("1.0.0", env="VERSION")
-    DESCRIPTION: str = Field("AI数据工具后端API服务", env="DESCRIPTION")
+    PROJECT_NAME: str = Field("Project Yamato Shanghai", env="PROJECT_NAME")
+    VERSION: str = Field("1.0.1", env="VERSION")
+    DESCRIPTION: str = Field("Project Yamato Shanghai API", env="DESCRIPTION")
     ENVIRONMENT: str = Field("development", env="ENVIRONMENT")
     DEBUG: bool = Field(True, env="DEBUG")
     @validator("DEBUG", pre=True)
