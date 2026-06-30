@@ -13,7 +13,7 @@ from app.adapters.sqlserver_queries import PdmBomQueryAdapter, PdmMatchQueryAdap
 from app.core.config import settings
 from app.core.exceptions import ExternalServiceError
 from app.core.security import get_current_user_detached
-from app.integrations.sqlserver.exceptions import U8RootFailureBreakerError
+from app.domain.exceptions import U8RootFailureBreakerError
 from app.ports.contracts.identity import CurrentUserPort
 from app.ports.dto.sqlserver_queries import PdmBomCommand, PdmMatchCommand, U8BomInventoryCommand
 from app.schemas.sqlserver import PdmBomRequest, QueryResponse, U8BomInventoryRequest
