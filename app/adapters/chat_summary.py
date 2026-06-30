@@ -65,14 +65,14 @@ class UserProfileSummaryRepoAdapter(ChatSummaryRepoPort):
 
 
 class MessageExtractorChatArchiveAdapter(ChatArchivePort):
-    """Delegate summary generation workflow to existing integration service."""
+    """Delegate summary generation to the local message archive + LLM service."""
 
-    def __init__(self, api_key: str):
-        self._api_key = api_key
+    def __init__(self):
+        # No Dify API key needed: messages are read from the local messages table.
+        pass
 
     async def update_user_profile(self, user_id: str, conversation_id: str, limit: int) -> ChatSummaryResult:
         result = await update_user_profile_with_new_queries(
-            api_key=self._api_key,
             user_id=user_id,
             conversation_id=conversation_id,
             limit=limit,
