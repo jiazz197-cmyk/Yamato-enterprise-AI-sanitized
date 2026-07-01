@@ -20,7 +20,8 @@ if grep -R --line-number --include="*.py" "from app.integrations" \
   app/api/v1/file_manager.py \
   app/api/v1/context_compression.py \
   app/api/v1/closing_form.py \
-  app/api/v1/sqlserver_queries.py; then
+  app/api/v1/sqlserver_queries.py \
+  app/api/v1/conversation.py; then
   echo "[layer-check] FAILED: remediated routes still import integrations directly."
   exit 1
 fi
