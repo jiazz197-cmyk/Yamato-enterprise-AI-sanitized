@@ -76,11 +76,24 @@ class SpecParseAndConvertAdapter(SpecParseAndConvertPort):
             remark_text = collect_remark_text(params, ocr_text)
             if not remark_text:
                 return params
+            # Re-check cancellation right before the (potentially slow) LLM
+            # call — the entry check in parse_and_convert may have gone stale
+            # while parse_spec_sheet was running. The interpreter's own
+            # cancel_checker() check degrades to {} rather than raising, so
+            # without this guard a cancel that lands during the LLM call would
+            # be swallowed and the pipeline would continue to convert_all.
+            if cancel_checker and cancel_checker():
+                raise QuotationPipelineCancelledError("任务已取消")
             adjustments = self._remark_interpreter.interpret(
                 remark_text=remark_text,
                 current_fields=params,
                 cancel_checker=cancel_checker,
             )
+            # And again after the LLM call, so a cancel that landed mid-call
+            # propagates instead of running convert_all on a (possibly empty)
+            # adjustments dict.
+            if cancel_checker and cancel_checker():
+                raise QuotationPipelineCancelledError("任务已取消")
             if adjustments:
                 # Defense-in-depth: the interpreter contract (RemarkInterpreterPort)
                 # already promises whitelist-filtered output, but we re-filter here so

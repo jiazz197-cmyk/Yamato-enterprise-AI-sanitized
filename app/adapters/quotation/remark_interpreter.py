@@ -49,6 +49,23 @@ _MAX_CURRENT_JSON_CHARS = 2000
 _MAX_REMARK_CHARS = 4000
 
 
+def _fit_current_json(cur: Dict[str, Any], limit: int) -> str:
+    """Serialize ``cur`` to JSON, trimming keys until it fits under ``limit`` chars.
+
+    A naive ``json.dumps(cur)[:limit]`` can cut through a string literal or an
+    escape sequence, leaving the prompt's "Current field values (JSON)" chunk
+    unparseable for the model. Here we drop trailing keys one at a time and
+    re-serialize, so the result is always valid JSON; worst case it collapses
+    to ``{}`` when even a single value exceeds the limit.
+    """
+    keys = list(cur.keys())
+    s = json.dumps(cur, ensure_ascii=False)
+    while len(s) > limit and keys:
+        keys.pop()
+        s = json.dumps({k: cur[k] for k in keys}, ensure_ascii=False)
+    return s
+
+
 class QwenRemarkInterpreter(RemarkInterpreterPort):
     """Interpret remarks via Qwen3.6-35B. Never raises — returns {} on failure."""
 
@@ -111,7 +128,7 @@ class QwenRemarkInterpreter(RemarkInterpreterPort):
             chain = prompt | llm | StrOutputParser()
             raw = chain.invoke({
                 "allowed": ", ".join(allowed),
-                "current": json.dumps(cur, ensure_ascii=False)[:_MAX_CURRENT_JSON_CHARS],
+                "current": _fit_current_json(cur, _MAX_CURRENT_JSON_CHARS),
                 "remark": remark_text[:_MAX_REMARK_CHARS],
             })
         except Exception as exc:  # noqa: BLE001 — any failure must degrade gracefully
