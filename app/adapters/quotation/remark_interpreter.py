@@ -132,7 +132,7 @@ class QwenRemarkInterpreter(RemarkInterpreterPort):
                 "remark": remark_text[:_MAX_REMARK_CHARS],
             })
         except Exception as exc:  # noqa: BLE001 — any failure must degrade gracefully
-            logger.warning("remark LLM 调用失败，跳过 remark 调整: %s", exc)
+            logger.warning("remark LLM 调用失败，跳过 remark 调整: %s", exc, exc_info=True)
             return {}
 
         if not isinstance(raw, str):
