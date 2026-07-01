@@ -462,6 +462,25 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
         description="Dedicated thread pool size for blocking RAG retrieval in the conversation workflow.",
     )
 
+    # ── Remark LLM interpreter (spec sheet field adjustment) ───────────────
+    # When enabled, a remark found in the parsed spec content is sent to
+    # Qwen3.6-35B to produce {canonical_field: adjusted_value} overrides.
+    # Any failure (no model service, timeout, bad output) degrades gracefully
+    # to the original pipeline behavior — this flag only gates the attempt.
+    REMARK_LLM_INTERPRETER_ENABLED: bool = Field(
+        True,
+        env="REMARK_LLM_INTERPRETER_ENABLED",
+        description="Enable Qwen3.6 remark → field-adjustment in spec parsing. Failures degrade gracefully.",
+    )
+    REMARK_LLM_REQUEST_TIMEOUT: float = Field(
+        30.0, env="REMARK_LLM_REQUEST_TIMEOUT",
+        description="Per-request timeout (seconds) for the remark LLM call.",
+    )
+    REMARK_LLM_MAX_TOKENS: int = Field(
+        512, env="REMARK_LLM_MAX_TOKENS",
+        description="Max output tokens for the remark LLM call.",
+    )
+
     N8N_BASE_URL: str = Field("http://localhost:5678", env="N8N_BASE_URL")
     N8N_API_KEY: Optional[str] = Field(default=None, env="N8N_API_KEY")
 
