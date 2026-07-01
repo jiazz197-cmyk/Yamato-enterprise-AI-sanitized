@@ -47,7 +47,6 @@ def _is_insecure_value(value: Any) -> bool:
         "default",
         "minioadmin",
         "change_me_super_pass",
-        "app-change_me_chat_api_key",
     )
 
     return any(keyword in normalized for keyword in insecure_keywords)
@@ -82,9 +81,9 @@ class SingletonModelMeta(ModelMetaclass):
 class Settings(BaseSettings, metaclass=SingletonModelMeta):
     """单例配置：字段对应环境变量 / .env。"""
 
-    PROJECT_NAME: str = Field("AI Data Tool", env="PROJECT_NAME")
-    VERSION: str = Field("1.0.0", env="VERSION")
-    DESCRIPTION: str = Field("AI数据工具后端API服务", env="DESCRIPTION")
+    PROJECT_NAME: str = Field("Project Yamato Shanghai", env="PROJECT_NAME")
+    VERSION: str = Field("1.0.1", env="VERSION")
+    DESCRIPTION: str = Field("Project Yamato Shanghai API", env="DESCRIPTION")
     ENVIRONMENT: str = Field("development", env="ENVIRONMENT")
     DEBUG: bool = Field(True, env="DEBUG")
     @validator("DEBUG", pre=True)
@@ -427,10 +426,15 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     LOCAL_MODEL_GPU_DEVICE: int = Field(3, env="LOCAL_MODEL_GPU_DEVICE")
 
     QWEN3_8B_API_URL: str = Field("http://localhost:80/llm/qwen8b/v1", env="QWEN3_8B_API_URL")
+    QWEN3_8B_MODEL: str = Field(
+        "Qwen/Qwen3-8B-FP8",
+        env="QWEN3_8B_MODEL",
+        description="Served model id for Qwen3-8B (keyword extraction / intent / summary).",
+    )
     QWEN3_6_35B_API_URL: str = Field(
         "http://localhost:80/llm/qwen36b/v1",
         env="QWEN3_6_35B_API_URL",
-        description="OpenAI-compatible API root (…/v1) for Qwen3.6-35B; proxy must target vLLM, not Dify/Next static routes.",
+        description="OpenAI-compatible API root (…/v1) for Qwen3.6-35B; proxy must target vLLM, not a web UI.",
     )
     QWEN3_6_35B_MODEL: str = Field(
         "/models/Qwen3.6-35B-A3B",
@@ -438,12 +442,29 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
         description="Served model id (GET /v1/models on the same base as QWEN3_6_35B_API_URL). vLLM often uses path-style ids, not Hub names.",
     )
 
+    # Web search backend for the conversation workflow (replaces the Dify SearXNG plugin).
+    WEB_SEARCH_PROVIDER: str = Field("tavily", env="WEB_SEARCH_PROVIDER")
+    TAVILY_API_KEY: Optional[str] = Field(default=None, env="TAVILY_API_KEY")
+
+    # Conversation workflow concurrency caps (shared singletons, see
+    # app/integrations/conversation/runtime.py). These bound in-flight LLM
+    # calls per model so a burst of chat users cannot exhaust vLLM or memory.
+    CONVERSATION_8B_MAX_CONCURRENT: int = Field(
+        20, ge=1, env="CONVERSATION_8B_MAX_CONCURRENT",
+        description="Max in-flight Qwen3-8B calls (keyword extraction + intent).",
+    )
+    CONVERSATION_35B_MAX_CONCURRENT: int = Field(
+        10, ge=1, env="CONVERSATION_35B_MAX_CONCURRENT",
+        description="Max in-flight Qwen3.6-35B streaming answers (each holds a vLLM slot for the whole stream).",
+    )
+    CONVERSATION_RETRIEVAL_MAX_WORKERS: int = Field(
+        8, ge=1, env="CONVERSATION_RETRIEVAL_MAX_WORKERS",
+        description="Dedicated thread pool size for blocking RAG retrieval in the conversation workflow.",
+    )
+
     N8N_BASE_URL: str = Field("http://localhost:5678", env="N8N_BASE_URL")
     N8N_API_KEY: Optional[str] = Field(default=None, env="N8N_API_KEY")
-    
-    DIFY_BASE_URL: str = Field("http://localhost:80", env="DIFY_BASE_URL")
-    DIFY_API_KEY: Optional[str] = Field(default=None, env="DIFY_API_KEY")
-    
+
     RAGFLOW_BASE_URL: str = Field("http://localhost:9380", env="RAGFLOW_BASE_URL")
     RAGFLOW_API_KEY: Optional[str] = Field(default=None, env="RAGFLOW_API_KEY")
     RAGFLOW_DATASET_ID: Optional[str] = Field(default=None, env="RAGFLOW_DATASET_ID")
@@ -475,12 +496,9 @@ class Settings(BaseSettings, metaclass=SingletonModelMeta):
     ENABLE_HSTS: bool = Field(True, env="ENABLE_HSTS")
     HSTS_MAX_AGE: int = Field(31536000, env="HSTS_MAX_AGE")
 
-    CHAT_API_KEY: str = Field("change_me_chat_api_key", env="CHAT_API_KEY")
-
     @field_validator(
         "SECRET_KEY",
         "INTERNAL_API_KEY",
-        "CHAT_API_KEY",
         "POSTGRES_PASSWORD",
         "U8_SQLSERVER_PASSWORD",
         "PDM_SQLSERVER_PASSWORD",

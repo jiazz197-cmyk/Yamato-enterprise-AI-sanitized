@@ -1,19 +1,22 @@
-"""LangChain + OpenAI 兼容接口调本地/配置里的 LLM，从 Dify 拉变量后压缩上下文。"""
+"""LangChain + OpenAI-compatible local LLM context compression.
+
+Previously fetched ``long_memory`` / ``recent_dialogs`` from the Dify
+conversation-variables API. With Dify removed, those variables live on the local
+``conversations`` row and are read through ``ConversationRepoPort``.
+"""
 import logging
 import re
 from typing import Any, Dict, List, Optional
-from urllib.parse import unquote
+
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from app.core.config import settings
-from app.core.validators.conversation_id import validate_conversation_id
-from app.integrations.Chat_message_archive.message_extractor import MessageExtractor
+from app.ports.domains.conversation import ConversationRepoPort
 
 logger = logging.getLogger(__name__)
 
-# Path segment for Dify: avoid "/" and ".." in URL; soft caps reduce memory/DoS on huge variables.
 _MAX_N_RECENT = 100
 _MAX_TOTAL_DIALOGUE_CHARS = 400_000
 _MAX_SINGLE_DIALOGUE_ITEM_CHARS = 80_000
@@ -47,7 +50,7 @@ def _truncate_dialogue_lists(
     if char_total() <= _MAX_TOTAL_DIALOGUE_CHARS:
         return r, o
     logger.warning(
-        "Dify dialogue text exceeded soft cap (total_chars=%s, max=%s); dropping from end",
+        "Dialogue text exceeded soft cap (total_chars=%s, max=%s); dropping from end",
         char_total(),
         _MAX_TOTAL_DIALOGUE_CHARS,
     )
@@ -67,7 +70,7 @@ def _truncate_dialogue_lists(
 
 
 def _is_upstream_html_response(exc: BaseException) -> bool:
-    """True if the error body looks like an HTML page (e.g. 404 from Dify UI instead of vLLM)."""
+    """True if the error body looks like an HTML page (e.g. 404 from a UI, not vLLM)."""
     text = str(exc).lower()
     if "<!doctype html" in text or "<!doctype" in text:
         return True
@@ -80,103 +83,56 @@ class LlmEndpointMisconfiguredError(RuntimeError):
     """Configured OpenAI-compatible base_url returned an HTML error page, not a chat completion."""
 
 
-def _decode_user_id(raw_user_id: str) -> str:
-    value = (raw_user_id or "").strip()
-    if not value:
-        return value
-    return unquote(value).strip()
-
 class ContextCompressor:
-    """拉 Dify 变量、拼 prompt、走 LLM，必要时降级 max_tokens 重试。"""
-    
+    """Load memory from the local conversation repo, then compress via LLM."""
+
     def __init__(
         self,
+        conversation_repo: ConversationRepoPort,
         base_url: Optional[str] = None,
         model_name: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 1024,
-        dify_api_key: Optional[str] = None,
     ):
-        """base_url 默认 QWEN3_6_35B；model 默认 QWEN3_6_35B_MODEL（与 /v1/models 一致）。"""
+        """base_url defaults to QWEN3_6_35B; model defaults to QWEN3_6_35B_MODEL."""
+        self.conversation_repo = conversation_repo
         self.base_url = base_url or settings.QWEN3_6_35B_API_URL
         self.model_name = model_name if model_name is not None else settings.QWEN3_6_35B_MODEL
-        self.dify_api_key = dify_api_key or settings.CHAT_API_KEY
         self.temperature = temperature
         self.max_tokens = max_tokens
-        
+
         self.llm = ChatOpenAI(
             base_url=self.base_url,
             api_key="not-needed",
             model=self.model_name,
             temperature=self.temperature,
-            max_tokens=self.max_tokens
+            max_tokens=self.max_tokens,
         )
-        
-        self.extractor = MessageExtractor(api_key=self.dify_api_key)
-        
+
     async def _fetch_and_split_dialogues(
-        self, user_id: str, conversation_id: str, _n_recent: int = 5
+        self, conversation_id: str, _n_recent: int = 5
     ) -> Dict[str, List[str]]:
-        """GET /conversations/{id}/variables，解析 long_memory、recent_dialogs 两个变量。"""
-        import ast
-
-        cid = validate_conversation_id(str(conversation_id))
-        decoded_user_id = _decode_user_id(str(user_id))
-        url = f"{self.extractor.base_url}/conversations/{cid}/variables"
-        params = {'user': decoded_user_id}
-        
+        """Load long_memory + recent_dialogs from the local conversation row."""
         try:
-            logger.info(f"Fetching conversation variables from {url} with params: {params}")
-            vars_data = await self.extractor.fetch_conversation_variables(
-                url, params=params
-            )
-            if vars_data is None:
-                return {"recent": [], "older": []}
+            snapshot = await self.conversation_repo.load_snapshot(conversation_id)
         except Exception as e:
-            logger.error(f"Failed to fetch conversation variables: {str(e)}")
+            logger.error("Failed to load conversation snapshot for %s: %s", conversation_id, e)
+            return {"recent": [], "older": []}
+        if snapshot is None:
             return {"recent": [], "older": []}
 
-        if not vars_data or 'data' not in vars_data:
-            return {"recent": [], "older": []}
-            
-        long_memory_str = ""
-        recent_dialogs_str = ""
-        
-        for item in vars_data['data']:
-            if item.get('name') == 'long_memory':
-                long_memory_str = item.get('value', '[]')
-            elif item.get('name') == 'recent_dialogs':
-                recent_dialogs_str = item.get('value', '[]')
-
-        def safe_eval_list(val_str: str) -> List[str]:
-            if not val_str or val_str == '[]':
-                return []
-            try:
-                return ast.literal_eval(val_str)
-            except Exception as e:
-                logger.warning(f"Failed to parse variable value '{val_str}': {str(e)}")
-                return [val_str] if val_str else []
-
-        older = safe_eval_list(long_memory_str)
-        recent = safe_eval_list(recent_dialogs_str)
-
+        older = [str(x) for x in (snapshot.long_memory or [])]
+        recent = [str(x) for x in (snapshot.recent_dialogs or [])]
         recent, older = _truncate_dialogue_lists(recent, older)
-
-        return {
-            "recent": recent,
-            "older": older
-        }
+        return {"recent": recent, "older": older}
 
     async def compress(self, context_data: Dict[str, Any]) -> str:
-        """有 user_id+conversation_id 则拉 Dify；否则用入参里的 recent/older 列表。返回去掉 think 标签后的文本。"""
-        user_id = context_data.get("user_id")
+        """Compress dialogues into a dense summary; strips ``<think>`` tags."""
         conversation_id = context_data.get("conversation_id")
         n_recent = _clamp_n_recent(context_data.get("n_recent", 5))
 
-        if user_id and conversation_id:
-            dialogues = await self._fetch_and_split_dialogues(
-                str(user_id), str(conversation_id), n_recent
-            )
+        if conversation_id:
+            dialogues = await self._fetch_and_split_dialogues(str(conversation_id), n_recent)
             recent_dialogues = dialogues["recent"][-n_recent:]
             older_dialogues = dialogues["older"]
         else:
@@ -217,18 +173,18 @@ class ContextCompressor:
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_template),
-            ("human", human_template)
+            ("human", human_template),
         ])
-        
+
         chain = prompt | self.llm | StrOutputParser()
-        
+
         def join_dialogues(dialogues: Any) -> str:
             if not dialogues:
                 return "无"
             if isinstance(dialogues, list):
                 return "\n".join(f"- {d}" for d in dialogues)
             return str(dialogues)
-            
+
         payload = {
             "system_prompt": context_data.get("system_prompt", "无"),
             "current_task": context_data.get("current_task", "无"),
@@ -236,24 +192,22 @@ class ContextCompressor:
             "older_dialogues": join_dialogues(older_dialogues),
             "user_preferences": context_data.get("user_preferences", "无"),
             "project_background": context_data.get("project_background", "无"),
-            "confirmed_decisions": context_data.get("confirmed_decisions", "无")
+            "confirmed_decisions": context_data.get("confirmed_decisions", "无"),
         }
 
         try:
-            logger.info(f"Starting context compression for user {user_id}...")
+            logger.info("Starting context compression for conversation %s", conversation_id)
             raw_result = await chain.ainvoke(payload)
         except Exception as e:
-            import re
-
             if _is_upstream_html_response(e):
                 logger.error(
                     "Context compression: upstream LLM URL returned HTML (not JSON). "
                     "Check QWEN3_6_35B_API_URL and reverse proxy: /llm/... must route to the "
-                    "inference service (e.g. vLLM), not the Dify/Next.js app."
+                    "inference service (e.g. vLLM), not a web UI."
                 )
                 raise LlmEndpointMisconfiguredError(
                     "LLM 接口返回了网页而非 API 结果。请检查 QWEN3_6_35B_API_URL 与 Nginx/网关："
-                    "路径需指向 OpenAI 兼容的推理服务（如 vLLM），不要指到 Dify 前端。"
+                    "路径需指向 OpenAI 兼容的推理服务（如 vLLM）。"
                 ) from e
 
             error_text = str(e)
@@ -282,23 +236,24 @@ class ContextCompressor:
                 api_key="not-needed",
                 model=self.model_name,
                 temperature=self.temperature,
-                max_tokens=retry_max_tokens
+                max_tokens=retry_max_tokens,
             )
             retry_chain = prompt | retry_llm | StrOutputParser()
             raw_result = await retry_chain.ainvoke(payload)
 
-        import re
-        processed_result = re.sub(r'<think>.*?</think>', '', raw_result, flags=re.DOTALL | re.IGNORECASE).strip()
-        if '<think>' in processed_result.lower():
-            processed_result = re.split(r'<think>', processed_result, flags=re.IGNORECASE)[0].strip()
+        processed_result = re.sub(r"<think>.*?</think>", "", raw_result, flags=re.DOTALL | re.IGNORECASE).strip()
+        if "<think>" in processed_result.lower():
+            processed_result = re.split(r"<think>", processed_result, flags=re.IGNORECASE)[0].strip()
 
         logger.info("[Debug] Raw Compression Result length: %s", len(raw_result))
         logger.info("[Debug] Processed Compression Result length: %s", len(processed_result))
-        
+
         logger.info("Context compression completed successfully.")
         return processed_result
 
-async def compress_context(context_data: Dict[str, Any]) -> str:
-    """默认参数 new ContextCompressor().compress。"""
-    compressor = ContextCompressor()
-    return await compressor.compress(context_data)
+
+async def compress_context(
+    context_data: Dict[str, Any], conversation_repo: ConversationRepoPort
+) -> str:
+    """Convenience wrapper: ``ContextCompressor(conversation_repo).compress``."""
+    return await ContextCompressor(conversation_repo=conversation_repo).compress(context_data)

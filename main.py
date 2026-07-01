@@ -321,6 +321,15 @@ async def lifespan(app: FastAPI):
             print(f"[warning] 关闭线程池时出错: {e}")
 
         try:
+            from app.integrations.conversation.runtime import (
+                shutdown_conversation_runtime,
+            )
+            shutdown_conversation_runtime()
+            print("[success] 对话检索线程池已关闭")
+        except Exception as e:
+            print(f"[warning] 关闭对话检索线程池时出错: {e}")
+
+        try:
             from app.api.v1.sqlserver_queries import shutdown_sqlserver_query_executor
             shutdown_sqlserver_query_executor()
             print("[success] SQLServer 查询线程池已关闭")

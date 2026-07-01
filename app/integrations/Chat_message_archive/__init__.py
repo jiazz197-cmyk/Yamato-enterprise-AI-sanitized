@@ -1,14 +1,22 @@
 """
 Chat Message Archive Integration
+
+Local message store + LLM summarization (messages read from the local
+``messages`` table; no Dify).
 """
 
 from .message_extractor import (
-    MessageExtractor, 
-    summarize_user_queries
+    UserProfileDB,
+    fetch_user_queries,
+    summarize_queries_with_llm,
+    summarize_user_queries,
+    update_user_profile_with_new_queries,
 )
 
 __all__ = [
-    'MessageExtractor', 
-    'summarize_user_queries'
+    "UserProfileDB",
+    "fetch_user_queries",
+    "summarize_queries_with_llm",
+    "summarize_user_queries",
+    "update_user_profile_with_new_queries",
 ]
-
