@@ -1,4 +1,4 @@
-"""Compress chat context for Dify variables."""
+"""Compress chat context stored on the local conversation row."""
 
 from __future__ import annotations
 
