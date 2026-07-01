@@ -103,7 +103,7 @@ _OCR_NO_REMARK = "Model ADW-A-0314S\nSurface Flat\n"
 
 
 def _adapter(interpreter) -> SpecParseAndConvertAdapter:
-    return SpecParseAndConvertAdapter(remark_interpreter=interpreter)
+    return SpecParseAndConvertAdapter(remark_interpreter=interpreter, enabled=True)
 
 
 # ── tests: happy path ───────────────────────────────────────────────────
