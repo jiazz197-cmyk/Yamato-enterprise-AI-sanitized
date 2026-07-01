@@ -142,5 +142,5 @@ class QwenRemarkInterpreter(RemarkInterpreterPort):
         try:
             return validate_and_reorganize(raw, set(allowed))
         except Exception as exc:  # noqa: BLE001 — validator is pure but stay safe
-            logger.warning("remark 输出校验异常，跳过: %s raw=%r", exc, raw[:200])
+            logger.warning("remark 输出校验异常，跳过: %s raw=%r", exc, raw[:200], exc_info=True)
             return {}
