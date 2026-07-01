@@ -1,11 +1,12 @@
-"""Qwen3.6-35B adapter: interpret remark text into field-value adjustments.
+"""Primary-LLM adapter: interpret remark text into field-value adjustments.
 
-Calls the OpenAI-compatible Qwen endpoint synchronously (the Phase1 pipeline
-is synchronous). Graceful degradation is mandatory: any failure — no model
-service, timeout, HTML error page, unparseable output — returns an empty dict
-and the pipeline continues with the original params. The whitelist filter in
-``validate_and_reorganize`` is the second line of defense: even a "successful"
-but hallucinated model output is reduced to known canonical fields only.
+Calls the OpenAI-compatible primary LLM (configured via PRIMARY_LLM_*)
+synchronously (the Phase1 pipeline is synchronous). Graceful degradation is
+mandatory: any failure — no model service, timeout, HTML error page,
+unparseable output — returns an empty dict and the pipeline continues with the
+original params. The whitelist filter in ``validate_and_reorganize`` is the
+second line of defense: even a "successful" but hallucinated model output is
+reduced to known canonical fields only.
 """
 from __future__ import annotations
 
@@ -67,19 +68,24 @@ def _fit_current_json(cur: Dict[str, Any], limit: int) -> str:
 
 
 class QwenRemarkInterpreter(RemarkInterpreterPort):
-    """Interpret remarks via Qwen3.6-35B. Never raises — returns {} on failure."""
+    """Interpret remarks via the primary LLM. Never raises — returns {} on failure."""
 
     def __init__(
         self,
         *,
         base_url: Optional[str] = None,
         model_name: Optional[str] = None,
+        api_key: Optional[str] = None,
         temperature: float = 0.0,
         max_tokens: Optional[int] = None,
         request_timeout: Optional[float] = None,
     ):
-        self.base_url = base_url or settings.QWEN3_6_35B_API_URL
-        self.model_name = model_name or settings.QWEN3_6_35B_MODEL
+        self.base_url = base_url or settings.PRIMARY_LLM_API_URL
+        self.model_name = model_name or settings.PRIMARY_LLM_MODEL
+        # Local vLLM leaves the key empty → ChatOpenAI still needs a non-empty
+        # value, so fall back to "not-needed". External providers inject the
+        # real key via settings.PRIMARY_LLM_API_KEY (or the api_key arg).
+        self.api_key = api_key if api_key is not None else (settings.PRIMARY_LLM_API_KEY or "not-needed")
         self.temperature = temperature
         self.max_tokens = max_tokens if max_tokens is not None else settings.REMARK_LLM_MAX_TOKENS
         self.request_timeout = (
@@ -94,7 +100,7 @@ class QwenRemarkInterpreter(RemarkInterpreterPort):
         if self._llm is None:
             self._llm = ChatOpenAI(
                 base_url=self.base_url,
-                api_key="not-needed",
+                api_key=self.api_key,
                 model=self.model_name,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
