@@ -116,5 +116,5 @@ class SpecParseAndConvertAdapter(SpecParseAndConvertPort):
             # Cancellation must propagate, not be swallowed by the generic catch.
             raise
         except Exception as exc:  # noqa: BLE001 — remark stage must never break Phase1
-            logger.warning("remark 调整阶段异常，跳过: %s", exc)
+            logger.warning("remark 调整阶段异常，跳过: %s", exc, exc_info=True)
         return params
